@@ -126,6 +126,41 @@ where
                     },
                 ));
             }
+            Command::CreatePin {
+                image, position, ..
+            } => {
+                self.require_running()?;
+                let image_id = image.id;
+                let pin_id = self.state.create_pin(image, position)?;
+                produced.push(EventEnvelope::now(
+                    correlation_id,
+                    DomainEvent {
+                        kind: DomainEventKind::PinCreated { pin_id, image_id },
+                    },
+                ));
+            }
+            Command::ClosePin { pin_id, .. } => {
+                self.require_running()?;
+                self.state.close_pin(pin_id)?;
+                produced.push(EventEnvelope::now(
+                    correlation_id,
+                    DomainEvent {
+                        kind: DomainEventKind::PinClosed { pin_id },
+                    },
+                ));
+            }
+            Command::SetPinTransform {
+                pin_id, transform, ..
+            } => {
+                self.require_running()?;
+                self.state.set_pin_transform(pin_id, transform)?;
+                produced.push(EventEnvelope::now(
+                    correlation_id,
+                    DomainEvent {
+                        kind: DomainEventKind::PinUpdated { pin_id },
+                    },
+                ));
+            }
         }
 
         self.events.extend(produced.iter().cloned());
@@ -135,6 +170,16 @@ where
     /// 将外部转发来的激活命令应用到主实例（测试与后续 IPC 使用）。
     pub fn apply_forwarded(&mut self, command: Command) -> Result<DispatchResult, PinoraError> {
         self.dispatch(command)
+    }
+
+    fn require_running(&self) -> Result<(), PinoraError> {
+        if self.state.phase != AppPhase::Running {
+            return Err(fail(
+                ErrorCode::NotRunning,
+                "command requires Running phase",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -147,9 +192,24 @@ mod tests {
     use super::*;
     use crate::platform::FakeCapabilityProbe;
     use crate::single_instance::InMemorySingleInstance;
+    use pinora_core::{
+        CaptureImage, CaptureMetadata, DisplayId, ImageId, PixelPoint, PixelRect, PixelSize,
+        PinTransform, RgbaBuffer,
+    };
 
     fn runtime() -> AppRuntime<InMemorySingleInstance, FakeCapabilityProbe> {
         AppRuntime::new(InMemorySingleInstance::new(), FakeCapabilityProbe)
+    }
+
+    fn sample_image() -> CaptureImage {
+        let pixels = RgbaBuffer::solid(PixelSize::new(16, 9), [10, 20, 30, 255]);
+        CaptureImage::new(
+            ImageId::new(),
+            pixels,
+            PixelRect::new(0, 0, 16, 9),
+            CaptureMetadata::new(DisplayId::new("display-0"), 1.0, 1),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -181,7 +241,6 @@ mod tests {
         assert_eq!(forwarded.len(), 1);
         assert!(matches!(forwarded[0], Command::Activate { .. }));
 
-        // 主实例消费转发命令
         primary.apply_forwarded(forwarded[0].clone()).unwrap();
         assert_eq!(primary.state().activation_count, 1);
         assert!(
@@ -206,7 +265,6 @@ mod tests {
         );
         assert_eq!(rt.state().phase, AppPhase::Stopped);
 
-        // 锁已释放，新实例可再次获取
         let mut next = AppRuntime::new(lock, FakeCapabilityProbe);
         assert_eq!(next.bootstrap().unwrap(), BootstrapOutcome::Primary);
     }
@@ -233,5 +291,53 @@ mod tests {
         let corr = cmd.correlation_id();
         let result = rt.dispatch(cmd).unwrap();
         assert!(result.events.iter().all(|e| e.correlation_id == corr));
+    }
+
+    #[test]
+    fn create_and_close_pin_via_commands() {
+        let mut rt = runtime();
+        rt.bootstrap().unwrap();
+        let image = sample_image();
+        let image_id = image.id;
+        let result = rt
+            .dispatch(Command::create_pin(image, PixelPoint::new(40, 60)))
+            .unwrap();
+        let pin_id = match &result.events[0].event.kind {
+            DomainEventKind::PinCreated { pin_id, image_id: iid } => {
+                assert_eq!(*iid, image_id);
+                *pin_id
+            }
+            other => panic!("unexpected event: {other:?}"),
+        };
+        assert_eq!(rt.state().pin_count(), 1);
+        assert!(rt.state().image(image_id).is_some());
+
+        rt.dispatch(Command::set_pin_transform(
+            pin_id,
+            PinTransform::default_at(PixelPoint::new(80, 90)),
+        ))
+        .unwrap();
+        assert_eq!(
+            rt.state().pin(pin_id).unwrap().transform.position,
+            PixelPoint::new(80, 90)
+        );
+
+        rt.dispatch(Command::close_pin(pin_id)).unwrap();
+        assert_eq!(rt.state().pin_count(), 0);
+        assert!(rt.state().image(image_id).is_none());
+        assert!(
+            rt.events()
+                .iter()
+                .any(|e| matches!(e.event.kind, DomainEventKind::PinClosed { .. }))
+        );
+    }
+
+    #[test]
+    fn pin_commands_require_running() {
+        let mut rt = runtime();
+        let err = rt
+            .dispatch(Command::create_pin(sample_image(), PixelPoint::new(0, 0)))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::NotRunning);
     }
 }

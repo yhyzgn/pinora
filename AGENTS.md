@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/004_domain_models.md`
-- 任务：`.context/tasks/004_core_domain_models.md`
+- 计划：`.context/plans/005_pin_commands.md`
+- 任务：`.context/tasks/005_pin_command_dispatch.md`
 
 ## 交付要求
 

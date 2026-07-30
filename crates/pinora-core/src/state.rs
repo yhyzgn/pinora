@@ -1,6 +1,6 @@
 use crate::error::{ErrorCode, PinoraError};
 use crate::geometry::PixelPoint;
-use crate::ids::PinId;
+use crate::ids::{ImageId, PinId};
 use crate::image::CaptureImage;
 use crate::pin::{Pin, PinTransform};
 
@@ -31,6 +31,8 @@ pub struct AppState {
     pub phase: AppPhase,
     pub capabilities: CapabilitySnapshot,
     pub activation_count: u64,
+    /// 已登记的截图（按插入顺序；贴图通过 `image_id` 引用）。
+    pub images: Vec<CaptureImage>,
     /// 当前打开的贴图（顺序为创建顺序）。
     pub pins: Vec<Pin>,
     /// 贴图数量上限（0 表示不限制）。
@@ -43,6 +45,7 @@ impl AppState {
             phase: AppPhase::Idle,
             capabilities: CapabilitySnapshot::default(),
             activation_count: 0,
+            images: Vec::new(),
             pins: Vec::new(),
             max_pins: 32,
         }
@@ -50,6 +53,10 @@ impl AppState {
 
     pub fn pin_count(&self) -> usize {
         self.pins.len()
+    }
+
+    pub fn image(&self, id: ImageId) -> Option<&CaptureImage> {
+        self.images.iter().find(|img| img.id == id)
     }
 
     pub fn pin(&self, id: PinId) -> Option<&Pin> {
@@ -60,10 +67,17 @@ impl AppState {
         self.pins.iter_mut().find(|p| p.id == id)
     }
 
-    /// 从截图创建贴图并加入状态。
+    /// 登记截图；若 ID 已存在则跳过。
+    pub fn retain_image(&mut self, image: CaptureImage) {
+        if self.image(image.id).is_none() {
+            self.images.push(image);
+        }
+    }
+
+    /// 从截图创建贴图并加入状态；同时保留图像。
     pub fn create_pin(
         &mut self,
-        image: &CaptureImage,
+        image: CaptureImage,
         position: PixelPoint,
     ) -> Result<PinId, PinoraError> {
         if self.max_pins > 0 && self.pins.len() >= self.max_pins {
@@ -72,20 +86,25 @@ impl AppState {
                 format!("pin limit reached ({})", self.max_pins),
             ));
         }
-        let pin = Pin::from_capture(image, position);
+        let pin = Pin::from_capture(&image, position);
         let id = pin.id;
+        self.retain_image(image);
         self.pins.push(pin);
         Ok(id)
     }
 
     pub fn close_pin(&mut self, id: PinId) -> Result<(), PinoraError> {
         let before = self.pins.len();
+        let image_id = self.pin(id).map(|p| p.image_id);
         self.pins.retain(|p| p.id != id);
         if self.pins.len() == before {
             return Err(PinoraError::new(
                 ErrorCode::NotFound,
                 format!("pin not found: {id}"),
             ));
+        }
+        if let Some(image_id) = image_id {
+            self.drop_image_if_unused(image_id);
         }
         Ok(())
     }
@@ -106,6 +125,13 @@ impl AppState {
         }
         pin.transform = transform.clamped();
         Ok(())
+    }
+
+    fn drop_image_if_unused(&mut self, image_id: ImageId) {
+        let still_used = self.pins.iter().any(|p| p.image_id == image_id);
+        if !still_used {
+            self.images.retain(|img| img.id != image_id);
+        }
     }
 }
 
@@ -139,19 +165,23 @@ mod tests {
         assert_eq!(state.phase, AppPhase::Idle);
         assert_eq!(state.activation_count, 0);
         assert!(state.pins.is_empty());
+        assert!(state.images.is_empty());
     }
 
     #[test]
     fn create_and_close_pin() {
         let mut state = AppState::new();
         let image = sample_image();
+        let image_id = image.id;
         let id = state
-            .create_pin(&image, PixelPoint::new(1, 2))
+            .create_pin(image, PixelPoint::new(1, 2))
             .expect("create");
         assert_eq!(state.pin_count(), 1);
         assert!(state.pin(id).is_some());
+        assert!(state.image(image_id).is_some());
         state.close_pin(id).expect("close");
         assert_eq!(state.pin_count(), 0);
+        assert!(state.image(image_id).is_none());
     }
 
     #[test]
@@ -165,7 +195,7 @@ mod tests {
     fn locked_pin_rejects_transform() {
         let mut state = AppState::new();
         let image = sample_image();
-        let id = state.create_pin(&image, PixelPoint::new(0, 0)).unwrap();
+        let id = state.create_pin(image, PixelPoint::new(0, 0)).unwrap();
         state.pin_mut(id).unwrap().set_locked(true);
         let err = state
             .set_pin_transform(id, PinTransform::default_at(PixelPoint::new(9, 9)))
@@ -177,10 +207,11 @@ mod tests {
     fn pin_limit_enforced() {
         let mut state = AppState::new();
         state.max_pins = 1;
-        let image = sample_image();
-        state.create_pin(&image, PixelPoint::new(0, 0)).unwrap();
+        state
+            .create_pin(sample_image(), PixelPoint::new(0, 0))
+            .unwrap();
         let err = state
-            .create_pin(&image, PixelPoint::new(1, 1))
+            .create_pin(sample_image(), PixelPoint::new(1, 1))
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::CommandRejected);
     }

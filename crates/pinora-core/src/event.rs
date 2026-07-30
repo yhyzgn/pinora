@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::ErrorCode;
-use crate::ids::{CorrelationId, EventId};
+use crate::ids::{CorrelationId, EventId, ImageId, PinId};
 
 /// 已发生的领域事实类别。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10,6 +10,16 @@ pub enum DomainEventKind {
     AppActivated,
     AppShuttingDown,
     AppStopped,
+    PinCreated {
+        pin_id: PinId,
+        image_id: ImageId,
+    },
+    PinClosed {
+        pin_id: PinId,
+    },
+    PinUpdated {
+        pin_id: PinId,
+    },
     CommandFailed {
         code: ErrorCode,
         message: String,
