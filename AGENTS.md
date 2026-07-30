@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/009_region_selection.md`
-- 任务：`.context/tasks/009_region_overlay.md`
+- 计划：`.context/plans/010_pin_window.md`
+- 任务：`.context/tasks/010_pin_window.md`
 
 ## 交付要求
 

@@ -6,6 +6,7 @@ mod capture_xcap;
 mod hotkey;
 mod image_sink;
 mod os_instance;
+mod pin_window;
 mod platform;
 mod region_overlay;
 mod region_workflow;
@@ -20,6 +21,9 @@ pub use capture_xcap::XcapCaptureProvider;
 pub use hotkey::{FakeHotkeySource, HotkeySource};
 pub use image_sink::LocalImageSink;
 pub use os_instance::OsSingleInstance;
+pub use pin_window::{
+    run_pin_session, scaled_window_size, PinSessionEnd, PinView,
+};
 pub use platform::{CapabilityProbe, FakeCapabilityProbe, RuntimeCapabilityProbe};
 pub use region_overlay::run_region_selection;
 pub use region_workflow::{capture_region_interactive, RegionCaptureResult};
