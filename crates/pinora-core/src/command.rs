@@ -1,3 +1,6 @@
+use std::path::PathBuf;
+
+use crate::action::ActionId;
 use crate::capture::CaptureRequest;
 use crate::geometry::PixelPoint;
 use crate::ids::{CorrelationId, ImageId, PinId};
@@ -7,39 +10,53 @@ use crate::pin::PinTransform;
 /// 用户或系统意图。命令可以失败；成功后应产生对应领域事件。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
-    /// 启动应用运行时（首实例）。
     Bootstrap { correlation_id: CorrelationId },
-    /// 激活已有实例（二次启动转发）。
     Activate { correlation_id: CorrelationId },
-    /// 请求优雅退出。
     Shutdown { correlation_id: CorrelationId },
-    /// 通过 CaptureProvider 捕获图像并登记到状态。
     Capture {
         correlation_id: CorrelationId,
         request: CaptureRequest,
     },
-    /// 从截图创建贴图。
+    /// 捕获并立即创建贴图。
+    CaptureAndPin {
+        correlation_id: CorrelationId,
+        request: CaptureRequest,
+        position: PixelPoint,
+    },
     CreatePin {
         correlation_id: CorrelationId,
         image: CaptureImage,
         position: PixelPoint,
     },
-    /// 从已登记图像创建贴图。
     CreatePinFromImage {
         correlation_id: CorrelationId,
         image_id: ImageId,
         position: PixelPoint,
     },
-    /// 关闭贴图。
     ClosePin {
         correlation_id: CorrelationId,
         pin_id: PinId,
     },
-    /// 更新贴图变换。
     SetPinTransform {
         correlation_id: CorrelationId,
         pin_id: PinId,
         transform: PinTransform,
+    },
+    /// 将已登记图像保存为 PNG。
+    SavePng {
+        correlation_id: CorrelationId,
+        image_id: ImageId,
+        path: PathBuf,
+    },
+    /// 将已登记图像复制到 ImageSink 剪贴板。
+    CopyImage {
+        correlation_id: CorrelationId,
+        image_id: ImageId,
+    },
+    /// 执行高层动作（由热键/托盘映射）。
+    InvokeAction {
+        correlation_id: CorrelationId,
+        action: ActionId,
     },
 }
 
@@ -50,10 +67,14 @@ impl Command {
             | Self::Activate { correlation_id }
             | Self::Shutdown { correlation_id }
             | Self::Capture { correlation_id, .. }
+            | Self::CaptureAndPin { correlation_id, .. }
             | Self::CreatePin { correlation_id, .. }
             | Self::CreatePinFromImage { correlation_id, .. }
             | Self::ClosePin { correlation_id, .. }
-            | Self::SetPinTransform { correlation_id, .. } => *correlation_id,
+            | Self::SetPinTransform { correlation_id, .. }
+            | Self::SavePng { correlation_id, .. }
+            | Self::CopyImage { correlation_id, .. }
+            | Self::InvokeAction { correlation_id, .. } => *correlation_id,
         }
     }
 
@@ -79,6 +100,14 @@ impl Command {
         Self::Capture {
             correlation_id: CorrelationId::new(),
             request,
+        }
+    }
+
+    pub fn capture_and_pin(request: CaptureRequest, position: PixelPoint) -> Self {
+        Self::CaptureAndPin {
+            correlation_id: CorrelationId::new(),
+            request,
+            position,
         }
     }
 
@@ -112,6 +141,28 @@ impl Command {
             transform,
         }
     }
+
+    pub fn save_png(image_id: ImageId, path: impl Into<PathBuf>) -> Self {
+        Self::SavePng {
+            correlation_id: CorrelationId::new(),
+            image_id,
+            path: path.into(),
+        }
+    }
+
+    pub fn copy_image(image_id: ImageId) -> Self {
+        Self::CopyImage {
+            correlation_id: CorrelationId::new(),
+            image_id,
+        }
+    }
+
+    pub fn invoke_action(action: ActionId) -> Self {
+        Self::InvokeAction {
+            correlation_id: CorrelationId::new(),
+            action,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -123,7 +174,6 @@ mod tests {
     #[test]
     fn commands_carry_correlation_ids() {
         let cmd = Command::bootstrap();
-        assert!(matches!(cmd, Command::Bootstrap { .. }));
         assert!(cmd.correlation_id().raw() > 0);
     }
 

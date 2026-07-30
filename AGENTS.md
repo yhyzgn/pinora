@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/006_capture_and_os_instance.md`
-- 任务：`.context/tasks/006_capture_os_instance.md`
+- 计划：`.context/plans/007_export_and_actions.md`
+- 任务：`.context/tasks/007_export_hotkey_actions.md`
 
 ## 交付要求
 

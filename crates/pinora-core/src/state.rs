@@ -35,6 +35,10 @@ pub struct AppState {
     pub images: Vec<CaptureImage>,
     /// 当前打开的贴图（顺序为创建顺序）。
     pub pins: Vec<Pin>,
+    /// 最近一次成功捕获的图像 ID。
+    pub last_capture_id: Option<ImageId>,
+    /// 最近一次创建的贴图 ID。
+    pub last_pin_id: Option<PinId>,
     /// 贴图数量上限（0 表示不限制）。
     pub max_pins: usize,
 }
@@ -47,6 +51,8 @@ impl AppState {
             activation_count: 0,
             images: Vec::new(),
             pins: Vec::new(),
+            last_capture_id: None,
+            last_pin_id: None,
             max_pins: 32,
         }
     }
@@ -67,11 +73,13 @@ impl AppState {
         self.pins.iter_mut().find(|p| p.id == id)
     }
 
-    /// 登记截图；若 ID 已存在则跳过。
+    /// 登记截图；若 ID 已存在则跳过；更新 last_capture_id。
     pub fn retain_image(&mut self, image: CaptureImage) {
-        if self.image(image.id).is_none() {
+        let id = image.id;
+        if self.image(id).is_none() {
             self.images.push(image);
         }
+        self.last_capture_id = Some(id);
     }
 
     /// 从截图创建贴图并加入状态；同时保留图像。
@@ -90,6 +98,7 @@ impl AppState {
         let id = pin.id;
         self.retain_image(image);
         self.pins.push(pin);
+        self.last_pin_id = Some(id);
         Ok(id)
     }
 
@@ -114,6 +123,7 @@ impl AppState {
         let pin = Pin::from_capture(&image, position);
         let id = pin.id;
         self.pins.push(pin);
+        self.last_pin_id = Some(id);
         Ok(id)
     }
 

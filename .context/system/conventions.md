@@ -5,7 +5,8 @@
 - Cargo workspace：唯一二进制入口为根 `src/main.rs`（package `pinora`）；领域在 `pinora-core`，编排库在 `pinora-app`；后续 crate 按设计文档 `crates/pinora-*` 拆分。
 - 依赖方向：`src/main.rs` → `pinora-app` → 下层；`pinora-core` 不得依赖 app、UI 或平台适配器。
 - 命令表示意图、事件表示已发生事实；事件须带 `event_id`、`correlation_id`、`occurred_at_ms`；日志不得写入截图像素、OCR 全文或凭据。
-- 平台能力通过 trait 注入：`CaptureProvider`、`SingleInstance`、`CapabilityProbe`；测试用 `FakeCaptureProvider` / `InMemorySingleInstance`；生产入口用 `OsSingleInstance` + fake 捕获直至真实后端就绪。
+- 平台能力通过 trait 注入：`CaptureProvider`、`ImageSink`、`SingleInstance`、`CapabilityProbe`、`HotkeySource`；测试用 fake/内存实现；入口用 `OsSingleInstance` + `LocalImageSink` + fake 捕获直至真实后端就绪。
+- 高层用户意图优先映射为 `ActionId`，再展开为 `Command`（`InvokeAction`）。
 - 修改公共模块、类型或函数前，使用 `rg` 搜索全部引用，并运行 `cargo check --workspace` 与相关测试。
 
 ## 验证命令

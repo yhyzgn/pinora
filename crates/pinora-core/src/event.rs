@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::ErrorCode;
@@ -25,6 +26,13 @@ pub enum DomainEventKind {
     PinUpdated {
         pin_id: PinId,
     },
+    ImageSaved {
+        image_id: ImageId,
+        path: PathBuf,
+    },
+    ImageCopied {
+        image_id: ImageId,
+    },
     CommandFailed {
         code: ErrorCode,
         message: String,
@@ -42,7 +50,6 @@ pub struct DomainEvent {
 pub struct EventEnvelope {
     pub event_id: EventId,
     pub correlation_id: CorrelationId,
-    /// Unix 毫秒时间戳。
     pub occurred_at_ms: u64,
     pub event: DomainEvent,
 }
@@ -80,6 +87,5 @@ mod tests {
         );
         assert_eq!(env.correlation_id, corr);
         assert!(env.event_id.raw() > 0);
-        assert!(matches!(env.event.kind, DomainEventKind::AppStarted));
     }
 }

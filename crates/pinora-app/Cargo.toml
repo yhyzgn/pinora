@@ -9,3 +9,4 @@ description = "Pinora application lifecycle, runtime, and dependency assembly"
 [dependencies]
 pinora-core = { workspace = true }
 fs2 = "0.4"
+png = "0.17"
