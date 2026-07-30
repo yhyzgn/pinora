@@ -1,6 +1,30 @@
-[package]
-name = "pinora"
+[workspace]
+resolver = "2"
+members = ["crates/pinora-core", "crates/pinora-app"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+repository = "https://github.com/yhyzgn/pinora"
+
+[workspace.dependencies]
+pinora-core = { path = "crates/pinora-core" }
+pinora-app = { path = "crates/pinora-app" }
+
+[package]
+name = "pinora"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Cross-platform screenshot, annotation, pin and local OCR workbench"
+default-run = "pinora"
+
+[[bin]]
+name = "pinora"
+path = "src/main.rs"
 
 [dependencies]
+pinora-app = { workspace = true }
+pinora-core = { workspace = true }

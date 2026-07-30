@@ -5,3 +5,18 @@ version = 4
 [[package]]
 name = "pinora"
 version = "0.1.0"
+dependencies = [
+ "pinora-app",
+ "pinora-core",
+]
+
+[[package]]
+name = "pinora-app"
+version = "0.1.0"
+dependencies = [
+ "pinora-core",
+]
+
+[[package]]
+name = "pinora-core"
+version = "0.1.0"

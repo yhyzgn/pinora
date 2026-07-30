@@ -57,14 +57,16 @@
 
 用户审查前不提交、不推送。获得授权后，提交信息必须记录变更原因、影响范围、验证结果和已知风险；推送前重新执行约定的验证门禁。
 
+本仓库 Git 身份固定为 `Neo <yhyzgn@gmail.com>`（`git config --local`），提交与历史改写一律使用该身份，不得改用其他账号，也不得再次向用户确认。
+
 ## 遗留迁移覆盖
 
 存在 `.context/migration-state.json` 时，必须运行 `audit-migration`。覆盖率未达到 100%、来源标记或哈希不匹配、分类目标错误时，禁止归档、删除旧入口、提交或推送。
 
 ## 当前工作指针
 
-- 计划：`.context/plans/002_design_document.md`
-- 任务：`.context/tasks/002_design_document.md`
+- 计划：`.context/plans/003_phase0_runtime_skeleton.md`
+- 任务：`.context/tasks/003_app_runtime_core.md`
 
 ## 交付要求
 

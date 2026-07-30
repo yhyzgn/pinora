@@ -2,17 +2,30 @@
 
 ## 当前工程约定
 
-- 这是 Rust 2024 单 crate 二进制；入口保持在 `src/main.rs`，新增能力应按职责拆分模块，避免继续堆积入口逻辑。
-- 当前没有既有分层、错误类型或异步约定；引入框架或依赖前，先在计划中记录版本、平台边界和替代方案。
-- 修改公共模块、类型或函数前，使用 `rg` 搜索全部引用，并运行 `cargo check` 与相关测试。
+- Cargo workspace：唯一二进制入口为根 `src/main.rs`（package `pinora`）；领域在 `pinora-core`，编排库在 `pinora-app`；后续 crate 按设计文档 `crates/pinora-*` 拆分。
+- 依赖方向：`src/main.rs` → `pinora-app` → 下层；`pinora-core` 不得依赖 app、UI 或平台适配器。
+- 命令表示意图、事件表示已发生事实；事件须带 `event_id`、`correlation_id`、`occurred_at_ms`；日志不得写入截图像素、OCR 全文或凭据。
+- 平台能力通过 trait 注入；测试使用 `InMemorySingleInstance` / `FakeCapabilityProbe`。
+- 修改公共模块、类型或函数前，使用 `rg` 搜索全部引用，并运行 `cargo check --workspace` 与相关测试。
 
 ## 验证命令
 
 - 工程元数据：`cargo metadata --no-deps --format-version 1`
-- 编译：`cargo check`
-- 测试：`cargo test`
-- 运行探针：`cargo run`（当前应输出 `Hello, world!`）
-- 上下文完整性：`python /home/neo/.claude/skills/ctx/scripts/context_bootstrap.py validate --root /home/neo/Projects/neo/pub/pinora`
+- 编译：`cargo check --workspace`
+- 测试：`cargo test --workspace`
+- 运行探针：`cargo run`
+- 上下文完整性：`python /home/neo/.agents/skills/ctx/scripts/context_bootstrap.py validate --root /home/neo/Projects/neo/pub/pinora`
+
+## Git 身份（固定，勿再询问）
+
+本仓库本地固定使用以下提交身份，代理在提交/改写历史时直接使用，不得改用其他账号，也不得再次向用户确认：
+
+```text
+user.name  = Neo
+user.email = yhyzgn@gmail.com
+```
+
+配置位置：仓库 `.git/config`（`git config --local`）。若缺失，提交前自动写回上述值。
 
 ## 文档与变更规则
 

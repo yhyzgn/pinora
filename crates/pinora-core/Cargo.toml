@@ -1,0 +1,9 @@
+[package]
+name = "pinora-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pinora domain models, commands, events, and error codes"
+
+[dependencies]

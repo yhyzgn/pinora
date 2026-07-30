@@ -2,24 +2,32 @@
 
 ## 技术与运行基线
 
-- 语言为 Rust，crate 使用 Edition 2024；版本为 `0.1.0`，见 `Cargo.toml`。
-- 扫描环境为 `rustc 1.95.0 (59807616e 2026-04-14)`、`cargo 1.95.0 (f2d3ce0bd 2026-03-21)`，由版本命令输出确认。
-- 当前 crate 是无依赖的单二进制目标 `pinora`；`cargo metadata --no-deps --format-version 1` 显示唯一目标入口为 `src/main.rs`。
+- 语言为 Rust，workspace 使用 Edition 2024；版本为 `0.1.0`，见根 `Cargo.toml`。
+- 扫描环境为 `rustc 1.95.0`、`cargo 1.95.0`（历史初始化记录）；以当前 `cargo --version` 为准。
+- Cargo workspace：根 package `pinora` + 成员 `crates/pinora-core`、`crates/pinora-app`。
+- 二进制目标名 `pinora`，入口固定为仓库根 `src/main.rs`；`default-run = "pinora"`。
+- 当前无第三方 crates 依赖（仅 path 工作区内依赖）。
 
-## 当前实现边界
+## 模块边界（已实现）
 
-- `src/main.rs` 目前只执行 `println!("Hello, world!")`，尚未实现截图、贴图、标注、OCR、热键、托盘或配置功能。
-- `docs/Pinora-开发设计文档.md` 是产品与目标架构设计基线（仍需按阶段评审）；其中 GPUI、Liora、xcap、ashpd 等均为设计选型建议，不代表已安装依赖或已实现能力。
-- 目录结构目前只有 `src/`、`docs/` 和 Cargo 工程文件；没有数据库、缓存、消息队列或第三方服务配置。
+- 根 `src/main.rs`：唯一进程入口，只做 bootstrap/shutdown 编排。
+- `pinora-core`：纯领域 `Command`、`DomainEvent`/`EventEnvelope`、`ErrorCode`/`PinoraError`、`AppPhase`/`AppState`、`CapabilitySnapshot`；不依赖 UI/平台 SDK。
+- `pinora-app`：库 crate — `AppRuntime` 命令分发、`SingleInstance` trait + `InMemorySingleInstance`、`CapabilityProbe` + `FakeCapabilityProbe`。
+- 设计文档中的 GPUI/Liora、截图、贴图、OCR、热键、托盘等仍为**目标设计，尚未实现**。
+
+## 当前运行行为
+
+- `cargo run`：主实例 bootstrap → 打印 fake 能力说明 → shutdown；无 GUI 事件循环。
+- 单实例为**进程内内存协议**，非 OS 级文件锁；跨进程二次启动转发尚未实现。
 
 ## 构建、测试与运行
 
-- 依赖解析与工程元数据：`cargo metadata --no-deps --format-version 1`，已成功。
-- 编译检查：`cargo check`，已成功。
-- 测试：`cargo test`，已成功但报告 `0 tests`；目前没有业务测试覆盖。
-- 本地运行入口为 `cargo run`，预期输出来自 `src/main.rs` 的 `Hello, world!`；尚未执行长驻桌面运行探针。
+- 依赖/元数据：`cargo metadata --no-deps --format-version 1`
+- 编译：`cargo check --workspace`
+- 测试：`cargo test --workspace`（当前 14 个单元测试：core 5 + app 9）
+- 运行：`cargo run`
 
 ## 外部基础设施与未知项
 
-- 当前实现不访问外部基础设施；后续引入截图权限、OCR 模型、剪贴板或平台 Portal 时，必须在对应任务中明确授权和隔离验证方式。
-- 尚未确认 GPUI/Liora 的具体版本、平台支持矩阵、发布打包流程和性能基线；这些属于待评审设计，不应在代码变更前视为既定事实。
+- 当前实现不访问外部基础设施。
+- 未锁定 GPUI/Liora 版本（D-001）；真实平台单实例锁、Portal、热键后端待后续任务。

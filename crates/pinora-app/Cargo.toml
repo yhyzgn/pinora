@@ -1,0 +1,10 @@
+[package]
+name = "pinora-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pinora application lifecycle, runtime, and dependency assembly"
+
+[dependencies]
+pinora-core = { workspace = true }

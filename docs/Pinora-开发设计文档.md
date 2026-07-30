@@ -238,7 +238,7 @@ flowchart TB
 
 ```mermaid
 graph LR
-    Main[main.rs / pinora-app] --> Runtime[AppRuntime]
+    Main["src/main.rs"] --> Runtime[AppRuntime]
     Runtime --> Dispatcher[CommandDispatcher]
     Runtime --> EventLoop[GPUI Event Loop]
     Runtime --> Shutdown[GracefulShutdown]
@@ -916,22 +916,26 @@ cargo test
 
 ## 10. 推荐仓库结构与依赖方向
 
+进程入口固定为仓库根目录 `src/main.rs`（二进制 crate `pinora`）。业务库放在 `crates/` 下；`pinora-app` 只做生命周期与依赖组装库，不再单独提供 binary。
+
 ```text
 pinora/
-├── Cargo.toml
+├── Cargo.toml                 # workspace + 根二进制 package `pinora`
+├── src/
+│   └── main.rs                # 唯一进程入口
 ├── crates/
-│   ├── pinora-app/          # 进程入口、生命周期、依赖组装
-│   ├── pinora-core/         # 纯领域模型、命令、事件、错误码
-│   ├── pinora-capture/      # 显示器、Overlay、截图工作流
-│   ├── pinora-annotate/     # 标注数据、命中测试、撤销重做
-│   ├── pinora-pin/          # 贴图实体与窗口生命周期
-│   ├── pinora-ocr/          # OCR 引擎适配、文字层、选择器
-│   ├── pinora-hotkey/       # 热键抽象和平台后端
-│   ├── pinora-export/       # 剪贴板、编码、命名、文件导出
-│   ├── pinora-history/      # 历史索引、清理、复用
-│   ├── pinora-platform/     # 窗口、权限、启动项、能力探测
-│   ├── pinora-diagnostics/  # 日志、错误映射、诊断包
-│   └── pinora-ui/           # GPUI + Liora 视图和交互
+│   ├── pinora-app/            # 生命周期、AppRuntime、依赖组装（库）
+│   ├── pinora-core/           # 纯领域模型、命令、事件、错误码
+│   ├── pinora-capture/        # 显示器、Overlay、截图工作流
+│   ├── pinora-annotate/       # 标注数据、命中测试、撤销重做
+│   ├── pinora-pin/            # 贴图实体与窗口生命周期
+│   ├── pinora-ocr/            # OCR 引擎适配、文字层、选择器
+│   ├── pinora-hotkey/         # 热键抽象和平台后端
+│   ├── pinora-export/         # 剪贴板、编码、命名、文件导出
+│   ├── pinora-history/        # 历史索引、清理、复用
+│   ├── pinora-platform/       # 窗口、权限、启动项、能力探测
+│   ├── pinora-diagnostics/    # 日志、错误映射、诊断包
+│   └── pinora-ui/             # GPUI + Liora 视图和交互
 ├── assets/
 └── docs/
     └── Pinora-开发设计文档.md
@@ -939,7 +943,8 @@ pinora/
 
 ```mermaid
 graph TD
-    App[pinora-app] --> UI[pinora-ui]
+    Main["src/main.rs (pinora bin)"] --> App[pinora-app]
+    App --> UI[pinora-ui]
     App --> Core[pinora-core]
     UI --> Core
     UI --> Capture[pinora-capture]
@@ -961,7 +966,7 @@ graph TD
     App --> Diagnostics
 ```
 
-依赖方向只能由上层指向下层或能力接口；`pinora-core` 不得反向依赖 UI、平台适配器或具体第三方实现。
+依赖方向只能由上层指向下层或能力接口；`pinora-core` 不得反向依赖 UI、平台适配器或具体第三方实现。根 `src/main.rs` 只负责启动编排，业务逻辑放在 `crates/` 中。
 
 ---
 
