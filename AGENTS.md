@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/003_phase0_runtime_skeleton.md`
-- 任务：`.context/tasks/003_app_runtime_core.md`
+- 计划：`.context/plans/004_domain_models.md`
+- 任务：`.context/tasks/004_core_domain_models.md`
 
 ## 交付要求
 

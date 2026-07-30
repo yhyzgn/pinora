@@ -5,11 +5,17 @@
 mod command;
 mod error;
 mod event;
+mod geometry;
 mod ids;
+mod image;
+mod pin;
 mod state;
 
 pub use command::Command;
 pub use error::{ErrorCode, PinoraError};
 pub use event::{DomainEvent, DomainEventKind, EventEnvelope};
-pub use ids::{CorrelationId, EventId};
+pub use geometry::{PixelPoint, PixelRect, PixelSize};
+pub use ids::{CorrelationId, EventId, ImageId, PinId};
+pub use image::{CaptureImage, CaptureMetadata, DisplayId, RgbaBuffer};
+pub use pin::{Pin, PinMode, PinTransform};
 pub use state::{AppPhase, AppState, CapabilitySnapshot};

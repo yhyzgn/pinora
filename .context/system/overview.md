@@ -11,9 +11,9 @@
 ## 模块边界（已实现）
 
 - 根 `src/main.rs`：唯一进程入口，只做 bootstrap/shutdown 编排。
-- `pinora-core`：纯领域 `Command`、`DomainEvent`/`EventEnvelope`、`ErrorCode`/`PinoraError`、`AppPhase`/`AppState`、`CapabilitySnapshot`；不依赖 UI/平台 SDK。
+- `pinora-core`：纯领域 `Command`、`DomainEvent`/`EventEnvelope`、`ErrorCode`/`PinoraError`、`AppPhase`/`AppState`、`CapabilitySnapshot`、几何（`PixelPoint`/`PixelRect`/`PixelSize`）、`CaptureImage`/`RgbaBuffer`、`Pin`/`PinTransform`；不依赖 UI/平台 SDK。
 - `pinora-app`：库 crate — `AppRuntime` 命令分发、`SingleInstance` trait + `InMemorySingleInstance`、`CapabilityProbe` + `FakeCapabilityProbe`。
-- 设计文档中的 GPUI/Liora、截图、贴图、OCR、热键、托盘等仍为**目标设计，尚未实现**。
+- 设计文档中的 GPUI/Liora、真实截图、窗口贴图、OCR、热键、托盘等仍为**目标设计，尚未实现**。
 
 ## 当前运行行为
 
@@ -24,7 +24,7 @@
 
 - 依赖/元数据：`cargo metadata --no-deps --format-version 1`
 - 编译：`cargo check --workspace`
-- 测试：`cargo test --workspace`（当前 14 个单元测试：core 5 + app 9）
+- 测试：`cargo test --workspace`（当前 26 个单元测试：core 17 + app 9）
 - 运行：`cargo run`
 
 ## 外部基础设施与未知项
