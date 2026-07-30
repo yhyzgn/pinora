@@ -6,6 +6,7 @@ mod capture_xcap;
 mod hotkey;
 mod image_sink;
 mod os_instance;
+mod desktop_shell;
 mod pin_window;
 mod platform;
 mod region_overlay;
@@ -18,6 +19,7 @@ pub use capture_select::{
     fake_only, CaptureBackendKind, SelectedCaptureProvider,
 };
 pub use capture_xcap::XcapCaptureProvider;
+pub use desktop_shell::run_desktop_shell;
 pub use hotkey::{FakeHotkeySource, HotkeySource};
 pub use image_sink::LocalImageSink;
 pub use os_instance::OsSingleInstance;

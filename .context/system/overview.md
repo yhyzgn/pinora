@@ -18,10 +18,13 @@
 
 ## 主流程
 
+统一 `desktop_shell` 事件循环（选区 + 贴图同一 loop，适配 Wayland）：
+
 ```text
-启动 → 选区 Overlay → 裁剪 → 贴图窗口
-  ├─ Esc 关闭贴图
-  ├─ Ctrl+N / F2 再截（保留未关闭贴图状态并重建）
+启动 → 选区 Overlay → 裁剪 → 贴图窗口（置顶）
+  ├─ 左键拖动（Wayland: drag_window 协议）
+  ├─ 滚轮缩放 · Esc 关闭贴图
+  ├─ F2 / Ctrl+N 再截
   └─ Ctrl+Q 退出
 ```
 

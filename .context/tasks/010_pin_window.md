@@ -44,7 +44,7 @@
 
 ## 完成记录
 
-- 状态：已完成（2026-07-30）。
-- 实际变更：`pin_window` 多贴图会话；main 选区后展示贴图；ClosePin 同步；Ctrl+N/F2/Ctrl+Q。
+- 状态：已完成（2026-07-30，含修复）。
+- 实际变更：统一 `desktop_shell`（单 EventLoop）；贴图用 `drag_window`；焦点/可见性；F2·Ctrl+N·Ctrl+Q。
 - 实际验证：`cargo test --workspace` 通过。
-- 未解决项：锁定、透明度滑块、全局热键唤起再截。
+- 未解决项：锁定、透明度、全局热键（窗口失焦时快捷键需再点贴图获得焦点）。
