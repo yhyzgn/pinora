@@ -11,3 +11,5 @@ pinora-core = { workspace = true }
 fs2 = "0.4"
 png = "0.17"
 xcap = "0.9.7"
+winit = "0.30"
+softbuffer = "0.4"

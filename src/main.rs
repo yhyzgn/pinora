@@ -5,8 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use pinora_app::{
-    AppRuntime, BootstrapOutcome, CaptureBackendKind, FakeHotkeySource, HotkeySource,
-    LocalImageSink, OsSingleInstance, RuntimeCapabilityProbe, SelectedCaptureProvider,
+    capture_region_interactive, AppRuntime, BootstrapOutcome, CaptureBackendKind,
+    FakeHotkeySource, HotkeySource, LocalImageSink, OsSingleInstance, RuntimeCapabilityProbe,
+    SelectedCaptureProvider,
 };
 use pinora_core::{
     ActionId, AppPhase, CaptureProvider, Command, DomainEventKind, KeyBinding, PixelPoint,
@@ -31,13 +32,12 @@ fn main() {
             .unwrap_or_default()
     );
 
-    let (capture_rect, pin_pos) = default_geometry(&capture, backend);
     let export_dir = lock.dir().join("export");
     let probe = RuntimeCapabilityProbe::new(backend, note);
-
+    // default_capture_rect 仅作无显示环境回退；正常路径走 Overlay。
     let mut runtime = AppRuntime::new(lock, probe, capture, LocalImageSink::new()).with_defaults(
-        capture_rect,
-        pin_pos,
+        PixelRect::new(100, 80, 320, 180),
+        PixelPoint::new(120, 80),
         export_dir,
     );
 
@@ -51,7 +51,7 @@ fn main() {
     let _ = hotkeys.register(KeyBinding::new(ActionId::Quit, "Ctrl+Q"));
 
     match runtime.bootstrap() {
-        Ok(BootstrapOutcome::Primary) => run_primary(&mut runtime, &mut hotkeys),
+        Ok(BootstrapOutcome::Primary) => run_primary(&mut runtime, &mut hotkeys, backend),
         Ok(BootstrapOutcome::SecondaryForwarded) => {
             println!("pinora: another instance is running; forwarded Activate and exiting");
         }
@@ -62,27 +62,6 @@ fn main() {
     }
 }
 
-fn default_geometry(
-    capture: &SelectedCaptureProvider,
-    backend: CaptureBackendKind,
-) -> (PixelRect, PixelPoint) {
-    if backend == CaptureBackendKind::Xcap {
-        if let Ok(displays) = capture.displays() {
-            if let Some(d0) = displays.first() {
-                let w = 320.min(d0.bounds.size.width.max(1));
-                let h = 180.min(d0.bounds.size.height.max(1));
-                let rect = PixelRect::new(d0.bounds.origin.x, d0.bounds.origin.y, w, h);
-                let pos = PixelPoint::new(d0.bounds.origin.x + 40, d0.bounds.origin.y + 40);
-                return (rect, pos);
-            }
-        }
-    }
-    (
-        PixelRect::new(100, 80, 320, 180),
-        PixelPoint::new(120, 80),
-    )
-}
-
 fn run_primary(
     runtime: &mut AppRuntime<
         OsSingleInstance,
@@ -91,6 +70,7 @@ fn run_primary(
         LocalImageSink,
     >,
     hotkeys: &mut FakeHotkeySource,
+    backend: CaptureBackendKind,
 ) {
     println!(
         "pinora: primary instance started (phase={:?})",
@@ -106,13 +86,18 @@ fn run_primary(
         );
     }
 
-    if let Err(err) = seed_demo_workflow(runtime) {
-        eprintln!("pinora: demo workflow failed: {err}");
-        let _ = runtime.dispatch(Command::shutdown());
-        std::process::exit(1);
+    println!("pinora: starting region selection overlay …");
+    if let Err(err) = run_capture_region_action(runtime) {
+        eprintln!("pinora: region capture failed: {err}");
+        // 无图形环境时回退固定区域，避免完全不可用
+        if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none()
+        {
+            eprintln!("pinora: no display; falling back to fixed rect demo");
+            let _ = fallback_fixed_capture(runtime, backend);
+        }
     }
 
-    println!("pinora: GUI/global hotkeys not wired; process stays alive");
+    println!("pinora: GUI pin window not wired; process stays alive");
     println!("pinora: running — Ctrl+C to quit; second cargo run Activates this instance");
 
     let running = Arc::new(AtomicBool::new(true));
@@ -135,9 +120,19 @@ fn run_primary(
             }
         }
         for action in hotkeys.poll_actions() {
-            match runtime.dispatch(Command::invoke_action(action)) {
-                Ok(_) => println!("pinora: action {action} applied"),
-                Err(err) => eprintln!("pinora: action {action} failed: {err}"),
+            match action {
+                ActionId::CaptureRegionAndPin => {
+                    if let Err(err) = run_capture_region_action(runtime) {
+                        eprintln!("pinora: action capture failed: {err}");
+                    }
+                }
+                ActionId::Quit => {
+                    running.store(false, Ordering::SeqCst);
+                }
+                other => match runtime.dispatch(Command::invoke_action(other)) {
+                    Ok(_) => println!("pinora: action {other} applied"),
+                    Err(err) => eprintln!("pinora: action {other} failed: {err}"),
+                },
             }
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -162,7 +157,7 @@ fn run_primary(
     }
 }
 
-fn seed_demo_workflow(
+fn run_capture_region_action(
     runtime: &mut AppRuntime<
         OsSingleInstance,
         RuntimeCapabilityProbe,
@@ -170,40 +165,76 @@ fn seed_demo_workflow(
         LocalImageSink,
     >,
 ) -> Result<(), pinora_core::PinoraError> {
-    let result = runtime.dispatch(Command::invoke_action(ActionId::CaptureRegionAndPin))?;
-    for event in &result.events {
-        match &event.event.kind {
-            DomainEventKind::CaptureCompleted { image_id, size } => {
-                println!(
-                    "pinora: captured {image_id} ({}x{})",
-                    size.width, size.height
-                );
-            }
-            DomainEventKind::PinCreated { pin_id, image_id } => {
-                println!(
-                    "pinora: pin {pin_id} from {image_id} (pins={})",
-                    runtime.state().pin_count()
-                );
-            }
-            _ => {}
-        }
-    }
+    let Some(result) = capture_region_interactive(runtime.capture_provider())? else {
+        return Ok(());
+    };
 
-    let save = runtime.dispatch(Command::invoke_action(ActionId::SaveLastCapture))?;
-    for event in &save.events {
-        if let DomainEventKind::ImageSaved { image_id, path } = &event.event.kind {
-            println!("pinora: saved {image_id} -> {}", path.display());
-        }
-    }
-
-    let copy = runtime.dispatch(Command::invoke_action(ActionId::CopyLastCapture))?;
-    for event in &copy.events {
-        if let DomainEventKind::ImageCopied { image_id } = event.event.kind {
+    let size = result.image.size();
+    let pin = runtime.dispatch(Command::create_pin(result.image, result.pin_position))?;
+    for event in &pin.events {
+        if let DomainEventKind::PinCreated { pin_id, image_id } = event.event.kind {
             println!(
-                "pinora: copied {image_id} to memory clipboard ({} bytes)",
-                runtime.sink().clipboard_byte_len().unwrap_or(0)
+                "pinora: pin {pin_id} from {image_id} ({}x{}, pins={})",
+                size.width,
+                size.height,
+                runtime.state().pin_count()
             );
         }
     }
+
+    if let Ok(save) = runtime.dispatch(Command::invoke_action(ActionId::SaveLastCapture)) {
+        for event in &save.events {
+            if let DomainEventKind::ImageSaved { image_id, path } = &event.event.kind {
+                println!("pinora: saved {image_id} -> {}", path.display());
+            }
+        }
+    }
+    if let Ok(copy) = runtime.dispatch(Command::invoke_action(ActionId::CopyLastCapture)) {
+        for event in &copy.events {
+            if let DomainEventKind::ImageCopied { image_id } = event.event.kind {
+                println!(
+                    "pinora: copied {image_id} to memory clipboard ({} bytes)",
+                    runtime.sink().clipboard_byte_len().unwrap_or(0)
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn fallback_fixed_capture(
+    runtime: &mut AppRuntime<
+        OsSingleInstance,
+        RuntimeCapabilityProbe,
+        SelectedCaptureProvider,
+        LocalImageSink,
+    >,
+    backend: CaptureBackendKind,
+) -> Result<(), pinora_core::PinoraError> {
+    let _ = backend;
+    let display = runtime
+        .capture_provider()
+        .displays()?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            pinora_core::PinoraError::new(
+                pinora_core::ErrorCode::NotFound,
+                "no display for fallback",
+            )
+        })?;
+    let rect = PixelRect::new(
+        display.bounds.origin.x,
+        display.bounds.origin.y,
+        320.min(display.bounds.size.width.max(1)),
+        180.min(display.bounds.size.height.max(1)),
+    );
+    runtime.dispatch(Command::capture_and_pin(
+        pinora_core::CaptureRequest::Region {
+            display: display.id,
+            rect,
+        },
+        PixelPoint::new(rect.origin.x + 24, rect.origin.y + 24),
+    ))?;
     Ok(())
 }

@@ -12,6 +12,7 @@ mod geometry;
 mod ids;
 mod image;
 mod pin;
+mod selection;
 mod state;
 
 pub use action::{ActionId, KeyBinding};
@@ -24,4 +25,8 @@ pub use geometry::{PixelPoint, PixelRect, PixelSize};
 pub use ids::{CorrelationId, EventId, ImageId, PinId};
 pub use image::{CaptureImage, CaptureMetadata, DisplayId, RgbaBuffer};
 pub use pin::{Pin, PinMode, PinTransform};
+pub use selection::{
+    clamp_to_image, normalize_rect, validate_min_size, SelectionOutcome, SelectionSession,
+    MIN_SELECTION_EDGE,
+};
 pub use state::{AppPhase, AppState, CapabilitySnapshot};

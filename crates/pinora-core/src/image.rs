@@ -1,7 +1,9 @@
 //! 截图与像素缓冲的领域表示。
 
+use crate::error::{ErrorCode, PinoraError};
 use crate::geometry::{PixelRect, PixelSize};
 use crate::ids::ImageId;
+use crate::selection::clamp_to_image;
 
 /// 显示器标识（平台无关字符串/序号占位）。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -102,6 +104,39 @@ impl CaptureImage {
     pub fn size(&self) -> PixelSize {
         self.pixels.size
     }
+
+    /// 按图像本地坐标裁剪（原点为缓冲左上角）。
+    pub fn crop_local(&self, local_rect: PixelRect) -> Result<CaptureImage, PinoraError> {
+        let rect = clamp_to_image(local_rect, self.pixels.size).ok_or_else(|| {
+            PinoraError::new(ErrorCode::CommandRejected, "crop rect outside image")
+        })?;
+        if rect.size.is_empty() {
+            return Err(PinoraError::new(
+                ErrorCode::CommandRejected,
+                "crop rect is empty",
+            ));
+        }
+
+        let mut bytes = Vec::with_capacity((rect.size.area() * 4) as usize);
+        let src_w = self.pixels.size.width as usize;
+        for row in 0..rect.size.height as usize {
+            let src_y = rect.origin.y as usize + row;
+            let start = (src_y * src_w + rect.origin.x as usize) * 4;
+            let end = start + rect.size.width as usize * 4;
+            bytes.extend_from_slice(&self.pixels.bytes[start..end]);
+        }
+        let pixels = RgbaBuffer::new(rect.size, bytes)
+            .map_err(|m| PinoraError::new(ErrorCode::Internal, m))?;
+
+        let global = PixelRect::new(
+            self.source_rect.origin.x + rect.origin.x,
+            self.source_rect.origin.y + rect.origin.y,
+            rect.size.width,
+            rect.size.height,
+        );
+        CaptureImage::new(ImageId::new(), pixels, global, self.metadata.clone())
+            .map_err(|m| PinoraError::new(ErrorCode::Internal, m))
+    }
 }
 
 #[cfg(test)]
@@ -133,5 +168,28 @@ mod tests {
     fn solid_buffer_has_expected_len() {
         let buf = RgbaBuffer::solid(PixelSize::new(3, 2), [1, 2, 3, 4]);
         assert_eq!(buf.byte_len(), 3 * 2 * 4);
+    }
+
+    #[test]
+    fn crop_local_extracts_sub_rect() {
+        // 2x2 像素，各不相同
+        let mut bytes = Vec::new();
+        for v in [1u8, 2, 3, 4] {
+            bytes.extend_from_slice(&[v, 0, 0, 255]);
+        }
+        let pixels = RgbaBuffer::new(PixelSize::new(2, 2), bytes).unwrap();
+        let image = CaptureImage::new(
+            ImageId::new(),
+            pixels,
+            PixelRect::new(100, 200, 2, 2),
+            CaptureMetadata::new(DisplayId::new("d0"), 1.0, 0),
+        )
+        .unwrap();
+        let cropped = image
+            .crop_local(PixelRect::new(1, 0, 1, 1))
+            .unwrap();
+        assert_eq!(cropped.size(), PixelSize::new(1, 1));
+        assert_eq!(cropped.pixels.bytes[0], 2);
+        assert_eq!(cropped.source_rect, PixelRect::new(101, 200, 1, 1));
     }
 }

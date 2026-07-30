@@ -7,6 +7,8 @@ mod hotkey;
 mod image_sink;
 mod os_instance;
 mod platform;
+mod region_overlay;
+mod region_workflow;
 mod runtime;
 mod single_instance;
 
@@ -19,6 +21,8 @@ pub use hotkey::{FakeHotkeySource, HotkeySource};
 pub use image_sink::LocalImageSink;
 pub use os_instance::OsSingleInstance;
 pub use platform::{CapabilityProbe, FakeCapabilityProbe, RuntimeCapabilityProbe};
+pub use region_overlay::run_region_selection;
+pub use region_workflow::{capture_region_interactive, RegionCaptureResult};
 pub use runtime::{AppRuntime, BootstrapOutcome, DispatchResult};
 pub use single_instance::{
     InMemorySingleInstance, InstanceAcquisition, SingleInstance, SingleInstanceError,

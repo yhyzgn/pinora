@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/008_real_capture.md`
-- 任务：`.context/tasks/008_xcap_capture_provider.md`
+- 计划：`.context/plans/009_region_selection.md`
+- 任务：`.context/tasks/009_region_overlay.md`
 
 ## 交付要求
 
