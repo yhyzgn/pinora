@@ -29,42 +29,22 @@ pub enum SelectedCaptureProvider {
 }
 
 impl SelectedCaptureProvider {
-    /// 探测 xcap；可用则选用，否则 fake。
+    /// 探测 xcap（仅枚举显示器，不做试截图，避免启动多等数秒）。
     pub fn autodetect() -> (Self, CaptureBackendKind, Option<String>) {
         match XcapCaptureProvider::probe_available() {
             Ok(displays) if !displays.is_empty() => {
-                // 再做一次极小区域捕获探测；Wayland 上枚举成功也可能截图失败。
-                let provider = XcapCaptureProvider::new();
                 let d0 = &displays[0];
-                let probe_rect = pinora_core::PixelRect::new(
-                    d0.bounds.origin.x,
-                    d0.bounds.origin.y,
-                    16.min(d0.bounds.size.width.max(1)),
-                    16.min(d0.bounds.size.height.max(1)),
-                );
-                match provider.capture(CaptureRequest::Region {
-                    display: d0.id.clone(),
-                    rect: probe_rect,
-                }) {
-                    Ok(_) => (
-                        Self::Xcap(provider),
-                        CaptureBackendKind::Xcap,
-                        Some(format!(
-                            "xcap ok ({} monitor(s), primary={} {}x{})",
-                            displays.len(),
-                            d0.name,
-                            d0.bounds.size.width,
-                            d0.bounds.size.height
-                        )),
-                    ),
-                    Err(err) => (
-                        Self::Fake(FakeCaptureProvider::new()),
-                        CaptureBackendKind::Fake,
-                        Some(format!(
-                            "xcap enumerate ok but capture failed ({err}); using fake"
-                        )),
-                    ),
-                }
+                (
+                    Self::Xcap(XcapCaptureProvider::new()),
+                    CaptureBackendKind::Xcap,
+                    Some(format!(
+                        "xcap monitors={} primary={} {}x{} (capture on confirm)",
+                        displays.len(),
+                        d0.name,
+                        d0.bounds.size.width,
+                        d0.bounds.size.height
+                    )),
+                )
             }
             Ok(_) => (
                 Self::Fake(FakeCaptureProvider::new()),
