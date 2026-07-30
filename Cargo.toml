@@ -26,5 +26,6 @@ name = "pinora"
 path = "src/main.rs"
 
 [dependencies]
+ctrlc = "3.4"
 pinora-app = { workspace = true }
 pinora-core = { workspace = true }

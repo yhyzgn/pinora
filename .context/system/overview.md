@@ -17,7 +17,7 @@
 
 ## 当前运行行为
 
-- `cargo run`：主实例 bootstrap → 打印 fake 能力说明 → shutdown；无 GUI 事件循环。
+- `cargo run`：主实例 bootstrap 后**保持运行**，打印能力说明；Ctrl+C 后优雅 shutdown。尚无 GUI/托盘窗口（依赖 `ctrlc` 等待中断）。
 - 单实例为**进程内内存协议**，非 OS 级文件锁；跨进程二次启动转发尚未实现。
 
 ## 构建、测试与运行
