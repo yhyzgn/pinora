@@ -93,6 +93,30 @@ impl AppState {
         Ok(id)
     }
 
+    /// 从已登记图像创建贴图。
+    pub fn create_pin_from_image(
+        &mut self,
+        image_id: ImageId,
+        position: PixelPoint,
+    ) -> Result<PinId, PinoraError> {
+        if self.max_pins > 0 && self.pins.len() >= self.max_pins {
+            return Err(PinoraError::new(
+                ErrorCode::CommandRejected,
+                format!("pin limit reached ({})", self.max_pins),
+            ));
+        }
+        let image = self.image(image_id).cloned().ok_or_else(|| {
+            PinoraError::new(
+                ErrorCode::NotFound,
+                format!("image not found: {image_id}"),
+            )
+        })?;
+        let pin = Pin::from_capture(&image, position);
+        let id = pin.id;
+        self.pins.push(pin);
+        Ok(id)
+    }
+
     pub fn close_pin(&mut self, id: PinId) -> Result<(), PinoraError> {
         let before = self.pins.len();
         let image_id = self.pin(id).map(|p| p.image_id);

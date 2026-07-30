@@ -1,5 +1,6 @@
+use crate::capture::CaptureRequest;
 use crate::geometry::PixelPoint;
-use crate::ids::{CorrelationId, PinId};
+use crate::ids::{CorrelationId, ImageId, PinId};
 use crate::image::CaptureImage;
 use crate::pin::PinTransform;
 
@@ -12,10 +13,21 @@ pub enum Command {
     Activate { correlation_id: CorrelationId },
     /// 请求优雅退出。
     Shutdown { correlation_id: CorrelationId },
+    /// 通过 CaptureProvider 捕获图像并登记到状态。
+    Capture {
+        correlation_id: CorrelationId,
+        request: CaptureRequest,
+    },
     /// 从截图创建贴图。
     CreatePin {
         correlation_id: CorrelationId,
         image: CaptureImage,
+        position: PixelPoint,
+    },
+    /// 从已登记图像创建贴图。
+    CreatePinFromImage {
+        correlation_id: CorrelationId,
+        image_id: ImageId,
         position: PixelPoint,
     },
     /// 关闭贴图。
@@ -37,7 +49,9 @@ impl Command {
             Self::Bootstrap { correlation_id }
             | Self::Activate { correlation_id }
             | Self::Shutdown { correlation_id }
+            | Self::Capture { correlation_id, .. }
             | Self::CreatePin { correlation_id, .. }
+            | Self::CreatePinFromImage { correlation_id, .. }
             | Self::ClosePin { correlation_id, .. }
             | Self::SetPinTransform { correlation_id, .. } => *correlation_id,
         }
@@ -61,10 +75,25 @@ impl Command {
         }
     }
 
+    pub fn capture(request: CaptureRequest) -> Self {
+        Self::Capture {
+            correlation_id: CorrelationId::new(),
+            request,
+        }
+    }
+
     pub fn create_pin(image: CaptureImage, position: PixelPoint) -> Self {
         Self::CreatePin {
             correlation_id: CorrelationId::new(),
             image,
+            position,
+        }
+    }
+
+    pub fn create_pin_from_image(image_id: ImageId, position: PixelPoint) -> Self {
+        Self::CreatePinFromImage {
+            correlation_id: CorrelationId::new(),
+            image_id,
             position,
         }
     }
@@ -89,7 +118,6 @@ impl Command {
 mod tests {
     use super::*;
     use crate::geometry::{PixelRect, PixelSize};
-    use crate::ids::ImageId;
     use crate::image::{CaptureMetadata, DisplayId, RgbaBuffer};
 
     #[test]

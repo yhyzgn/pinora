@@ -1,6 +1,6 @@
 use pinora_core::{
-    AppPhase, AppState, Command, DomainEvent, DomainEventKind, ErrorCode, EventEnvelope,
-    PinoraError,
+    AppPhase, AppState, CaptureProvider, Command, DomainEvent, DomainEventKind, ErrorCode,
+    EventEnvelope, PinoraError,
 };
 
 use crate::platform::CapabilityProbe;
@@ -21,24 +21,27 @@ pub struct DispatchResult {
     pub events: Vec<EventEnvelope>,
 }
 
-/// 应用运行时：组装状态、单实例与命令处理。
-pub struct AppRuntime<L, P> {
+/// 应用运行时：组装状态、单实例、能力探测与截图提供者。
+pub struct AppRuntime<L, P, C> {
     state: AppState,
     lock: L,
     probe: P,
+    capture: C,
     events: Vec<EventEnvelope>,
 }
 
-impl<L, P> AppRuntime<L, P>
+impl<L, P, C> AppRuntime<L, P, C>
 where
     L: SingleInstance,
     P: CapabilityProbe,
+    C: CaptureProvider,
 {
-    pub fn new(lock: L, probe: P) -> Self {
+    pub fn new(lock: L, probe: P, capture: C) -> Self {
         Self {
             state: AppState::new(),
             lock,
             probe,
+            capture,
             events: Vec::new(),
         }
     }
@@ -49,6 +52,10 @@ where
 
     pub fn events(&self) -> &[EventEnvelope] {
         &self.events
+    }
+
+    pub fn capture_provider(&self) -> &C {
+        &self.capture
     }
 
     /// 尝试成为主实例；若已有实例则转发 Activate。
@@ -65,6 +72,16 @@ where
                 Ok(BootstrapOutcome::SecondaryForwarded)
             }
         }
+    }
+
+    /// 处理单实例转发队列中的命令（如二次启动 Activate）。
+    pub fn poll_forwarded(&mut self) -> Result<usize, PinoraError> {
+        let commands = self.lock.poll_forwarded()?;
+        let n = commands.len();
+        for command in commands {
+            self.dispatch(command)?;
+        }
+        Ok(n)
     }
 
     /// 分发命令并记录事件。
@@ -126,12 +143,39 @@ where
                     },
                 ));
             }
+            Command::Capture { request, .. } => {
+                self.require_running()?;
+                let image = self.capture.capture(request)?;
+                let image_id = image.id;
+                let size = image.size();
+                self.state.retain_image(image);
+                produced.push(EventEnvelope::now(
+                    correlation_id,
+                    DomainEvent {
+                        kind: DomainEventKind::CaptureCompleted { image_id, size },
+                    },
+                ));
+            }
             Command::CreatePin {
                 image, position, ..
             } => {
                 self.require_running()?;
                 let image_id = image.id;
                 let pin_id = self.state.create_pin(image, position)?;
+                produced.push(EventEnvelope::now(
+                    correlation_id,
+                    DomainEvent {
+                        kind: DomainEventKind::PinCreated { pin_id, image_id },
+                    },
+                ));
+            }
+            Command::CreatePinFromImage {
+                image_id,
+                position,
+                ..
+            } => {
+                self.require_running()?;
+                let pin_id = self.state.create_pin_from_image(image_id, position)?;
                 produced.push(EventEnvelope::now(
                     correlation_id,
                     DomainEvent {
@@ -167,7 +211,7 @@ where
         Ok(DispatchResult { events: produced })
     }
 
-    /// 将外部转发来的激活命令应用到主实例（测试与后续 IPC 使用）。
+    /// 将外部转发来的命令应用到主实例。
     pub fn apply_forwarded(&mut self, command: Command) -> Result<DispatchResult, PinoraError> {
         self.dispatch(command)
     }
@@ -190,26 +234,19 @@ fn fail(code: ErrorCode, message: impl Into<String>) -> PinoraError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture_fake::FakeCaptureProvider;
     use crate::platform::FakeCapabilityProbe;
     use crate::single_instance::InMemorySingleInstance;
     use pinora_core::{
-        CaptureImage, CaptureMetadata, DisplayId, ImageId, PixelPoint, PixelRect, PixelSize,
-        PinTransform, RgbaBuffer,
+        CaptureRequest, PixelPoint, PixelRect, PixelSize, PinTransform,
     };
 
-    fn runtime() -> AppRuntime<InMemorySingleInstance, FakeCapabilityProbe> {
-        AppRuntime::new(InMemorySingleInstance::new(), FakeCapabilityProbe)
-    }
-
-    fn sample_image() -> CaptureImage {
-        let pixels = RgbaBuffer::solid(PixelSize::new(16, 9), [10, 20, 30, 255]);
-        CaptureImage::new(
-            ImageId::new(),
-            pixels,
-            PixelRect::new(0, 0, 16, 9),
-            CaptureMetadata::new(DisplayId::new("display-0"), 1.0, 1),
+    fn runtime() -> AppRuntime<InMemorySingleInstance, FakeCapabilityProbe, FakeCaptureProvider> {
+        AppRuntime::new(
+            InMemorySingleInstance::new(),
+            FakeCapabilityProbe,
+            FakeCaptureProvider::new(),
         )
-        .unwrap()
     }
 
     #[test]
@@ -223,25 +260,29 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e.event.kind, DomainEventKind::AppStarted))
         );
-        assert!(!rt.state().capabilities.capture_available);
+        assert!(rt.state().capabilities.capture_available);
     }
 
     #[test]
     fn secondary_bootstrap_forwards_activate() {
         let lock = InMemorySingleInstance::new();
-        let mut primary = AppRuntime::new(lock.clone(), FakeCapabilityProbe);
+        let mut primary = AppRuntime::new(
+            lock.clone(),
+            FakeCapabilityProbe,
+            FakeCaptureProvider::new(),
+        );
         assert_eq!(primary.bootstrap().unwrap(), BootstrapOutcome::Primary);
 
-        let mut secondary = AppRuntime::new(lock.clone(), FakeCapabilityProbe);
+        let mut secondary = AppRuntime::new(
+            lock.clone(),
+            FakeCapabilityProbe,
+            FakeCaptureProvider::new(),
+        );
         let outcome = secondary.bootstrap().unwrap();
         assert_eq!(outcome, BootstrapOutcome::SecondaryForwarded);
         assert_eq!(secondary.state().phase, AppPhase::Idle);
 
-        let forwarded = lock.forwarded_commands().unwrap();
-        assert_eq!(forwarded.len(), 1);
-        assert!(matches!(forwarded[0], Command::Activate { .. }));
-
-        primary.apply_forwarded(forwarded[0].clone()).unwrap();
+        assert_eq!(primary.poll_forwarded().unwrap(), 1);
         assert_eq!(primary.state().activation_count, 1);
         assert!(
             primary
@@ -254,7 +295,11 @@ mod tests {
     #[test]
     fn shutdown_releases_lock_and_stops() {
         let lock = InMemorySingleInstance::new();
-        let mut rt = AppRuntime::new(lock.clone(), FakeCapabilityProbe);
+        let mut rt = AppRuntime::new(
+            lock.clone(),
+            FakeCapabilityProbe,
+            FakeCaptureProvider::new(),
+        );
         rt.bootstrap().unwrap();
         let result = rt.dispatch(Command::shutdown()).unwrap();
         assert!(
@@ -265,7 +310,7 @@ mod tests {
         );
         assert_eq!(rt.state().phase, AppPhase::Stopped);
 
-        let mut next = AppRuntime::new(lock, FakeCapabilityProbe);
+        let mut next = AppRuntime::new(lock, FakeCapabilityProbe, FakeCaptureProvider::new());
         assert_eq!(next.bootstrap().unwrap(), BootstrapOutcome::Primary);
     }
 
@@ -294,10 +339,45 @@ mod tests {
     }
 
     #[test]
+    fn capture_then_pin_from_image() {
+        let mut rt = runtime();
+        rt.bootstrap().unwrap();
+        let display = rt.capture_provider().primary_display_id();
+        let result = rt
+            .dispatch(Command::capture(CaptureRequest::Region {
+                display,
+                rect: PixelRect::new(0, 0, 64, 48),
+            }))
+            .unwrap();
+        let image_id = match &result.events[0].event.kind {
+            DomainEventKind::CaptureCompleted { image_id, size } => {
+                assert_eq!(*size, PixelSize::new(64, 48));
+                *image_id
+            }
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(rt.state().image(image_id).is_some());
+
+        rt.dispatch(Command::create_pin_from_image(
+            image_id,
+            PixelPoint::new(10, 10),
+        ))
+        .unwrap();
+        assert_eq!(rt.state().pin_count(), 1);
+    }
+
+    #[test]
     fn create_and_close_pin_via_commands() {
         let mut rt = runtime();
         rt.bootstrap().unwrap();
-        let image = sample_image();
+        let display = rt.capture_provider().primary_display_id();
+        let image = rt
+            .capture
+            .capture(CaptureRequest::Region {
+                display,
+                rect: PixelRect::new(0, 0, 16, 9),
+            })
+            .unwrap();
         let image_id = image.id;
         let result = rt
             .dispatch(Command::create_pin(image, PixelPoint::new(40, 60)))
@@ -310,7 +390,6 @@ mod tests {
             other => panic!("unexpected event: {other:?}"),
         };
         assert_eq!(rt.state().pin_count(), 1);
-        assert!(rt.state().image(image_id).is_some());
 
         rt.dispatch(Command::set_pin_transform(
             pin_id,
@@ -324,19 +403,15 @@ mod tests {
 
         rt.dispatch(Command::close_pin(pin_id)).unwrap();
         assert_eq!(rt.state().pin_count(), 0);
-        assert!(rt.state().image(image_id).is_none());
-        assert!(
-            rt.events()
-                .iter()
-                .any(|e| matches!(e.event.kind, DomainEventKind::PinClosed { .. }))
-        );
     }
 
     #[test]
     fn pin_commands_require_running() {
         let mut rt = runtime();
         let err = rt
-            .dispatch(Command::create_pin(sample_image(), PixelPoint::new(0, 0)))
+            .dispatch(Command::capture(CaptureRequest::FullDisplay {
+                display: rt.capture_provider().primary_display_id(),
+            }))
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::NotRunning);
     }

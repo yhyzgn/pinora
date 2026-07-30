@@ -1,6 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::ErrorCode;
+use crate::geometry::PixelSize;
 use crate::ids::{CorrelationId, EventId, ImageId, PinId};
 
 /// 已发生的领域事实类别。
@@ -10,6 +11,10 @@ pub enum DomainEventKind {
     AppActivated,
     AppShuttingDown,
     AppStopped,
+    CaptureCompleted {
+        image_id: ImageId,
+        size: PixelSize,
+    },
     PinCreated {
         pin_id: PinId,
         image_id: ImageId,

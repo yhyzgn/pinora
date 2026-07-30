@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/005_pin_commands.md`
-- 任务：`.context/tasks/005_pin_command_dispatch.md`
+- 计划：`.context/plans/006_capture_and_os_instance.md`
+- 任务：`.context/tasks/006_capture_os_instance.md`
 
 ## 交付要求
 

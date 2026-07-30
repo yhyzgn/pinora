@@ -1,29 +1,33 @@
 //! Pinora 进程入口（仓库根 `src/main.rs`）。
 //!
-//! Phase 0：尚无 GUI，但进程必须保持运行，直到收到退出信号再优雅关闭。
+//! Phase 0：fake 截图 + OS 单实例；尚无 GUI，进程保持运行直到 Ctrl+C。
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use pinora_app::{
-    AppRuntime, BootstrapOutcome, FakeCapabilityProbe, InMemorySingleInstance,
+    AppRuntime, BootstrapOutcome, FakeCapabilityProbe, FakeCaptureProvider, OsSingleInstance,
 };
 use pinora_core::{
-    AppPhase, CaptureImage, CaptureMetadata, Command, DisplayId, DomainEventKind, ImageId,
-    PixelPoint, PixelRect, PixelSize, RgbaBuffer,
+    AppPhase, CaptureRequest, Command, DomainEventKind, PixelPoint, PixelRect,
 };
 
 fn main() {
-    let mut runtime = AppRuntime::new(InMemorySingleInstance::new(), FakeCapabilityProbe);
+    let lock = match OsSingleInstance::default_paths() {
+        Ok(lock) => lock,
+        Err(err) => {
+            eprintln!("pinora: single-instance setup failed: {err:?}");
+            std::process::exit(1);
+        }
+    };
+
+    let mut runtime = AppRuntime::new(lock, FakeCapabilityProbe, FakeCaptureProvider::new());
 
     match runtime.bootstrap() {
-        Ok(BootstrapOutcome::Primary) => {
-            run_primary(&mut runtime);
-        }
+        Ok(BootstrapOutcome::Primary) => run_primary(&mut runtime),
         Ok(BootstrapOutcome::SecondaryForwarded) => {
-            // 内存单实例下，单独进程无法共享锁；此分支预留给后续跨进程实现。
-            println!("pinora: secondary instance forwarded activate; exiting");
+            println!("pinora: another instance is running; forwarded Activate and exiting");
         }
         Err(err) => {
             eprintln!("pinora: bootstrap failed: {err}");
@@ -32,7 +36,9 @@ fn main() {
     }
 }
 
-fn run_primary(runtime: &mut AppRuntime<InMemorySingleInstance, FakeCapabilityProbe>) {
+fn run_primary(
+    runtime: &mut AppRuntime<OsSingleInstance, FakeCapabilityProbe, FakeCaptureProvider>,
+) {
     println!(
         "pinora: primary instance started (phase={:?})",
         runtime.state().phase
@@ -41,26 +47,47 @@ fn run_primary(runtime: &mut AppRuntime<InMemorySingleInstance, FakeCapabilityPr
         println!("pinora: capability note: {note}");
     }
 
-    if let Err(err) = seed_demo_pin(runtime) {
-        eprintln!("pinora: demo pin failed: {err}");
+    if let Err(err) = seed_demo_capture_pin(runtime) {
+        eprintln!("pinora: demo capture/pin failed: {err}");
         let _ = runtime.dispatch(Command::shutdown());
         std::process::exit(1);
     }
 
-    println!("pinora: GUI/tray not wired yet; process stays alive in background mode");
-    println!("pinora: running — press Ctrl+C to quit");
+    println!("pinora: GUI/tray not wired yet; process stays alive");
+    println!(
+        "pinora: running — Ctrl+C to quit (second `cargo run` will Activate this instance)"
+    );
 
-    if !wait_for_interrupt() {
-        eprintln!("pinora: interrupt handler unavailable; exiting");
+    let running = Arc::new(AtomicBool::new(true));
+    let flag = Arc::clone(&running);
+    if let Err(err) = ctrlc::set_handler(move || {
+        flag.store(false, Ordering::SeqCst);
+    }) {
+        eprintln!("pinora: failed to install Ctrl+C handler: {err}");
         let _ = runtime.dispatch(Command::shutdown());
         std::process::exit(1);
+    }
+
+    while running.load(Ordering::SeqCst) {
+        match runtime.poll_forwarded() {
+            Ok(n) if n > 0 => {
+                println!(
+                    "pinora: handled {n} forwarded command(s); activation_count={}",
+                    runtime.state().activation_count
+                );
+            }
+            Ok(_) => {}
+            Err(err) => eprintln!("pinora: poll_forwarded error: {err}"),
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
 
     match runtime.dispatch(Command::shutdown()) {
         Ok(_) => println!(
-            "pinora: shutdown complete (phase={:?}, pins={})",
+            "pinora: shutdown complete (phase={:?}, pins={}, activations={})",
             runtime.state().phase,
-            runtime.state().pin_count()
+            runtime.state().pin_count(),
+            runtime.state().activation_count
         ),
         Err(err) => {
             eprintln!("pinora: shutdown failed: {err}");
@@ -74,52 +101,37 @@ fn run_primary(runtime: &mut AppRuntime<InMemorySingleInstance, FakeCapabilityPr
     }
 }
 
-/// 创建一张内存纯色演示截图并贴图，验证命令链路（非真实屏幕捕获）。
-fn seed_demo_pin(
-    runtime: &mut AppRuntime<InMemorySingleInstance, FakeCapabilityProbe>,
+/// 经 FakeCaptureProvider 捕获区域并创建贴图（非真实屏幕）。
+fn seed_demo_capture_pin(
+    runtime: &mut AppRuntime<OsSingleInstance, FakeCapabilityProbe, FakeCaptureProvider>,
 ) -> Result<(), pinora_core::PinoraError> {
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    let size = PixelSize::new(320, 180);
-    let pixels = RgbaBuffer::solid(size, [0x2d, 0x6a, 0x4f, 0xff]);
-    let image = CaptureImage::new(
-        ImageId::new(),
-        pixels,
-        PixelRect::new(0, 0, size.width, size.height),
-        CaptureMetadata::new(DisplayId::new("demo-display"), 1.0, now_ms),
-    )
-    .expect("demo capture image");
+    let display = runtime.capture_provider().primary_display_id();
+    let capture = runtime.dispatch(Command::capture(CaptureRequest::Region {
+        display,
+        rect: PixelRect::new(100, 80, 320, 180),
+    }))?;
 
-    let result = runtime.dispatch(Command::create_pin(image, PixelPoint::new(120, 80)))?;
-    for event in &result.events {
+    let image_id = capture
+        .events
+        .iter()
+        .find_map(|e| match e.event.kind {
+            DomainEventKind::CaptureCompleted { image_id, .. } => Some(image_id),
+            _ => None,
+        })
+        .expect("CaptureCompleted event");
+
+    let pin = runtime.dispatch(Command::create_pin_from_image(
+        image_id,
+        PixelPoint::new(120, 80),
+    ))?;
+
+    for event in &pin.events {
         if let DomainEventKind::PinCreated { pin_id, image_id } = event.event.kind {
             println!(
-                "pinora: demo pin created (pin={pin_id}, image={image_id}, size={}x{}, pins={})",
-                size.width,
-                size.height,
+                "pinora: demo capture+pin (pin={pin_id}, image={image_id}, size=320x180, pins={})",
                 runtime.state().pin_count()
             );
         }
     }
     Ok(())
-}
-
-/// 阻塞直到 Ctrl+C（SIGINT）或终止信号。成功安装处理器返回 `true`。
-fn wait_for_interrupt() -> bool {
-    let running = Arc::new(AtomicBool::new(true));
-    let flag = Arc::clone(&running);
-
-    if let Err(err) = ctrlc::set_handler(move || {
-        flag.store(false, Ordering::SeqCst);
-    }) {
-        eprintln!("pinora: failed to install Ctrl+C handler: {err}");
-        return false;
-    }
-
-    while running.load(Ordering::SeqCst) {
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    true
 }

@@ -32,11 +32,13 @@ impl From<SingleInstanceError> for PinoraError {
 }
 
 /// 单实例锁与跨进程激活转发抽象。
-///
-/// 生产环境由平台文件锁/命名互斥量实现；测试使用内存实现。
 pub trait SingleInstance {
     fn acquire(&self) -> Result<InstanceAcquisition, SingleInstanceError>;
     fn forward(&self, command: Command) -> Result<(), SingleInstanceError>;
+    /// 取出主实例待处理的转发命令（如 Activate）。
+    fn poll_forwarded(&self) -> Result<Vec<Command>, SingleInstanceError> {
+        Ok(Vec::new())
+    }
     fn release(&self) -> Result<(), SingleInstanceError>;
 }
 
@@ -46,7 +48,7 @@ struct InMemoryState {
     forwarded: Vec<Command>,
 }
 
-/// 进程内单实例实现，仅用于测试与无 GUI 引导路径。
+/// 进程内单实例实现，仅用于测试。
 #[derive(Debug, Clone)]
 pub struct InMemorySingleInstance {
     inner: Arc<Mutex<InMemoryState>>,
@@ -105,6 +107,14 @@ impl SingleInstance for InMemorySingleInstance {
         Ok(())
     }
 
+    fn poll_forwarded(&self) -> Result<Vec<Command>, SingleInstanceError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| SingleInstanceError::Poisoned)?;
+        Ok(std::mem::take(&mut guard.forwarded))
+    }
+
     fn release(&self) -> Result<(), SingleInstanceError> {
         let mut guard = self
             .inner
@@ -130,12 +140,13 @@ mod tests {
     }
 
     #[test]
-    fn forward_records_activate_command() {
+    fn forward_and_poll_activate_command() {
         let lock = InMemorySingleInstance::new();
         lock.acquire().unwrap();
         let cmd = Command::activate();
         lock.forward(cmd.clone()).unwrap();
-        let forwarded = lock.forwarded_commands().unwrap();
-        assert_eq!(forwarded, vec![cmd]);
+        let polled = lock.poll_forwarded().unwrap();
+        assert_eq!(polled, vec![cmd]);
+        assert!(lock.poll_forwarded().unwrap().is_empty());
     }
 }

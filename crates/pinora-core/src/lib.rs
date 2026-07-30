@@ -2,6 +2,7 @@
 //!
 //! 本 crate 不得依赖 UI 框架或平台 SDK。
 
+mod capture;
 mod command;
 mod error;
 mod event;
@@ -11,6 +12,7 @@ mod image;
 mod pin;
 mod state;
 
+pub use capture::{resolve_capture_rect, CaptureProvider, CaptureRequest, DisplayInfo};
 pub use command::Command;
 pub use error::{ErrorCode, PinoraError};
 pub use event::{DomainEvent, DomainEventKind, EventEnvelope};
