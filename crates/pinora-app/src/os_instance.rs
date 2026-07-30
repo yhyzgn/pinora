@@ -12,11 +12,13 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use fs2::FileExt;
-use pinora_core::Command;
+use pinora_core::{ActionId, Command};
 
 use crate::single_instance::{InstanceAcquisition, SingleInstance, SingleInstanceError};
 
 const ACTIVATE_FRAME: &[u8] = b"ACTIVATE\n";
+const CAPTURE_FRAME: &[u8] = b"CAPTURE\n";
+const QUIT_FRAME: &[u8] = b"QUIT\n";
 
 /// 基于目录内 `instance.lock` + `activate.sock` 的 OS 单实例。
 pub struct OsSingleInstance {
@@ -97,9 +99,8 @@ impl OsSingleInstance {
                                 Ok(0) => break,
                                 Ok(n) => {
                                     collected.extend_from_slice(&buf[..n]);
-                                    if collected.windows(ACTIVATE_FRAME.len()).any(|w| w == ACTIVATE_FRAME)
-                                    {
-                                        let _ = tx.send(Command::activate());
+                                    if let Some(cmd) = parse_ipc_frame(&collected) {
+                                        let _ = tx.send(cmd);
                                         break;
                                     }
                                     if collected.len() > 256 {
@@ -187,17 +188,25 @@ impl SingleInstance for OsSingleInstance {
     }
 
     fn forward(&self, command: Command) -> Result<(), SingleInstanceError> {
-        if !matches!(command, Command::Activate { .. }) {
-            return Err(SingleInstanceError::ForwardFailed(
-                "OS instance only forwards Activate".into(),
-            ));
-        }
+        let frame: &[u8] = match &command {
+            Command::Activate { .. } => ACTIVATE_FRAME,
+            Command::InvokeAction {
+                action: ActionId::CaptureRegionAndPin,
+                ..
+            } => CAPTURE_FRAME,
+            Command::Shutdown { .. } => QUIT_FRAME,
+            _ => {
+                return Err(SingleInstanceError::ForwardFailed(
+                    "OS instance only forwards Activate / Capture / Quit".into(),
+                ));
+            }
+        };
         let mut stream = UnixStream::connect(&self.sock_path).map_err(|e| {
             SingleInstanceError::ForwardFailed(format!("connect activate socket: {e}"))
         })?;
         stream
-            .write_all(ACTIVATE_FRAME)
-            .map_err(|e| SingleInstanceError::ForwardFailed(format!("write activate: {e}")))?;
+            .write_all(frame)
+            .map_err(|e| SingleInstanceError::ForwardFailed(format!("write ipc frame: {e}")))?;
         let _ = stream.shutdown(Shutdown::Both);
         Ok(())
     }
@@ -249,6 +258,19 @@ fn default_runtime_dir() -> PathBuf {
     std::env::temp_dir().join(format!("pinora-{user}"))
 }
 
+fn parse_ipc_frame(buf: &[u8]) -> Option<Command> {
+    if buf.windows(CAPTURE_FRAME.len()).any(|w| w == CAPTURE_FRAME) {
+        return Some(Command::invoke_action(ActionId::CaptureRegionAndPin));
+    }
+    if buf.windows(QUIT_FRAME.len()).any(|w| w == QUIT_FRAME) {
+        return Some(Command::shutdown());
+    }
+    if buf.windows(ACTIVATE_FRAME.len()).any(|w| w == ACTIVATE_FRAME) {
+        return Some(Command::activate());
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,5 +311,60 @@ mod tests {
 
         primary.release().unwrap();
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn second_instance_forwards_capture() {
+        let dir = temp_dir();
+        let primary = OsSingleInstance::with_dir(&dir).unwrap();
+        assert_eq!(primary.acquire().unwrap(), InstanceAcquisition::Acquired);
+
+        let secondary = OsSingleInstance::with_dir(&dir).unwrap();
+        assert_eq!(
+            secondary.acquire().unwrap(),
+            InstanceAcquisition::ExistingInstance
+        );
+        secondary
+            .forward(Command::invoke_action(ActionId::CaptureRegionAndPin))
+            .unwrap();
+
+        let mut got = Vec::new();
+        for _ in 0..50 {
+            got = primary.poll_forwarded().unwrap();
+            if !got.is_empty() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(got.len(), 1);
+        assert!(matches!(
+            got[0],
+            Command::InvokeAction {
+                action: ActionId::CaptureRegionAndPin,
+                ..
+            }
+        ));
+
+        primary.release().unwrap();
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn parse_ipc_frames() {
+        assert!(matches!(
+            parse_ipc_frame(b"CAPTURE\n"),
+            Some(Command::InvokeAction {
+                action: ActionId::CaptureRegionAndPin,
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse_ipc_frame(b"QUIT\n"),
+            Some(Command::Shutdown { .. })
+        ));
+        assert!(matches!(
+            parse_ipc_frame(b"ACTIVATE\n"),
+            Some(Command::Activate { .. })
+        ));
     }
 }

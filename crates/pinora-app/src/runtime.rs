@@ -110,6 +110,15 @@ where
         Ok(n)
     }
 
+    /// 取出转发命令但不分发，由桌面 shell 解释 Capture/Quit 等。
+    pub fn take_forwarded(&mut self) -> Result<Vec<Command>, PinoraError> {
+        self.lock.poll_forwarded().map_err(Into::into)
+    }
+
+    pub fn lock(&self) -> &L {
+        &self.lock
+    }
+
     pub fn dispatch(&mut self, command: Command) -> Result<DispatchResult, PinoraError> {
         let correlation_id = command.correlation_id();
         let mut produced = Vec::new();

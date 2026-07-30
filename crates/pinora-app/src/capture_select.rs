@@ -1,13 +1,21 @@
-//! 捕获后端选择：优先 xcap，失败降级 fake。
+//! 捕获后端选择：KDE/Spectacle 优先，其次 xcap，最后 fake。
+//!
+//! 重要：在 KDE Wayland 上 **不要** 默认走 xcap→portal/PipeWire。
+//! 那条路径会卡数秒；Snipaste/飞书/微信在 Windows 用的是原生 GDI/DXGI，
+//! 在 KDE 上对标的是 KWin 内部截图（Spectacle / ScreenShot2），不是 portal。
 
 use pinora_core::{CaptureImage, CaptureProvider, CaptureRequest, DisplayInfo, PinoraError};
 
 use crate::capture_fake::FakeCaptureProvider;
+use crate::capture_kde::KdeSpectacleCaptureProvider;
 use crate::capture_xcap::XcapCaptureProvider;
 
 /// 当前选用的捕获后端名称。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureBackendKind {
+    /// KDE Spectacle → KWin（快，本机实测 ~0.5s）
+    Kde,
+    /// xcap（X11 快；Wayland 常走 portal，慢）
     Xcap,
     Fake,
 }
@@ -15,52 +23,85 @@ pub enum CaptureBackendKind {
 impl CaptureBackendKind {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Kde => "kde-spectacle",
             Self::Xcap => "xcap",
             Self::Fake => "fake",
         }
     }
 }
 
-/// 可在 xcap / fake 之间切换的捕获提供者。
+/// 可在 kde / xcap / fake 之间切换的捕获提供者。
 #[derive(Debug, Clone)]
 pub enum SelectedCaptureProvider {
+    Kde(KdeSpectacleCaptureProvider),
     Xcap(XcapCaptureProvider),
     Fake(FakeCaptureProvider),
 }
 
 impl SelectedCaptureProvider {
-    /// 探测 xcap（仅枚举显示器，不做试截图，避免启动多等数秒）。
+    /// 自动探测顺序：KDE Spectacle → xcap → fake。
     pub fn autodetect() -> (Self, CaptureBackendKind, Option<String>) {
-        match XcapCaptureProvider::probe_available() {
-            Ok(displays) if !displays.is_empty() => {
-                let d0 = &displays[0];
-                (
-                    Self::Xcap(XcapCaptureProvider::new()),
-                    CaptureBackendKind::Xcap,
-                    Some(format!(
-                        "xcap monitors={} primary={} {}x{} (capture on confirm)",
+        // 1) KDE 快速路径
+        match KdeSpectacleCaptureProvider::probe_available() {
+            Ok(provider) => {
+                let displays = provider.displays().unwrap_or_default();
+                let note = if let Some(d0) = displays.iter().max_by_key(|d| d.bounds.size.area()) {
+                    format!(
+                        "kde/spectacle monitors={} primary={} {}x{} (~0.5s KWin path, not portal)",
                         displays.len(),
                         d0.name,
                         d0.bounds.size.width,
                         d0.bounds.size.height
-                    )),
-                )
+                    )
+                } else {
+                    "kde/spectacle available".into()
+                };
+                return (Self::Kde(provider), CaptureBackendKind::Kde, Some(note));
             }
-            Ok(_) => (
-                Self::Fake(FakeCaptureProvider::new()),
-                CaptureBackendKind::Fake,
-                Some("xcap returned no monitors; using fake".into()),
-            ),
-            Err(err) => (
-                Self::Fake(FakeCaptureProvider::new()),
-                CaptureBackendKind::Fake,
-                Some(format!("xcap unavailable ({err}); using fake")),
-            ),
+            Err(err) => {
+                // 继续尝试 xcap
+                let kde_err = err.to_string();
+                match XcapCaptureProvider::probe_available() {
+                    Ok(displays) if !displays.is_empty() => {
+                        let d0 = &displays[0];
+                        return (
+                            Self::Xcap(XcapCaptureProvider::new()),
+                            CaptureBackendKind::Xcap,
+                            Some(format!(
+                                "xcap fallback (kde unavailable: {kde_err}); monitors={} primary={} {}x{} — Wayland 上可能很慢",
+                                displays.len(),
+                                d0.name,
+                                d0.bounds.size.width,
+                                d0.bounds.size.height
+                            )),
+                        );
+                    }
+                    Ok(_) => {
+                        return (
+                            Self::Fake(FakeCaptureProvider::new()),
+                            CaptureBackendKind::Fake,
+                            Some(format!(
+                                "kde unavailable ({kde_err}); xcap no monitors; using fake"
+                            )),
+                        );
+                    }
+                    Err(xerr) => {
+                        return (
+                            Self::Fake(FakeCaptureProvider::new()),
+                            CaptureBackendKind::Fake,
+                            Some(format!(
+                                "kde unavailable ({kde_err}); xcap unavailable ({xerr}); using fake"
+                            )),
+                        );
+                    }
+                }
+            }
         }
     }
 
     pub fn kind(&self) -> CaptureBackendKind {
         match self {
+            Self::Kde(_) => CaptureBackendKind::Kde,
             Self::Xcap(_) => CaptureBackendKind::Xcap,
             Self::Fake(_) => CaptureBackendKind::Fake,
         }
@@ -69,6 +110,11 @@ impl SelectedCaptureProvider {
     pub fn primary_display_id(&self) -> pinora_core::DisplayId {
         match self {
             Self::Fake(f) => f.primary_display_id(),
+            Self::Kde(k) => k
+                .displays()
+                .ok()
+                .and_then(|d| d.into_iter().next().map(|i| i.id))
+                .unwrap_or_else(|| pinora_core::DisplayId::new("kde-unknown")),
             Self::Xcap(x) => x
                 .displays()
                 .ok()
@@ -81,6 +127,7 @@ impl SelectedCaptureProvider {
 impl CaptureProvider for SelectedCaptureProvider {
     fn displays(&self) -> Result<Vec<DisplayInfo>, PinoraError> {
         match self {
+            Self::Kde(p) => p.displays(),
             Self::Xcap(p) => p.displays(),
             Self::Fake(p) => p.displays(),
         }
@@ -88,6 +135,7 @@ impl CaptureProvider for SelectedCaptureProvider {
 
     fn capture(&self, request: CaptureRequest) -> Result<CaptureImage, PinoraError> {
         match self {
+            Self::Kde(p) => p.capture(request),
             Self::Xcap(p) => p.capture(request),
             Self::Fake(p) => p.capture(request),
         }

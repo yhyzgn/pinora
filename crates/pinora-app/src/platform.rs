@@ -34,11 +34,14 @@ impl CapabilityProbe for RuntimeCapabilityProbe {
             self.capture_backend.as_str()
         ));
         notes.push("clipboard=LocalImageSink memory only".into());
-        notes.push("global hotkey not wired (FakeHotkeySource inject only)".into());
+        notes.push(
+            "global hotkey: F2/Ctrl+N via global-hotkey when available; else `pinora capture` IPC"
+                .into(),
+        );
 
         CapabilitySnapshot {
             capture_available: true,
-            global_hotkey_available: false,
+            global_hotkey_available: true,
             clipboard_image_available: true,
             always_on_top_available: false,
             notes,
@@ -66,8 +69,9 @@ mod tests {
 
     #[test]
     fn runtime_probe_mentions_backend() {
-        let snap = RuntimeCapabilityProbe::new(CaptureBackendKind::Xcap, Some("ok".into())).probe();
+        let snap =
+            RuntimeCapabilityProbe::new(CaptureBackendKind::Kde, Some("ok".into())).probe();
         assert!(snap.capture_available);
-        assert!(snap.notes.iter().any(|n| n.contains("xcap")));
+        assert!(snap.notes.iter().any(|n| n.contains("kde-spectacle")));
     }
 }

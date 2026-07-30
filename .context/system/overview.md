@@ -4,13 +4,16 @@
 
 - Rust 2024 workspace：`pinora`（`src/main.rs`）+ `pinora-core` + `pinora-app`。
 - 依赖：`ctrlc`、`fs2`、`png`、`xcap`、`winit`、`softbuffer`。
-- Linux xcap 需 `pipewire-devel`、`mesa-libgbm-devel`。
+- Linux xcap 需 `pipewire-devel`、`mesa-libgbm-devel`（**仅 xcap/portal 兜底路径**）。
+- **截图后端优先级（KDE Wayland）**：`kde-spectacle`（KWin，~0.5s）→ `xcap`/portal（慢）→ `fake`。
+- **不要默认 portal**：portal/PipeWire 是通用 Wayland 兜底，不是 Snipaste 级体验。
+- **全局热键**：`global-hotkey`（F2/Ctrl+N/Ctrl+Shift+S）+ 单实例 IPC `pinora capture`；启动时写入 `~/.local/share/applications/pinora.desktop`。
 
 ## 已实现能力
 
 | 能力 | 说明 |
 | --- | --- |
-| 真实/降级截屏 | xcap 优先，失败 fake |
+| 真实/降级截屏 | KDE 优先 spectacle/KWin；否则 xcap；再 fake |
 | 区域选区 Overlay | 拖拽、Enter/Esc、方向键；脏矩形优化 |
 | 贴图窗口 | 无边框置顶、拖动、滚轮缩放、Esc 关闭；多贴图 |
 | 导出 | PNG + 内存剪贴板 |

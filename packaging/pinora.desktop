@@ -1,0 +1,24 @@
+[Desktop Entry]
+Type=Application
+Name=Pinora
+Comment=Screenshot, pin and annotate
+Exec=pinora
+Icon=camera-photo
+Terminal=false
+Categories=Utility;Graphics;
+StartupNotify=false
+Actions=Capture;Quit;
+# 允许调用 KWin 内部截图接口（与 Spectacle/Flameshot 同权），避免 xdg-desktop-portal 慢路径
+X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2
+X-KDE-Shortcuts=F2
+
+[Desktop Action Capture]
+Name=Capture region
+Name[zh_CN]=区域截图
+Exec=pinora capture
+X-KDE-Shortcuts=F2;Ctrl+N
+
+[Desktop Action Quit]
+Name=Quit
+Name[zh_CN]=退出
+Exec=pinora quit
