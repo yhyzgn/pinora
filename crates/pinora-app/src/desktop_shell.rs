@@ -409,16 +409,11 @@ where
         if let Some(ov) = self.overlay.take() {
             ov.window.set_visible(false);
         }
-        println!("pinora: selection cancelled");
-        if self.pins.is_empty() {
-            // 无贴图时取消则再开一轮选区；用户可用 Ctrl+Q 退出
-            self.mode = Mode::StartCapture;
-        } else {
-            self.mode = Mode::Idle;
-            // 聚焦任一贴图
-            if let Some(pin) = self.pins.values().next() {
-                let _ = pin.window.focus_window();
-            }
+        // Esc 只取消选区，绝不自动再截；再截仅 F2 / Ctrl+N
+        self.mode = Mode::Idle;
+        println!("pinora: selection cancelled (F2/Ctrl+N 再截，Ctrl+Q 退出)");
+        if let Some(pin) = self.pins.values().next() {
+            let _ = pin.window.focus_window();
         }
     }
 
@@ -652,8 +647,9 @@ where
         }
         self.drag_pin = None;
         if self.pins.is_empty() && self.overlay.is_none() {
-            println!("pinora: all pins closed — starting new capture (Ctrl+Q to quit)");
-            self.mode = Mode::StartCapture;
+            // Esc 关闭贴图 ≠ 再截图
+            self.mode = Mode::Idle;
+            println!("pinora: all pins closed (F2/Ctrl+N 再截，Ctrl+Q 退出)");
         }
     }
 
