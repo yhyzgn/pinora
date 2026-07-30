@@ -47,6 +47,7 @@ where
         runtime: Some(runtime),
         context: None,
         mode: Mode::StartCapture,
+        loading: None,
         overlay: None,
         pins: HashMap::new(),
         drag_pin: None,
@@ -75,8 +76,10 @@ where
 }
 
 enum Mode {
-    /// 下一帧开始全屏捕获并进入选区。
+    /// 下一帧启动：后台截屏（无全屏遮罩，避免截到自己）。
     StartCapture,
+    /// 正在后台截屏，显示小加载窗。
+    LoadingCapture,
     /// 空闲：仅贴图窗口。
     Idle,
 }
@@ -88,12 +91,20 @@ struct PreparedPreview {
     dimmed: Vec<u32>,
 }
 
+/// 截屏中：不能盖住桌面，否则 Portal 只能截到黑遮罩。
+struct LoadingState {
+    window: Rc<Window>,
+    preview_rx: Receiver<Result<PreparedPreview, String>>,
+    display_id: DisplayId,
+    display_origin: PixelPoint,
+}
+
 struct OverlayState {
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
-    /// 选区外暗色底；就绪后为真实桌面暗化。
+    /// 选区外：真实桌面暗化。
     dimmed: Vec<u32>,
-    /// 选区内“原图”；未就绪时为稍亮占位色，就绪后为真实像素。
+    /// 选区内：真实桌面原图（视觉上“透明看到桌面”）。
     base: Vec<u32>,
     frame: Vec<u32>,
     session: SelectionSession,
@@ -108,10 +119,7 @@ struct OverlayState {
     win_h: u32,
     display_id: DisplayId,
     display_origin: PixelPoint,
-    /// 后台全屏捕获结果。
-    preview_rx: Option<Receiver<Result<PreparedPreview, String>>>,
-    full_image: Option<CaptureImage>,
-    preview_ready: bool,
+    full_image: CaptureImage,
 }
 
 struct PinWin {
@@ -127,6 +135,7 @@ struct DesktopApp<L, P, C, S> {
     runtime: Option<AppRuntime<L, P, C, S>>,
     context: Option<Context<Rc<Window>>>,
     mode: Mode,
+    loading: Option<LoadingState>,
     overlay: Option<OverlayState>,
     pins: HashMap<WindowId, PinWin>,
     drag_pin: Option<WindowId>,
@@ -145,8 +154,11 @@ where
 {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.ensure_context(event_loop);
-        if matches!(self.mode, Mode::StartCapture) && self.overlay.is_none() {
-            if let Err(e) = self.begin_region_capture(event_loop) {
+        if matches!(self.mode, Mode::StartCapture)
+            && self.overlay.is_none()
+            && self.loading.is_none()
+        {
+            if let Err(e) = self.begin_screen_grab(event_loop) {
                 self.error = Some(e);
                 event_loop.exit();
             }
@@ -174,8 +186,20 @@ where
             return;
         }
 
-        // 后台全屏预览就绪？
-        self.poll_preview_ready();
+        // 后台截屏完成 → 打开真实桌面遮罩
+        if matches!(self.mode, Mode::LoadingCapture) {
+            if let Err(e) = self.poll_loading_to_overlay(event_loop) {
+                self.error = Some(e);
+                event_loop.exit();
+                return;
+            }
+            if self.loading.is_some() {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(
+                    Instant::now() + Duration::from_millis(30),
+                ));
+                return;
+            }
+        }
 
         // Overlay 帧合并
         if let Some(ov) = self.overlay.as_mut() {
@@ -192,17 +216,13 @@ where
                 }
                 return;
             }
-            // 预览加载中也定期 poll
-            if !ov.preview_ready {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(
-                    Instant::now() + Duration::from_millis(50),
-                ));
-                return;
-            }
         }
 
-        if matches!(self.mode, Mode::StartCapture) && self.overlay.is_none() {
-            if let Err(e) = self.begin_region_capture(event_loop) {
+        if matches!(self.mode, Mode::StartCapture)
+            && self.overlay.is_none()
+            && self.loading.is_none()
+        {
+            if let Err(e) = self.begin_screen_grab(event_loop) {
                 self.error = Some(e);
                 event_loop.exit();
             }
@@ -217,6 +237,26 @@ where
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        if let Some(loading) = self.loading.as_ref() {
+            if loading.window.id() == window_id {
+                // 加载窗：Esc / 关闭 = 取消本次截屏
+                match event {
+                    WindowEvent::CloseRequested => {
+                        self.cancel_loading();
+                    }
+                    WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {
+                        if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
+                            self.cancel_loading();
+                        } else if self.is_quit_key(&event) {
+                            self.quit = true;
+                            event_loop.exit();
+                        }
+                    }
+                    _ => {}
+                }
+                return;
+            }
+        }
         if let Some(ov) = self.overlay.as_ref() {
             if ov.window.id() == window_id {
                 self.handle_overlay_event(event_loop, event);
@@ -250,63 +290,13 @@ where
         }
     }
 
-    fn poll_preview_ready(&mut self) {
-        let Some(ov) = self.overlay.as_mut() else {
-            return;
-        };
-        if ov.preview_ready {
-            return;
-        }
-        let Some(rx) = ov.preview_rx.as_ref() else {
-            return;
-        };
-        match rx.try_recv() {
-            Ok(Ok(prep)) => {
-                let expect = (ov.img_w as usize).saturating_mul(ov.img_h as usize);
-                let n = prep.base.len();
-                if n == expect {
-                    ov.base = prep.base;
-                    ov.dimmed = prep.dimmed;
-                    ov.frame = ov.dimmed.clone();
-                    ov.full_image = Some(prep.image);
-                    ov.preview_ready = true;
-                    ov.last_drawn_rect = None;
-                    ov.needs_redraw = true;
-                    println!("pinora: screen preview ready (real desktop under mask)");
-                } else {
-                    eprintln!(
-                        "pinora: preview size mismatch (got {n}, want {expect}); crop still ok"
-                    );
-                    ov.full_image = Some(prep.image);
-                    ov.preview_ready = true;
-                    ov.needs_redraw = true;
-                }
-                ov.preview_rx = None;
-            }
-            Ok(Err(err)) => {
-                eprintln!("pinora: background capture failed: {err} (Enter 将尝试区域捕获)");
-                ov.preview_rx = None;
-                ov.preview_ready = true;
-            }
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => {
-                ov.preview_rx = None;
-                ov.preview_ready = true;
-            }
-        }
-    }
-
-    fn begin_region_capture(&mut self, event_loop: &ActiveEventLoop) -> Result<(), PinoraError> {
-        // 遮罩立刻弹出；全屏截图在后台线程跑，用户拖选时通常已完成。
+    /// 先后台截全屏（桌面未被遮罩挡住），小窗提示加载；完成后再开 Overlay。
+    fn begin_screen_grab(&mut self, event_loop: &ActiveEventLoop) -> Result<(), PinoraError> {
         let rt = self.runtime.as_ref().unwrap();
         let displays = rt.capture_provider().displays()?;
         let display = displays.first().cloned().ok_or_else(|| {
             PinoraError::new(ErrorCode::NotFound, "no display for region capture")
         })?;
-
-        let img_w = display.bounds.size.width.max(1);
-        let img_h = display.bounds.size.height.max(1);
-        // 占位不预分配 4K 缓冲（太慢）；就绪前按窗口尺寸直接填色绘制。
 
         let provider = rt.capture_provider().clone();
         let display_id = display.id.clone();
@@ -319,6 +309,7 @@ where
                 })
                 .map(|image| {
                     let base = rgba_to_xrgb(&image.pixels.bytes);
+                    // 约 55% 亮度，选区外可辨认桌面
                     let dimmed: Vec<u32> = base.iter().copied().map(darken).collect();
                     PreparedPreview {
                         image,
@@ -328,17 +319,110 @@ where
                 })
                 .map_err(|e| e.to_string());
             println!(
-                "pinora: background full capture finished in {:.0}ms",
+                "pinora: full capture done in {:.0}ms",
                 started.elapsed().as_secs_f64() * 1000.0
             );
             let _ = tx.send(result);
         });
 
+        self.ensure_context(event_loop);
+        let attrs = Window::default_attributes()
+            .with_title("Pinora — 正在截取屏幕…")
+            .with_inner_size(PhysicalSize::new(360, 72))
+            .with_decorations(true)
+            .with_resizable(false)
+            .with_window_level(WindowLevel::AlwaysOnTop)
+            .with_visible(true);
+        let window = event_loop
+            .create_window(attrs)
+            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("loading window: {e}")))?;
+        let window = Rc::new(window);
+        let _ = window.focus_window();
+
         println!(
-            "pinora: overlay open on {} ({}x{}) — desktop preview loads in background…",
-            display.name, img_w, img_h
+            "pinora: grabbing {} ({}x{}) without covering desktop…",
+            display.name, display.bounds.size.width, display.bounds.size.height
         );
 
+        self.loading = Some(LoadingState {
+            window,
+            preview_rx: rx,
+            display_id: display.id,
+            display_origin: display.bounds.origin,
+        });
+        self.mode = Mode::LoadingCapture;
+        Ok(())
+    }
+
+    fn cancel_loading(&mut self) {
+        if let Some(loading) = self.loading.take() {
+            loading.window.set_visible(false);
+            // drop rx → 后台线程发送失败，自然结束
+        }
+        self.mode = Mode::Idle;
+        println!("pinora: capture cancelled (F2/Ctrl+N 再截，Ctrl+Q 退出)");
+        if let Some(pin) = self.pins.values().next() {
+            let _ = pin.window.focus_window();
+        }
+    }
+
+    fn poll_loading_to_overlay(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+    ) -> Result<(), PinoraError> {
+        let Some(loading) = self.loading.as_ref() else {
+            return Ok(());
+        };
+        let prep = match loading.preview_rx.try_recv() {
+            Ok(Ok(p)) => p,
+            Ok(Err(err)) => {
+                self.cancel_loading();
+                return Err(PinoraError::new(
+                    ErrorCode::RetryablePlatform,
+                    format!("screen capture failed: {err}"),
+                ));
+            }
+            Err(TryRecvError::Empty) => return Ok(()),
+            Err(TryRecvError::Disconnected) => {
+                self.cancel_loading();
+                return Err(PinoraError::new(
+                    ErrorCode::Internal,
+                    "capture thread disconnected",
+                ));
+            }
+        };
+
+        let loading = self.loading.take().unwrap();
+        loading.window.set_visible(false);
+
+        let img_w = prep.image.pixels.size.width.max(1);
+        let img_h = prep.image.pixels.size.height.max(1);
+        if prep.base.len() != (img_w as usize) * (img_h as usize) {
+            return Err(PinoraError::new(
+                ErrorCode::Internal,
+                "capture buffer size mismatch",
+            ));
+        }
+
+        self.open_overlay_with_preview(
+            event_loop,
+            prep,
+            loading.display_id,
+            loading.display_origin,
+            img_w,
+            img_h,
+        )
+    }
+
+    fn open_overlay_with_preview(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        prep: PreparedPreview,
+        display_id: DisplayId,
+        display_origin: PixelPoint,
+        img_w: u32,
+        img_h: u32,
+    ) -> Result<(), PinoraError> {
         self.ensure_context(event_loop);
         let context = self.context.as_ref().ok_or_else(|| {
             PinoraError::new(ErrorCode::Internal, "softbuffer context unavailable")
@@ -368,13 +452,18 @@ where
             let _ = surface.resize(w, h);
         }
 
-        println!("pinora: drag to select — Enter confirm, Esc cancel");
+        let frame = prep.dimmed.clone();
+        println!(
+            "pinora: overlay ready {}x{} — selection hole shows live screenshot",
+            img_w, img_h
+        );
+
         self.overlay = Some(OverlayState {
             window: window.clone(),
             surface,
-            dimmed: Vec::new(),
-            base: Vec::new(),
-            frame: Vec::new(),
+            dimmed: prep.dimmed,
+            base: prep.base,
+            frame,
             session: SelectionSession::new()
                 .with_bounds(PixelRect::new(0, 0, img_w, img_h))
                 .with_min_edge(2),
@@ -389,11 +478,9 @@ where
             img_h,
             win_w,
             win_h,
-            display_id: display.id.clone(),
-            display_origin: display.bounds.origin,
-            preview_rx: Some(rx),
-            full_image: None,
-            preview_ready: false,
+            display_id,
+            display_origin,
+            full_image: prep.image,
         });
         self.mode = Mode::Idle;
         window.request_redraw();
@@ -522,30 +609,6 @@ where
         event_loop: &ActiveEventLoop,
         local: PixelRect,
     ) -> Result<(), PinoraError> {
-        // 先尽量收齐后台全屏图，避免 Enter 再打 Portal
-        self.poll_preview_ready();
-        if let Some(ov) = self.overlay.as_mut() {
-            if ov.full_image.is_none() {
-                if let Some(rx) = ov.preview_rx.take() {
-                    println!("pinora: waiting for background capture (usually finishes while you drag)…");
-                    match rx.recv_timeout(Duration::from_secs(15)) {
-                        Ok(Ok(prep)) => {
-                            ov.base = prep.base;
-                            ov.dimmed = prep.dimmed;
-                            ov.full_image = Some(prep.image);
-                            ov.preview_ready = true;
-                        }
-                        Ok(Err(err)) => {
-                            eprintln!("pinora: background capture failed: {err}");
-                        }
-                        Err(_) => {
-                            eprintln!("pinora: background capture timeout");
-                        }
-                    }
-                }
-            }
-        }
-
         let ov = self.overlay.take().ok_or_else(|| {
             PinoraError::new(ErrorCode::Internal, "overlay missing on confirm")
         })?;
@@ -558,25 +621,12 @@ where
             local.size.height,
         );
 
-        let image = if let Some(full) = ov.full_image {
-            // 内存裁剪，无二次 Portal
-            println!(
-                "pinora: crop from pre-captured screen {}x{} …",
-                local.size.width, local.size.height
-            );
-            full.crop_local(local)?
-        } else {
-            println!(
-                "pinora: region capture {}x{} (no pre-capture) …",
-                global.size.width, global.size.height
-            );
-            let rt = self.runtime.as_ref().unwrap();
-            rt.capture_provider().capture(CaptureRequest::Region {
-                display: ov.display_id,
-                rect: global,
-            })?
-        };
-
+        // 遮罩打开前已截好全屏 → 此处仅内存裁剪，不再走 Portal
+        println!(
+            "pinora: crop {}x{} from pre-captured frame…",
+            local.size.width, local.size.height
+        );
+        let image = ov.full_image.crop_local(local)?;
         let size = image.size();
         let position = PixelPoint::new(
             global.origin.x.saturating_add(24),
@@ -842,6 +892,26 @@ where
 }
 
 fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
+    let img_w = ov.img_w as usize;
+    let img_h = ov.img_h as usize;
+    let new_rect = ov.session.preview_rect();
+
+    // 脏矩形：恢复旧选区暗化底，绘制新选区原图 + 边框
+    if ov.last_drawn_rect != new_rect {
+        if let Some(old) = ov.last_drawn_rect {
+            blit_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, old);
+        }
+        if let Some(rect) = new_rect {
+            blit_rect(&mut ov.frame, &ov.base, img_w, img_h, rect);
+            let x0 = rect.origin.x.max(0) as usize;
+            let y0 = rect.origin.y.max(0) as usize;
+            let x1 = (rect.right() as usize).min(img_w);
+            let y1 = (rect.bottom() as usize).min(img_h);
+            draw_rect_border(&mut ov.frame, img_w, img_h, x0, y0, x1, y1, 0x00_FF_CC_33);
+        }
+        ov.last_drawn_rect = new_rect;
+    }
+
     let mut buffer = ov.surface.buffer_mut().map_err(|e| {
         PinoraError::new(ErrorCode::Internal, format!("overlay buffer: {e}"))
     })?;
@@ -854,70 +924,11 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
             "overlay buffer size mismatch",
         ));
     }
-
-    let img_w = ov.img_w as usize;
-    let img_h = ov.img_h as usize;
-    let new_rect = ov.session.preview_rect();
-
-    if ov.preview_ready && !ov.base.is_empty() && ov.base.len() == img_w * img_h {
-        // 真实桌面预览路径
-        if ov.frame.len() != img_w * img_h {
-            ov.frame = ov.dimmed.clone();
-            ov.last_drawn_rect = None;
-        }
-        if ov.last_drawn_rect != new_rect {
-            if let Some(old) = ov.last_drawn_rect {
-                blit_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, old);
-            }
-            if let Some(rect) = new_rect {
-                blit_rect(&mut ov.frame, &ov.base, img_w, img_h, rect);
-                let x0 = rect.origin.x.max(0) as usize;
-                let y0 = rect.origin.y.max(0) as usize;
-                let x1 = (rect.right() as usize).min(img_w);
-                let y1 = (rect.bottom() as usize).min(img_h);
-                draw_rect_border(&mut ov.frame, img_w, img_h, x0, y0, x1, y1, 0x00_FF_CC_33);
-            }
-            ov.last_drawn_rect = new_rect;
-        }
-        if bw == img_w && bh == img_h {
-            buffer[..needed].copy_from_slice(&ov.frame);
-        } else {
-            scale_nearest(&ov.frame, img_w, img_h, &mut buffer[..needed], bw, bh);
-        }
+    if bw == img_w && bh == img_h {
+        buffer[..needed].copy_from_slice(&ov.frame);
     } else {
-        // 占位：只填窗口缓冲（不建 4K 大数组），选区洞稍亮
-        const DIM: u32 = 0x00_30_30_38;
-        const HOLE: u32 = 0x00_55_55_60;
-        buffer[..needed].fill(DIM);
-        if let Some(rect) = new_rect {
-            // 图像坐标 → 窗口坐标
-            let x0 = ((rect.origin.x as f64 * bw as f64) / img_w as f64).floor() as usize;
-            let y0 = ((rect.origin.y as f64 * bh as f64) / img_h as f64).floor() as usize;
-            let x1 = ((rect.right() as f64 * bw as f64) / img_w as f64)
-                .ceil()
-                .min(bw as f64) as usize;
-            let y1 = ((rect.bottom() as f64 * bh as f64) / img_h as f64)
-                .ceil()
-                .min(bh as f64) as usize;
-            for y in y0..y1.min(bh) {
-                let row = y * bw;
-                for x in x0..x1.min(bw) {
-                    buffer[row + x] = HOLE;
-                }
-            }
-            draw_rect_border(
-                &mut buffer[..needed],
-                bw,
-                bh,
-                x0.min(bw),
-                y0.min(bh),
-                x1.min(bw),
-                y1.min(bh),
-                0x00_FF_CC_33,
-            );
-        }
+        scale_nearest(&ov.frame, img_w, img_h, &mut buffer[..needed], bw, bh);
     }
-
     buffer
         .present()
         .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("overlay present: {e}")))?;
@@ -950,10 +961,11 @@ fn rgba_to_xrgb(bytes: &[u8]) -> Vec<u32> {
     out
 }
 
+/// 遮罩约 55% 亮度，选区外仍可辨认桌面。
 fn darken(c: u32) -> u32 {
-    let r = ((c >> 16) & 0xff) * 2 / 5;
-    let g = ((c >> 8) & 0xff) * 2 / 5;
-    let b = (c & 0xff) * 2 / 5;
+    let r = ((c >> 16) & 0xff) * 11 / 20;
+    let g = ((c >> 8) & 0xff) * 11 / 20;
+    let b = (c & 0xff) * 11 / 20;
     (r << 16) | (g << 8) | b
 }
 
