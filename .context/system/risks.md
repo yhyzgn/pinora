@@ -25,13 +25,19 @@
 - 残留风险：非 Unix 平台未实现；异常退出可能残留 sock（Drop/release 尽力清理）。
 - 负责人和状态：未分配；Unix 已缓解，跨平台开放。
 
-## R-004：捕获为 fake 非真实屏幕（中）
+## R-004：捕获为 fake 非真实屏幕（中）— 已缓解（可降级）
 
-- 证据和影响范围：`FakeCaptureProvider` 生成纯色缓冲；`capture_available=true` 易被误解为真截屏。
-- 触发条件：把 demo 像素当作屏幕内容。
-- 失败模式：演示误导；对接真捕获时行为偏差。
-- 缓解措施和验证：日志标明 fake；真实后端替换 `CaptureProvider` 并更新探测文案。
-- 回滚或隔离：切换实现不改 Command 契约。
+- 证据和影响范围：启动 `SelectedCaptureProvider::autodetect` 优先 xcap；本机已验证真捕获；失败回退 fake 并写 notes。
+- 关闭/缓解证据：`cargo run` 输出 `capture backend = xcap` 与真实分辨率（2026-07-30）。
+- 残留风险：无 pipewire/gbm 的环境无法链接或运行 xcap；Wayland 权限对话框可能阻塞。
+- 负责人和状态：未分配；已缓解并保留降级路径。
+
+## R-005：xcap 系统依赖与链接体积（低）
+
+- 证据和影响范围：依赖 pipewire/gbm/wayland；`cargo` 依赖树显著增大。
+- 触发条件：最小环境构建。
+- 失败模式：缺 `.pc` 文件导致编译失败。
+- 缓解措施：在 conventions 记录 dnf 安装命令；CI 安装对应 -devel。
 - 负责人和状态：未分配；开放。
 
 ## 风险一：上下文漂移

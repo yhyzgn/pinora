@@ -9,11 +9,20 @@
 - 高层用户意图优先映射为 `ActionId`，再展开为 `Command`（`InvokeAction`）。
 - 修改公共模块、类型或函数前，使用 `rg` 搜索全部引用，并运行 `cargo check --workspace` 与相关测试。
 
+## 系统依赖（Linux + xcap）
+
+```bash
+sudo dnf install -y pipewire-devel mesa-libgbm-devel wayland-devel libxcb-devel
+```
+
+缺库时链接失败或运行期降级到 fake。
+
 ## 验证命令
 
 - 工程元数据：`cargo metadata --no-deps --format-version 1`
 - 编译：`cargo check --workspace`
 - 测试：`cargo test --workspace`
+- 真捕获（可选）：`cargo test -p pinora-app real_capture -- --ignored`
 - 运行探针：`cargo run`
 - 上下文完整性：`python /home/neo/.agents/skills/ctx/scripts/context_bootstrap.py validate --root /home/neo/Projects/neo/pub/pinora`
 

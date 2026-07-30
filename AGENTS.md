@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/007_export_and_actions.md`
-- 任务：`.context/tasks/007_export_hotkey_actions.md`
+- 计划：`.context/plans/008_real_capture.md`
+- 任务：`.context/tasks/008_xcap_capture_provider.md`
 
 ## 交付要求
 

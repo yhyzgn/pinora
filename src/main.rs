@@ -1,17 +1,16 @@
 //! Pinora 进程入口（仓库根 `src/main.rs`）。
-//!
-//! Phase 0+：fake 截图、OS 单实例、PNG 导出与内存剪贴板；无 GUI。
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use pinora_app::{
-    AppRuntime, BootstrapOutcome, FakeCapabilityProbe, FakeCaptureProvider, FakeHotkeySource,
-    HotkeySource, LocalImageSink, OsSingleInstance,
+    AppRuntime, BootstrapOutcome, CaptureBackendKind, FakeHotkeySource, HotkeySource,
+    LocalImageSink, OsSingleInstance, RuntimeCapabilityProbe, SelectedCaptureProvider,
 };
 use pinora_core::{
-    ActionId, AppPhase, Command, DomainEventKind, KeyBinding, PixelPoint, PixelRect,
+    ActionId, AppPhase, CaptureProvider, Command, DomainEventKind, KeyBinding, PixelPoint,
+    PixelRect,
 };
 
 fn main() {
@@ -23,16 +22,22 @@ fn main() {
         }
     };
 
+    let (capture, backend, note) = SelectedCaptureProvider::autodetect();
+    println!(
+        "pinora: capture backend = {}{}",
+        backend.as_str(),
+        note.as_ref()
+            .map(|n| format!(" ({n})"))
+            .unwrap_or_default()
+    );
+
+    let (capture_rect, pin_pos) = default_geometry(&capture, backend);
     let export_dir = lock.dir().join("export");
-    let mut runtime = AppRuntime::new(
-        lock,
-        FakeCapabilityProbe,
-        FakeCaptureProvider::new(),
-        LocalImageSink::new(),
-    )
-    .with_defaults(
-        PixelRect::new(100, 80, 320, 180),
-        PixelPoint::new(120, 80),
+    let probe = RuntimeCapabilityProbe::new(backend, note);
+
+    let mut runtime = AppRuntime::new(lock, probe, capture, LocalImageSink::new()).with_defaults(
+        capture_rect,
+        pin_pos,
         export_dir,
     );
 
@@ -57,11 +62,32 @@ fn main() {
     }
 }
 
+fn default_geometry(
+    capture: &SelectedCaptureProvider,
+    backend: CaptureBackendKind,
+) -> (PixelRect, PixelPoint) {
+    if backend == CaptureBackendKind::Xcap {
+        if let Ok(displays) = capture.displays() {
+            if let Some(d0) = displays.first() {
+                let w = 320.min(d0.bounds.size.width.max(1));
+                let h = 180.min(d0.bounds.size.height.max(1));
+                let rect = PixelRect::new(d0.bounds.origin.x, d0.bounds.origin.y, w, h);
+                let pos = PixelPoint::new(d0.bounds.origin.x + 40, d0.bounds.origin.y + 40);
+                return (rect, pos);
+            }
+        }
+    }
+    (
+        PixelRect::new(100, 80, 320, 180),
+        PixelPoint::new(120, 80),
+    )
+}
+
 fn run_primary(
     runtime: &mut AppRuntime<
         OsSingleInstance,
-        FakeCapabilityProbe,
-        FakeCaptureProvider,
+        RuntimeCapabilityProbe,
+        SelectedCaptureProvider,
         LocalImageSink,
     >,
     hotkeys: &mut FakeHotkeySource,
@@ -139,8 +165,8 @@ fn run_primary(
 fn seed_demo_workflow(
     runtime: &mut AppRuntime<
         OsSingleInstance,
-        FakeCapabilityProbe,
-        FakeCaptureProvider,
+        RuntimeCapabilityProbe,
+        SelectedCaptureProvider,
         LocalImageSink,
     >,
 ) -> Result<(), pinora_core::PinoraError> {
