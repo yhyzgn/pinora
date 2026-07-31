@@ -764,8 +764,8 @@ where
 
         let frame = prep.dimmed.clone();
         println!(
-            "pinora: overlay ready {}x{} display={} — 拖选后出工具栏；双击复制 · 中键贴图 · Enter贴图",
-            img_w, img_h, display_id
+            "pinora: overlay ready {}x{} display={display_id:?} — 拖选后出工具栏；双击复制 · 中键贴图 · Enter贴图",
+            img_w, img_h
         );
         window.set_ime_allowed(true);
 
