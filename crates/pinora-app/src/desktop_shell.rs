@@ -1179,6 +1179,7 @@ where
                 return Ok(());
             }
         };
+        let display_id = ov.display_id.clone();
         let global = PixelRect::new(
             ov.display_origin.x.saturating_add(local.origin.x),
             ov.display_origin.y.saturating_add(local.origin.y),
@@ -1187,6 +1188,10 @@ where
         );
         let image = self.crop_overlay_image(true)?;
         let position = PixelPoint::new(global.origin.x, global.origin.y);
+        println!(
+            "pinora: finish {action:?} {}x{} @ ({},{}) display={display_id:?}",
+            local.size.width, local.size.height, global.origin.x, global.origin.y
+        );
 
         // 关闭 overlay
         if let Some(ov) = self.overlay.take() {

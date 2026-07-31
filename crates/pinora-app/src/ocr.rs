@@ -294,4 +294,38 @@ level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theigh
         let _ = tesseract_available();
         let _ = list_tesseract_langs();
     }
+
+    #[test]
+    fn live_tesseract_selects_chi_sim_and_eng_when_installed() {
+        if !tesseract_available() {
+            return;
+        }
+        let langs = detect_languages();
+        assert!(
+            langs.iter().any(|l| l == "eng"),
+            "expected eng in {langs:?}"
+        );
+        // 本机已装 chi_sim 时应优先中英
+        let listed = list_tesseract_langs();
+        if listed.iter().any(|l| l == "chi_sim") {
+            assert!(
+                langs.iter().any(|l| l == "chi_sim"),
+                "expected chi_sim in {langs:?}"
+            );
+        }
+
+        use pinora_core::{
+            CaptureImage, CaptureMetadata, DisplayId, ImageId, PixelRect, PixelSize, RgbaBuffer,
+        };
+        let image = CaptureImage::new(
+            ImageId::new(),
+            RgbaBuffer::solid(PixelSize::new(64, 32), [255, 255, 255, 255]),
+            PixelRect::new(0, 0, 64, 32),
+            CaptureMetadata::new(DisplayId::new("d0"), 1.0, 0),
+        )
+        .unwrap();
+        // 白图可能无字，但引擎调用应成功
+        let result = recognize_image(&image).expect("tesseract should run");
+        assert_eq!(result.languages, langs);
+    }
 }
