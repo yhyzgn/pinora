@@ -122,7 +122,24 @@ impl AnnotateSession {
             Some(DraftShape::Rect { b, .. }) => *b = p,
             Some(DraftShape::Arrow { to, .. }) => *to = p,
             Some(DraftShape::Pen { points }) => {
-                if points.last().copied() != Some(p) {
+                // 插值补点，折线更密、AA 更顺滑
+                if let Some(last) = points.last().copied() {
+                    let dx = p.x - last.x;
+                    let dy = p.y - last.y;
+                    let dist = ((dx * dx + dy * dy) as f64).sqrt();
+                    if dist >= 0.5 {
+                        let steps = (dist / 1.5).ceil() as i32;
+                        for s in 1..=steps {
+                            let t = s as f64 / steps as f64;
+                            let ix = last.x + (dx as f64 * t).round() as i32;
+                            let iy = last.y + (dy as f64 * t).round() as i32;
+                            let np = PixelPoint::new(ix, iy);
+                            if points.last().copied() != Some(np) {
+                                points.push(np);
+                            }
+                        }
+                    }
+                } else {
                     points.push(p);
                 }
             }
@@ -245,16 +262,20 @@ pub fn render_preview_rgba(source: &CaptureImage, session: &AnnotateSession) -> 
     bake_annotations(source, &doc).pixels.bytes
 }
 
-fn put_pixel(buf: &mut [u8], w: i32, h: i32, x: i32, y: i32, color: [u8; 4]) {
-    if x < 0 || y < 0 || x >= w || y >= h {
+/// 带覆盖率的 alpha over（coverage 0..1）。
+fn blend_coverage(buf: &mut [u8], w: i32, h: i32, x: i32, y: i32, color: [u8; 4], cov: f64) {
+    if x < 0 || y < 0 || x >= w || y >= h || cov <= 0.0 {
         return;
     }
+    let cov = cov.clamp(0.0, 1.0);
     let i = ((y * w + x) * 4) as usize;
     if i + 3 >= buf.len() {
         return;
     }
-    // 简单 alpha over
-    let a = color[3] as u32;
+    let a = ((color[3] as f64) * cov).round() as u32;
+    if a == 0 {
+        return;
+    }
     if a >= 255 {
         buf[i] = color[0];
         buf[i + 1] = color[1];
@@ -269,54 +290,93 @@ fn put_pixel(buf: &mut [u8], w: i32, h: i32, x: i32, y: i32, color: [u8; 4]) {
     buf[i + 3] = 255;
 }
 
-fn brush(
-    buf: &mut [u8],
-    w: i32,
-    h: i32,
-    x: i32,
-    y: i32,
-    color: [u8; 4],
-    stroke: u32,
-) {
-    let r = (stroke as i32).max(1) / 2;
-    for dy in -r..=r {
-        for dx in -r..=r {
-            if dx * dx + dy * dy <= r * r + r {
-                put_pixel(buf, w, h, x + dx, y + dy, color);
-            }
-        }
+/// 点到线段距离（像素）。
+fn dist_point_segment(px: f64, py: f64, x0: f64, y0: f64, x1: f64, y1: f64) -> f64 {
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let len2 = dx * dx + dy * dy;
+    if len2 < 1e-12 {
+        let ex = px - x0;
+        let ey = py - y0;
+        return (ex * ex + ey * ey).sqrt();
     }
+    let t = ((px - x0) * dx + (py - y0) * dy) / len2;
+    let t = t.clamp(0.0, 1.0);
+    let qx = x0 + t * dx;
+    let qy = y0 + t * dy;
+    let ex = px - qx;
+    let ey = py - qy;
+    (ex * ex + ey * ey).sqrt()
 }
 
+/// 抗锯齿粗线：胶囊距离场 + 1px 软边。
 fn draw_line(
     buf: &mut [u8],
     w: i32,
     h: i32,
-    mut x0: i32,
-    mut y0: i32,
+    x0: i32,
+    y0: i32,
     x1: i32,
     y1: i32,
     color: [u8; 4],
     stroke: u32,
 ) {
-    let dx = (x1 - x0).abs();
-    let sx = if x0 < x1 { 1 } else { -1 };
-    let dy = -(y1 - y0).abs();
-    let sy = if y0 < y1 { 1 } else { -1 };
-    let mut err = dx + dy;
-    loop {
-        brush(buf, w, h, x0, y0, color, stroke);
-        if x0 == x1 && y0 == y1 {
-            break;
+    let x0 = x0 as f64;
+    let y0 = y0 as f64;
+    let x1 = x1 as f64;
+    let y1 = y1 as f64;
+    let radius = (stroke as f64 * 0.5).max(0.75);
+    let aa = 1.0; // 软边宽度（像素）
+    let pad = (radius + aa + 1.0).ceil() as i32;
+
+    let min_x = x0.min(x1).floor() as i32 - pad;
+    let max_x = x0.max(x1).ceil() as i32 + pad;
+    let min_y = y0.min(y1).floor() as i32 - pad;
+    let max_y = y0.max(y1).ceil() as i32 + pad;
+
+    let min_x = min_x.max(0);
+    let min_y = min_y.max(0);
+    let max_x = max_x.min(w - 1);
+    let max_y = max_y.min(h - 1);
+
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            // 像素中心采样
+            let d = dist_point_segment(x as f64 + 0.5, y as f64 + 0.5, x0, y0, x1, y1);
+            // 覆盖率：半径内为 1，外缘 1px 线性衰减
+            let cov = ((radius + aa * 0.5 - d) / aa).clamp(0.0, 1.0);
+            if cov > 0.0 {
+                blend_coverage(buf, w, h, x, y, color, cov);
+            }
         }
-        let e2 = 2 * err;
-        if e2 >= dy {
-            err += dy;
-            x0 += sx;
-        }
-        if e2 <= dx {
-            err += dx;
-            y0 += sy;
+    }
+}
+
+/// 抗锯齿圆点（画笔端点 / 补点）。
+fn stamp_disc(
+    buf: &mut [u8],
+    w: i32,
+    h: i32,
+    cx: f64,
+    cy: f64,
+    radius: f64,
+    color: [u8; 4],
+) {
+    let aa = 1.0;
+    let pad = (radius + aa + 1.0).ceil() as i32;
+    let min_x = (cx.floor() as i32 - pad).max(0);
+    let max_x = (cx.ceil() as i32 + pad).min(w - 1);
+    let min_y = (cy.floor() as i32 - pad).max(0);
+    let max_y = (cy.ceil() as i32 + pad).min(h - 1);
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let dx = x as f64 + 0.5 - cx;
+            let dy = y as f64 + 0.5 - cy;
+            let d = (dx * dx + dy * dy).sqrt();
+            let cov = ((radius + aa * 0.5 - d) / aa).clamp(0.0, 1.0);
+            if cov > 0.0 {
+                blend_coverage(buf, w, h, x, y, color, cov);
+            }
         }
     }
 }
@@ -334,6 +394,7 @@ fn draw_rect_outline(
     let y0 = a.y.min(b.y);
     let x1 = a.x.max(b.x);
     let y1 = a.y.max(b.y);
+    // 四边独立 AA 线；角点自然重叠混合
     draw_line(buf, w, h, x0, y0, x1, y0, color, stroke);
     draw_line(buf, w, h, x1, y0, x1, y1, color, stroke);
     draw_line(buf, w, h, x1, y1, x0, y1, color, stroke);
@@ -348,6 +409,12 @@ fn draw_polyline(
     color: [u8; 4],
     stroke: u32,
 ) {
+    if points.is_empty() {
+        return;
+    }
+    let r = (stroke as f64 * 0.5).max(0.75);
+    // 端点圆头，避免折线关节缺口
+    stamp_disc(buf, w, h, points[0].x as f64, points[0].y as f64, r, color);
     for win in points.windows(2) {
         draw_line(
             buf,
@@ -360,6 +427,7 @@ fn draw_polyline(
             color,
             stroke,
         );
+        stamp_disc(buf, w, h, win[1].x as f64, win[1].y as f64, r, color);
     }
 }
 
@@ -381,22 +449,21 @@ fn draw_arrow(
     }
     let ux = dx / len;
     let uy = dy / len;
-    let head = 12.0_f64.max(stroke as f64 * 3.0);
+    let head = 14.0_f64.max(stroke as f64 * 3.5);
     let bx = to.x as f64 - ux * head;
     let by = to.y as f64 - uy * head;
     let px = -uy;
     let py = ux;
-    let wing = head * 0.45;
-    let l = PixelPoint::new(
-        (bx + px * wing).round() as i32,
-        (by + py * wing).round() as i32,
-    );
-    let r = PixelPoint::new(
-        (bx - px * wing).round() as i32,
-        (by - py * wing).round() as i32,
-    );
-    draw_line(buf, w, h, to.x, to.y, l.x, l.y, color, stroke);
-    draw_line(buf, w, h, to.x, to.y, r.x, r.y, color, stroke);
+    let wing = head * 0.48;
+    let lx = (bx + px * wing).round() as i32;
+    let ly = (by + py * wing).round() as i32;
+    let rx = (bx - px * wing).round() as i32;
+    let ry = (by - py * wing).round() as i32;
+    draw_line(buf, w, h, to.x, to.y, lx, ly, color, stroke);
+    draw_line(buf, w, h, to.x, to.y, rx, ry, color, stroke);
+    // 箭头尖端更圆润
+    let r = (stroke as f64 * 0.5).max(0.75);
+    stamp_disc(buf, w, h, to.x as f64, to.y as f64, r, color);
 }
 
 #[cfg(test)]
