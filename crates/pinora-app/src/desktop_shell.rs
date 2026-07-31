@@ -172,10 +172,20 @@ struct OverlayState {
     session: SelectionSession,
     phase: OverlayPhase,
     dragging: bool,
+    /// Ready 下按下后尚未移动足够距离，暂不退出 Ready。
+    pending_reselect: bool,
+    drag_anchor: PixelPoint,
     /// 在选区内画标注。
     annotate_dragging: bool,
     annotate: AnnotateSession,
+    /// 标注预览缓存（选区局部 XRGB），避免每帧 crop+bake。
+    annotate_cache: Option<Vec<u32>>,
+    annotate_cache_wh: (u32, u32),
+    annotate_dirty: bool,
     toolbar: Vec<ToolbarButton>,
+    /// 按下工具栏按钮，抬起时若仍命中则触发。
+    toolbar_pressed: Option<ToolbarAction>,
+    last_toolbar_bounds: Option<PixelRect>,
     last_cursor: PixelPoint,
     needs_redraw: bool,
     last_drawn_rect: Option<PixelRect>,
@@ -780,9 +790,16 @@ where
                 .with_min_edge(2),
             phase: OverlayPhase::Selecting,
             dragging: false,
+            pending_reselect: false,
+            drag_anchor: PixelPoint::new(0, 0),
             annotate_dragging: false,
             annotate: AnnotateSession::new(1, 1),
+            annotate_cache: None,
+            annotate_cache_wh: (0, 0),
+            annotate_dirty: true,
             toolbar: Vec::new(),
+            toolbar_pressed: None,
+            last_toolbar_bounds: None,
             last_cursor: PixelPoint::new(0, 0),
             needs_redraw: true,
             last_drawn_rect: None,
@@ -922,10 +939,28 @@ where
                     ov.img_h,
                 );
                 if ov.dragging {
-                    ov.session.update_cursor(ov.last_cursor);
-                    ov.phase = OverlayPhase::Selecting;
-                    ov.toolbar.clear();
-                    ov.needs_redraw = true;
+                    let p = ov.last_cursor;
+                    if ov.pending_reselect {
+                        let dx = (p.x - ov.drag_anchor.x).abs();
+                        let dy = (p.y - ov.drag_anchor.y).abs();
+                        if dx >= 4 || dy >= 4 {
+                            // 确认重选：退出 Ready，清工具栏
+                            ov.pending_reselect = false;
+                            ov.phase = OverlayPhase::Selecting;
+                            ov.toolbar.clear();
+                            ov.toolbar_pressed = None;
+                            ov.last_toolbar_bounds = None;
+                            ov.annotate = AnnotateSession::new(1, 1);
+                            ov.annotate_cache = None;
+                            ov.annotate_dirty = true;
+                            ov.session.begin_drag(ov.drag_anchor);
+                            ov.session.update_cursor(p);
+                            ov.needs_redraw = true;
+                        }
+                    } else {
+                        ov.session.update_cursor(p);
+                        ov.needs_redraw = true;
+                    }
                 } else if ov.annotate_dragging {
                     if let Ok(sel) = ov.session.try_confirm() {
                         let local = PixelPoint::new(
@@ -933,6 +968,7 @@ where
                             ov.last_cursor.y - sel.origin.y,
                         );
                         ov.annotate.drag(local);
+                        ov.annotate_dirty = true;
                         ov.needs_redraw = true;
                     }
                 }
@@ -974,16 +1010,31 @@ where
                     return;
                 };
                 let p = ov.last_cursor;
+                ov.toolbar_pressed = None;
 
-                // 工具栏点击
+                // 1) 工具栏：只记录按下，抬起时触发（更稳）
                 if ov.phase == OverlayPhase::Ready {
                     if let Some(action) = toolbar_hit(&ov.toolbar, p) {
-                        self.apply_toolbar_action(event_loop, action);
+                        ov.toolbar_pressed = Some(action);
+                        println!("pinora: toolbar press {action:?}");
                         return;
+                    }
+                    // 点在工具栏间隙/边框上也不要开新选区
+                    if let Some(bounds) = toolbar_bounds(&ov.toolbar) {
+                        let pad = 6;
+                        let expanded = PixelRect::new(
+                            bounds.origin.x - pad,
+                            bounds.origin.y - pad,
+                            bounds.size.width + (pad * 2) as u32,
+                            bounds.size.height + (pad * 2) as u32,
+                        );
+                        if expanded.contains_point(p) {
+                            return;
+                        }
                     }
                 }
 
-                // 双击选区 → 复制
+                // 2) 选区内：双击复制 / 标注
                 if ov.phase == OverlayPhase::Ready {
                     if let Ok(sel) = ov.session.try_confirm() {
                         if sel.contains_point(p) {
@@ -1004,36 +1055,67 @@ where
                                 }
                                 return;
                             }
-                            // 选区内：开始标注
                             let local = PixelPoint::new(p.x - sel.origin.x, p.y - sel.origin.y);
                             ov.annotate.begin(local);
                             ov.annotate_dragging = ov.annotate.tool != AnnotateTool::Text;
+                            ov.annotate_dirty = true;
                             ov.needs_redraw = true;
                             return;
                         }
                     }
                 }
 
-                // 选区外 / 工具栏外：新选区
-                if let Some(bounds) = toolbar_bounds(&ov.toolbar) {
-                    if bounds.contains_point(p) {
-                        return;
-                    }
-                }
-                ov.phase = OverlayPhase::Selecting;
-                ov.toolbar.clear();
-                ov.annotate = AnnotateSession::new(1, 1);
-                ov.annotate_dragging = false;
+                // 3) 选区外：准备拖新选区（Ready 下需移动阈值才真正重选）
                 ov.dragging = true;
-                ov.session.begin_drag(p);
-                ov.needs_redraw = true;
+                ov.drag_anchor = p;
+                ov.annotate_dragging = false;
+                if ov.phase == OverlayPhase::Ready {
+                    ov.pending_reselect = true;
+                } else {
+                    ov.pending_reselect = false;
+                    ov.session.begin_drag(p);
+                    ov.needs_redraw = true;
+                }
             }
             ElementState::Released => {
+                // 工具栏抬起触发
+                let toolbar_action = self.overlay.as_mut().and_then(|ov| {
+                    let pressed = ov.toolbar_pressed.take()?;
+                    let p = ov.last_cursor;
+                    // 抬起时仍在任意工具栏按钮上即触发原按下动作（允许轻微移动）
+                    if toolbar_hit(&ov.toolbar, p).is_some()
+                        || toolbar_bounds(&ov.toolbar).is_some_and(|b| {
+                            let pad = 8;
+                            PixelRect::new(
+                                b.origin.x - pad,
+                                b.origin.y - pad,
+                                b.size.width + 16,
+                                b.size.height + 16,
+                            )
+                            .contains_point(p)
+                        })
+                    {
+                        Some(pressed)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(action) = toolbar_action {
+                    println!("pinora: toolbar release → {action:?}");
+                    self.apply_toolbar_action(event_loop, action);
+                    return;
+                }
+
                 let Some(ov) = self.overlay.as_mut() else {
                     return;
                 };
                 if ov.dragging {
                     ov.dragging = false;
+                    if ov.pending_reselect {
+                        // 未移动够：当作误触，保持 Ready
+                        ov.pending_reselect = false;
+                        return;
+                    }
                     if let Ok(sel) = ov.session.try_confirm() {
                         ov.phase = OverlayPhase::Ready;
                         ov.toolbar = layout_toolbar(sel, ov.img_w, ov.img_h);
@@ -1044,9 +1126,13 @@ where
                         ov.annotate.tool = tool;
                         ov.annotate.color = color;
                         ov.annotate.stroke = stroke;
+                        ov.annotate_cache = None;
+                        ov.annotate_dirty = true;
                         println!(
-                            "pinora: selection {}x{} — 工具栏就绪 | 双击复制 中键/Enter贴图",
-                            sel.size.width, sel.size.height
+                            "pinora: selection {}x{} toolbar={}btns | 双击复制 中键/Enter贴图",
+                            sel.size.width,
+                            sel.size.height,
+                            ov.toolbar.len()
                         );
                     } else {
                         ov.phase = OverlayPhase::Selecting;
@@ -1056,9 +1142,10 @@ where
                 } else if ov.annotate_dragging {
                     ov.annotate.commit();
                     ov.annotate_dragging = false;
+                    ov.annotate_dirty = true;
                     ov.needs_redraw = true;
                 } else if ov.annotate.is_text_editing() {
-                    // 文本：松手不提交，等再次点击或继续键入
+                    ov.annotate_dirty = true;
                     ov.needs_redraw = true;
                 }
             }
@@ -1088,6 +1175,8 @@ where
             ToolbarAction::Tool(tool) => {
                 if let Some(ov) = self.overlay.as_mut() {
                     ov.annotate.tool = tool;
+                    // 强制重画工具栏高亮（不依赖 annotate 内容变化）
+                    ov.last_toolbar_bounds = None;
                     ov.needs_redraw = true;
                     println!("pinora: tool = {tool:?}");
                 }
@@ -1793,6 +1882,7 @@ fn handle_overlay_key(
         Key::Character(c) if (c == "c" || c == "C") && !modifiers.control_key() => {
             if ov.phase == OverlayPhase::Ready {
                 ov.annotate.cycle_color();
+                ov.annotate_dirty = true;
                 ov.needs_redraw = true;
                 println!("pinora: stroke color rgba{:?}", ov.annotate.color);
             }
@@ -1800,48 +1890,57 @@ fn handle_overlay_key(
         Key::Character(c) if c == "+" || c == "=" => {
             if ov.phase == OverlayPhase::Ready {
                 ov.annotate.stroke_up();
+                ov.annotate_dirty = true;
                 ov.needs_redraw = true;
             }
         }
         Key::Character(c) if c == "-" || c == "_" => {
             if ov.phase == OverlayPhase::Ready {
                 ov.annotate.stroke_down();
+                ov.annotate_dirty = true;
                 ov.needs_redraw = true;
             }
         }
         Key::Character(c) if (c == "z" || c == "Z") && modifiers.control_key() => {
             if ov.phase == OverlayPhase::Ready {
                 ov.annotate.doc.undo();
+                ov.annotate_dirty = true;
                 ov.needs_redraw = true;
             }
         }
         Key::Character(c) if c == "1" || c == "r" || c == "R" => {
             ov.annotate.tool = AnnotateTool::Rect;
+            ov.last_toolbar_bounds = None;
             println!("pinora: tool = Rect");
             ov.needs_redraw = true;
         }
         Key::Character(c) if c == "2" || c == "a" || c == "A" => {
             ov.annotate.tool = AnnotateTool::Arrow;
+            ov.last_toolbar_bounds = None;
             println!("pinora: tool = Arrow");
             ov.needs_redraw = true;
         }
         Key::Character(c) if c == "3" => {
             ov.annotate.tool = AnnotateTool::Pen;
+            ov.last_toolbar_bounds = None;
             println!("pinora: tool = Pen");
             ov.needs_redraw = true;
         }
         Key::Character(c) if c == "4" || c == "e" || c == "E" => {
             ov.annotate.tool = AnnotateTool::Ellipse;
+            ov.last_toolbar_bounds = None;
             println!("pinora: tool = Ellipse");
             ov.needs_redraw = true;
         }
         Key::Character(c) if c == "5" || c == "m" || c == "M" => {
             ov.annotate.tool = AnnotateTool::Mosaic;
+            ov.last_toolbar_bounds = None;
             println!("pinora: tool = Mosaic");
             ov.needs_redraw = true;
         }
         Key::Character(c) if c == "6" || c == "t" || c == "T" => {
             ov.annotate.tool = AnnotateTool::Text;
+            ov.last_toolbar_bounds = None;
             println!("pinora: tool = Text");
             ov.needs_redraw = true;
         }
@@ -1861,6 +1960,8 @@ fn refresh_overlay_ready(ov: &mut OverlayState) {
                 ov.annotate.tool = tool;
                 ov.annotate.color = color;
                 ov.annotate.stroke = stroke;
+                ov.annotate_cache = None;
+                ov.annotate_dirty = true;
             }
         }
     }
@@ -1871,49 +1972,70 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
     let img_w = ov.img_w as usize;
     let img_h = ov.img_h as usize;
     let new_rect = ov.session.preview_rect();
-
-    // 每帧从 dimmed 重建：选区洞 + 标注 + 工具栏（标注会变，脏矩形不够）
-    if ov.frame.len() == ov.dimmed.len() {
-        ov.frame.copy_from_slice(&ov.dimmed);
+    let new_tb = if ov.phase == OverlayPhase::Ready && !ov.toolbar.is_empty() {
+        toolbar_bounds(&ov.toolbar)
     } else {
-        ov.frame = ov.dimmed.clone();
-    }
+        None
+    };
 
-    if let Some(rect) = new_rect {
-        // 选区内：原图或带标注预览
-        let use_annotate = ov.phase == OverlayPhase::Ready
-            && (ov.annotate.doc.len() > 0 || ov.annotate.draft.is_some())
-            && ov.annotate.image_w == rect.size.width
-            && ov.annotate.image_h == rect.size.height;
-        if use_annotate {
-            if let Ok(crop) = ov.full_image.crop_local(rect) {
-                let rgba = render_preview_rgba(&crop, &ov.annotate);
-                blit_rgba_into_xrgb(&mut ov.frame, img_w, img_h, rect, &rgba);
+    let sel_changed = ov.last_drawn_rect != new_rect;
+    let tb_changed = ov.last_toolbar_bounds != new_tb;
+    let content_changed = ov.annotate_dirty || sel_changed || tb_changed;
+
+    if content_changed {
+        // 只恢复旧脏区（从 dimmed），禁止每帧全屏 memcpy
+        if let Some(old) = ov.last_drawn_rect {
+            let expanded = expand_rect(old, 3, ov.img_w, ov.img_h);
+            blit_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, expanded);
+        }
+        if let Some(old_tb) = ov.last_toolbar_bounds {
+            blit_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, old_tb);
+        }
+
+        if let Some(rect) = new_rect {
+            let use_annotate = ov.phase == OverlayPhase::Ready
+                && (ov.annotate.doc.len() > 0 || ov.annotate.draft.is_some())
+                && ov.annotate.image_w == rect.size.width
+                && ov.annotate.image_h == rect.size.height;
+
+            if use_annotate {
+                ensure_annotate_cache(ov, rect);
+                if let Some(cache) = ov.annotate_cache.as_ref() {
+                    blit_xrgb_block(
+                        &mut ov.frame,
+                        img_w,
+                        img_h,
+                        rect,
+                        cache,
+                        rect.size.width as usize,
+                        rect.size.height as usize,
+                    );
+                } else {
+                    blit_rect(&mut ov.frame, &ov.base, img_w, img_h, rect);
+                }
             } else {
                 blit_rect(&mut ov.frame, &ov.base, img_w, img_h, rect);
             }
-        } else {
-            blit_rect(&mut ov.frame, &ov.base, img_w, img_h, rect);
+            let x0 = rect.origin.x.max(0) as usize;
+            let y0 = rect.origin.y.max(0) as usize;
+            let x1 = (rect.right() as usize).min(img_w);
+            let y1 = (rect.bottom() as usize).min(img_h);
+            draw_rect_border(&mut ov.frame, img_w, img_h, x0, y0, x1, y1, 0x00_FF_CC_33);
         }
-        let x0 = rect.origin.x.max(0) as usize;
-        let y0 = rect.origin.y.max(0) as usize;
-        let x1 = (rect.right() as usize).min(img_w);
-        let y1 = (rect.bottom() as usize).min(img_h);
-        draw_rect_border(&mut ov.frame, img_w, img_h, x0, y0, x1, y1, 0x00_FF_CC_33);
 
-        // 尺寸角标
-        // （省略文字；工具栏已足够）
-    }
-    ov.last_drawn_rect = new_rect;
+        if ov.phase == OverlayPhase::Ready && !ov.toolbar.is_empty() {
+            paint_toolbar(
+                &mut ov.frame,
+                img_w,
+                img_h,
+                &ov.toolbar,
+                ov.annotate.tool,
+            );
+        }
 
-    if ov.phase == OverlayPhase::Ready && !ov.toolbar.is_empty() {
-        paint_toolbar(
-            &mut ov.frame,
-            img_w,
-            img_h,
-            &ov.toolbar,
-            ov.annotate.tool,
-        );
+        ov.last_drawn_rect = new_rect;
+        ov.last_toolbar_bounds = new_tb;
+        ov.annotate_dirty = false;
     }
 
     let mut buffer = ov.surface.buffer_mut().map_err(|e| {
@@ -1940,37 +2062,60 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
     Ok(())
 }
 
-/// 将 RGBA 块写入 XRGB frame 的 rect 区域。
-fn blit_rgba_into_xrgb(
+fn expand_rect(r: PixelRect, pad: i32, img_w: u32, img_h: u32) -> PixelRect {
+    let x0 = (r.origin.x - pad).max(0);
+    let y0 = (r.origin.y - pad).max(0);
+    let x1 = (r.right() + pad).min(img_w as i32);
+    let y1 = (r.bottom() + pad).min(img_h as i32);
+    PixelRect::new(x0, y0, (x1 - x0).max(0) as u32, (y1 - y0).max(0) as u32)
+}
+
+/// 在选区变化/标注变化时重烤局部缓存。
+fn ensure_annotate_cache(ov: &mut OverlayState, rect: PixelRect) {
+    let wh = (rect.size.width, rect.size.height);
+    if !ov.annotate_dirty
+        && ov.annotate_cache.is_some()
+        && ov.annotate_cache_wh == wh
+    {
+        return;
+    }
+    ov.annotate_cache = None;
+    if let Ok(crop) = ov.full_image.crop_local(rect) {
+        let rgba = render_preview_rgba(&crop, &ov.annotate);
+        let xrgb = rgba_to_xrgb(&rgba);
+        ov.annotate_cache = Some(xrgb);
+        ov.annotate_cache_wh = wh;
+    }
+}
+
+fn blit_xrgb_block(
     frame: &mut [u32],
     stride: usize,
     height: usize,
     rect: PixelRect,
-    rgba: &[u8],
+    src: &[u32],
+    sw: usize,
+    sh: usize,
 ) {
-    let rw = rect.size.width as usize;
-    let rh = rect.size.height as usize;
-    if rw == 0 || rh == 0 || rgba.len() < rw * rh * 4 {
-        return;
-    }
     let x0 = rect.origin.x.max(0) as usize;
     let y0 = rect.origin.y.max(0) as usize;
-    for row in 0..rh {
+    let rw = rect.size.width as usize;
+    let rh = rect.size.height as usize;
+    if sw == 0 || sh == 0 || src.len() < sw * sh {
+        return;
+    }
+    for row in 0..rh.min(sh) {
         let dy = y0 + row;
         if dy >= height {
             break;
         }
-        for col in 0..rw {
-            let dx = x0 + col;
-            if dx >= stride {
-                break;
-            }
-            let si = (row * rw + col) * 4;
-            let r = rgba[si] as u32;
-            let g = rgba[si + 1] as u32;
-            let b = rgba[si + 2] as u32;
-            frame[dy * stride + dx] = (r << 16) | (g << 8) | b;
+        let copy_w = rw.min(sw).min(stride.saturating_sub(x0));
+        if copy_w == 0 {
+            continue;
         }
+        let dst = dy * stride + x0;
+        let src_i = row * sw;
+        frame[dst..dst + copy_w].copy_from_slice(&src[src_i..src_i + copy_w]);
     }
 }
 

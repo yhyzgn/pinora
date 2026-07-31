@@ -20,11 +20,13 @@ pub struct ToolbarButton {
     pub rect: PixelRect,
 }
 
-const BTN_W: u32 = 52;
-const BTN_H: u32 = 28;
-const GAP: u32 = 4;
-const PAD: u32 = 6;
-const BAR_MARGIN: i32 = 8;
+const BTN_W: u32 = 64;
+const BTN_H: u32 = 36;
+const GAP: u32 = 6;
+const PAD: u32 = 8;
+const BAR_MARGIN: i32 = 10;
+/// 命中测试外扩，降低点不中概率。
+const HIT_PAD: i32 = 4;
 
 /// 在选区下方（空间不足则上方）排布工具栏。
 pub fn layout_toolbar(selection: PixelRect, img_w: u32, img_h: u32) -> Vec<ToolbarButton> {
@@ -73,12 +75,20 @@ pub fn layout_toolbar(selection: PixelRect, img_w: u32, img_h: u32) -> Vec<Toolb
     buttons
 }
 
-/// 命中测试。
+/// 命中测试（带外扩）。
 pub fn hit_test(buttons: &[ToolbarButton], p: PixelPoint) -> Option<ToolbarAction> {
-    buttons
-        .iter()
-        .find(|b| b.rect.contains_point(p))
-        .map(|b| b.action)
+    buttons.iter().find_map(|b| {
+        let r = b.rect;
+        let x0 = r.origin.x - HIT_PAD;
+        let y0 = r.origin.y - HIT_PAD;
+        let x1 = r.right() + HIT_PAD;
+        let y1 = r.bottom() + HIT_PAD;
+        if p.x >= x0 && p.y >= y0 && p.x < x1 && p.y < y1 {
+            Some(b.action)
+        } else {
+            None
+        }
+    })
 }
 
 /// 工具栏总包围盒（用于避免点到工具栏时开始新选区）。
