@@ -164,7 +164,7 @@ enum OverlayFinish {
 struct OverlayState {
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
-    /// 选区外：真实桌面暗化（**交互缓冲分辨率**，非 4K 原图像素）。
+        /// 选区外：真实桌面暗化（与截图 1:1 像素）。
     dimmed: Vec<u32>,
     /// 选区内：真实桌面原图。
     base: Vec<u32>,
@@ -202,7 +202,7 @@ struct OverlayState {
     /// 原图像素尺寸（裁剪/导出用）。
     src_w: u32,
     src_h: u32,
-    /// 交互缓冲尺寸（softbuffer / 选区坐标，最长边 ≤ 1920）。
+    /// softbuffer / 选区坐标尺寸（与 src 1:1）。
     buf_w: u32,
     buf_h: u32,
     /// Ready 时对应的原图选区（导出/标注坐标系）。
@@ -779,38 +779,15 @@ where
             PinoraError::new(ErrorCode::Internal, format!("overlay surface: {e}"))
         })?;
 
-        // 4K 全分辨率 softbuffer 交互必卡；交互层最长边压到 1920，导出仍用 full_image。
+        // 1:1 原图像素显示（不降采样，避免全屏发糊）。
+        // softbuffer 固定为截图尺寸；禁止跟窗口 resize 走（否则会整屏 scale 卡死）。
+        // 性能靠：脏区 present、工具零重绘、拖选节流、release 构建。
         let src_w = img_w.max(1);
         let src_h = img_h.max(1);
-        let (buf_w, buf_h) = choose_overlay_buffer_size(src_w, src_h);
-        let dimmed = if buf_w == src_w && buf_h == src_h {
-            prep.dimmed
-        } else {
-            let mut out = vec![0u32; (buf_w as usize) * (buf_h as usize)];
-            scale_nearest(
-                &prep.dimmed,
-                src_w as usize,
-                src_h as usize,
-                &mut out,
-                buf_w as usize,
-                buf_h as usize,
-            );
-            out
-        };
-        let base = if buf_w == src_w && buf_h == src_h {
-            prep.base
-        } else {
-            let mut out = vec![0u32; (buf_w as usize) * (buf_h as usize)];
-            scale_nearest(
-                &prep.base,
-                src_w as usize,
-                src_h as usize,
-                &mut out,
-                buf_w as usize,
-                buf_h as usize,
-            );
-            out
-        };
+        let buf_w = src_w;
+        let buf_h = src_h;
+        let dimmed = prep.dimmed;
+        let base = prep.base;
         if let (Some(w), Some(h)) = (NonZeroU32::new(buf_w), NonZeroU32::new(buf_h)) {
             let _ = surface.resize(w, h);
         }
@@ -819,17 +796,11 @@ where
         let win_h = size.height.max(1);
 
         let frame = dimmed.clone();
-        let pixels = (buf_w as u64) * (buf_h as u64);
-        let full_px = (src_w as u64) * (src_h as u64);
         println!(
-            "pinora: overlay ready src={src_w}x{src_h} buf={buf_w}x{buf_h} win={win_w}x{win_h} \
-             ({:.0}x fewer px) display={display_id:?}",
-            full_px as f64 / pixels.max(1) as f64
+            "pinora: overlay ready {src_w}x{src_h} 1:1 win={win_w}x{win_h} display={display_id:?}"
         );
-        if cfg!(debug_assertions) && full_px > 2_000_000 {
-            println!(
-                "pinora: tip: 4K debug 构建仍偏慢，日常请用 `cargo run --release`"
-            );
+        if cfg!(debug_assertions) {
+            println!("pinora: tip: 4K 请用 `cargo run --release`，debug 会明显更卡");
         }
         window.set_ime_allowed(true);
 
@@ -2239,22 +2210,6 @@ fn ensure_annotate_cache(ov: &mut OverlayState, disp_rect: PixelRect) {
     ov.annotate_cache_wh = wh;
 }
 
-/// 交互缓冲最长边；4K 会降到约 1920 宽，像素约 1/4。
-const OVERLAY_BUF_MAX_EDGE: u32 = 1920;
-
-fn choose_overlay_buffer_size(src_w: u32, src_h: u32) -> (u32, u32) {
-    let src_w = src_w.max(1);
-    let src_h = src_h.max(1);
-    let long = src_w.max(src_h);
-    if long <= OVERLAY_BUF_MAX_EDGE {
-        return (src_w, src_h);
-    }
-    let scale = f64::from(long) / f64::from(OVERLAY_BUF_MAX_EDGE);
-    let dw = (f64::from(src_w) / scale).round().max(1.0) as u32;
-    let dh = (f64::from(src_h) / scale).round().max(1.0) as u32;
-    (dw, dh)
-}
-
 fn buf_rect_to_src(
     disp: PixelRect,
     buf_w: u32,
@@ -2333,14 +2288,22 @@ mod overlay_scale_tests {
     use super::*;
 
     #[test]
-    fn buffer_size_downscales_4k() {
-        let (w, h) = choose_overlay_buffer_size(3840, 2160);
-        assert!(w <= 1920 && h <= 1920);
-        assert_eq!((w, h), (1920, 1080));
+    fn buf_to_src_identity_when_1to1() {
+        let r = buf_rect_to_src(
+            PixelRect::new(10, 20, 100, 50),
+            3840,
+            2160,
+            3840,
+            2160,
+        );
+        assert_eq!(r.origin.x, 10);
+        assert_eq!(r.origin.y, 20);
+        assert_eq!(r.size.width, 100);
+        assert_eq!(r.size.height, 50);
     }
 
     #[test]
-    fn buf_to_src_maps_full() {
+    fn buf_to_src_maps_half_buffer() {
         let r = buf_rect_to_src(
             PixelRect::new(0, 0, 1920, 1080),
             1920,
@@ -2348,8 +2311,6 @@ mod overlay_scale_tests {
             3840,
             2160,
         );
-        assert_eq!(r.origin.x, 0);
-        assert_eq!(r.origin.y, 0);
         assert_eq!(r.size.width, 3840);
         assert_eq!(r.size.height, 2160);
     }
