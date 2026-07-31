@@ -14,3 +14,5 @@ xcap = "0.9.7"
 winit = "0.30"
 softbuffer = "0.4"
 global-hotkey = "0.7"
+# 关闭 libxdo 默认特性，避免链接 -lxdo（Wayland/KDE 不需要）
+tray-icon = { version = "0.19", default-features = false }

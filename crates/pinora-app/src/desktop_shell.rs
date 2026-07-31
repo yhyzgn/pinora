@@ -12,11 +12,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use pinora_core::{
-    ActionId, CaptureImage, CaptureProvider, CaptureRequest, Command, DisplayId, DomainEventKind,
-    ErrorCode, ImageSink, PinId, PinoraError, PixelPoint, PixelRect, SelectionSession,
+    bake_annotations, render_preview_rgba, ActionId, AnnotateSession, AnnotateTool, CaptureImage,
+    CaptureProvider, CaptureRequest, Command, DisplayId, DomainEventKind, ErrorCode, ImageSink,
+    PinId, PinTransform, PinoraError, PixelPoint, PixelRect, SelectionSession,
 };
 use crate::frame_cache::{rgba_to_xrgb_and_dim, FrameCache};
 use crate::hotkey::GlobalHotkeyHub;
+use crate::tray::{AppTray, TrayAction};
 use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -61,6 +63,17 @@ where
     let frame_cache = FrameCache::start(provider);
     println!("pinora: frame-cache started (pre-capture for instant overlay)");
 
+    let tray = match AppTray::try_new() {
+        Ok(t) => {
+            println!("pinora: system tray ready (click / menu → capture)");
+            Some(t)
+        }
+        Err(e) => {
+            eprintln!("pinora: system tray unavailable: {e}");
+            None
+        }
+    };
+
     let mut app = DesktopApp {
         runtime: Some(runtime),
         context: None,
@@ -68,6 +81,7 @@ where
         mode: Mode::StartCapture,
         loading: None,
         overlay: None,
+        annotate: None,
         control: None,
         pins: HashMap::new(),
         drag_pin: None,
@@ -78,6 +92,7 @@ where
         hotkeys,
         frame_cache: Some(frame_cache),
         start_capture_wait: None,
+        tray,
     };
 
     event_loop
@@ -103,6 +118,8 @@ enum Mode {
     StartCapture,
     /// 正在后台截屏，显示小加载窗。
     LoadingCapture,
+    /// 标注编辑（确认选区后）。
+    Annotating,
     /// 空闲：仅贴图窗口。
     Idle,
 }
@@ -154,8 +171,25 @@ struct PinWin {
     image: CaptureImage,
     pixels_xrgb: Vec<u32>,
     scale: f64,
+    opacity: f64,
+    locked: bool,
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
+}
+
+/// 选区确认后的标注编辑窗。
+struct AnnotateState {
+    window: Rc<Window>,
+    surface: Surface<Rc<Window>, Rc<Window>>,
+    source: CaptureImage,
+    /// 贴图落点（选区全局坐标）。
+    pin_position: PixelPoint,
+    session: AnnotateSession,
+    dragging: bool,
+    last_cursor: PixelPoint,
+    needs_redraw: bool,
+    win_w: u32,
+    win_h: u32,
 }
 
 struct DesktopApp<L, P, C, S> {
@@ -164,6 +198,7 @@ struct DesktopApp<L, P, C, S> {
     mode: Mode,
     loading: Option<LoadingState>,
     overlay: Option<OverlayState>,
+    annotate: Option<AnnotateState>,
     /// 无选区/加载时的常驻控制窗（收 F2 / Ctrl+N / Ctrl+Q）。
     control: Option<ControlState>,
     pins: HashMap<WindowId, PinWin>,
@@ -176,6 +211,7 @@ struct DesktopApp<L, P, C, S> {
     frame_cache: Option<FrameCache>,
     /// 等待 frame-cache 首帧的起始时间；超时走 cold path。
     start_capture_wait: Option<Instant>,
+    tray: Option<AppTray>,
 }
 
 impl<L, P, C, S> ApplicationHandler for DesktopApp<L, P, C, S>
@@ -191,6 +227,28 @@ where
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // 托盘菜单（先收集动作，避免与 self 可变借用冲突）
+        let mut tray_actions = Vec::new();
+        if let Some(tray) = &self.tray {
+            while let Some(action) = tray.poll() {
+                tray_actions.push(action);
+            }
+        }
+        for action in tray_actions {
+            match action {
+                TrayAction::Capture => {
+                    println!("pinora: tray → capture");
+                    self.request_new_capture(event_loop);
+                }
+                TrayAction::Quit => {
+                    println!("pinora: tray → quit");
+                    self.quit = true;
+                    event_loop.exit();
+                    return;
+                }
+            }
+        }
+
         // 单实例 socket 转发 + 全局热键
         self.poll_external_actions(event_loop);
 
@@ -232,6 +290,13 @@ where
                     ));
                 }
                 return;
+            }
+        }
+
+        if let Some(an) = self.annotate.as_mut() {
+            if an.needs_redraw {
+                an.needs_redraw = false;
+                an.window.request_redraw();
             }
         }
 
@@ -284,6 +349,12 @@ where
         if let Some(ov) = self.overlay.as_ref() {
             if ov.window.id() == window_id {
                 self.handle_overlay_event(event_loop, event);
+                return;
+            }
+        }
+        if let Some(an) = self.annotate.as_ref() {
+            if an.window.id() == window_id {
+                self.handle_annotate_event(event_loop, event);
                 return;
             }
         }
@@ -579,10 +650,13 @@ where
         }
     }
 
-    /// 任意模式触发再截：立刻关 overlay/loading，开新一轮 grab。
+    /// 任意模式触发再截：立刻关 overlay/loading/annotate，开新一轮 grab。
     fn request_new_capture(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(ov) = self.overlay.take() {
             ov.window.set_visible(false);
+        }
+        if let Some(an) = self.annotate.take() {
+            an.window.set_visible(false);
         }
         let _ = self.loading.take();
         self.hide_control();
@@ -879,9 +953,233 @@ where
         let size = image.size();
         let position = PixelPoint::new(global.origin.x, global.origin.y);
 
-        // 关键键：overlay 先保持显示盖住桌面，贴图建好并钉位、画完后，再关 overlay。
-        // 避免「先关遮罩 → 闪一下桌面 → 再出贴图」。
-        ov.window.set_window_level(WindowLevel::AlwaysOnTop);
+        // 关闭选区遮罩，进入标注编辑（矩形/箭头/画笔），完成后再贴图
+        ov.window.set_visible(false);
+        drop(ov);
+
+        println!(
+            "pinora: annotate {}x{} — [1]Rect [2]Arrow [3]Pen  Enter=贴图  Ctrl+Z=撤销  Esc=跳过标注",
+            size.width, size.height
+        );
+        self.open_annotate(event_loop, image, position)?;
+        Ok(())
+    }
+
+    fn open_annotate(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        image: CaptureImage,
+        pin_position: PixelPoint,
+    ) -> Result<(), PinoraError> {
+        self.ensure_context(event_loop);
+        let context = self.context.as_ref().ok_or_else(|| {
+            PinoraError::new(ErrorCode::Internal, "softbuffer context unavailable")
+        })?;
+        let w = image.pixels.size.width.max(1);
+        let h = image.pixels.size.height.max(1);
+        let session = AnnotateSession::new(w, h);
+
+        let attrs = Window::default_attributes()
+            .with_title("Pinora 标注 — 1矩形 2箭头 3画笔 | Enter贴图 Esc跳过 Ctrl+Z撤销")
+            .with_inner_size(PhysicalSize::new(w, h))
+            .with_decorations(true)
+            .with_resizable(true)
+            .with_visible(true)
+            .with_window_level(WindowLevel::AlwaysOnTop);
+        let window = event_loop
+            .create_window(attrs)
+            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("annotate window: {e}")))?;
+        let window = Rc::new(window);
+        let _ = window.focus_window();
+
+        let mut surface = Surface::new(context, window.clone()).map_err(|e| {
+            PinoraError::new(ErrorCode::Internal, format!("annotate surface: {e}"))
+        })?;
+        if let (Some(nw), Some(nh)) = (NonZeroU32::new(w), NonZeroU32::new(h)) {
+            let _ = surface.resize(nw, nh);
+        }
+
+        self.annotate = Some(AnnotateState {
+            window: window.clone(),
+            surface,
+            source: image,
+            pin_position,
+            session,
+            dragging: false,
+            last_cursor: PixelPoint::new(0, 0),
+            needs_redraw: true,
+            win_w: w,
+            win_h: h,
+        });
+        self.mode = Mode::Annotating;
+        if let Some(cache) = &self.frame_cache {
+            cache.pause();
+        }
+        window.request_redraw();
+        Ok(())
+    }
+
+    fn handle_annotate_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
+        // 会拿走 annotate 的动作先处理，避免借用冲突
+        match &event {
+            WindowEvent::CloseRequested => {
+                if let Err(e) = self.finish_annotate(event_loop, false) {
+                    eprintln!("pinora: finish annotate: {e}");
+                    self.close_annotate();
+                }
+                return;
+            }
+            WindowEvent::KeyboardInput { event: key, .. } if key.state.is_pressed() => {
+                if self.is_quit_key(key) {
+                    self.quit = true;
+                    event_loop.exit();
+                    return;
+                }
+                if self.is_new_capture_key(key) {
+                    self.close_annotate();
+                    self.request_new_capture(event_loop);
+                    return;
+                }
+                if matches!(key.logical_key, Key::Named(NamedKey::Enter)) {
+                    if let Err(e) = self.finish_annotate(event_loop, true) {
+                        eprintln!("pinora: finish annotate: {e}");
+                    }
+                    return;
+                }
+                if matches!(key.logical_key, Key::Named(NamedKey::Escape)) {
+                    if let Err(e) = self.finish_annotate(event_loop, false) {
+                        eprintln!("pinora: finish annotate: {e}");
+                    }
+                    return;
+                }
+            }
+            _ => {}
+        }
+
+        let Some(an) = self.annotate.as_mut() else {
+            return;
+        };
+
+        match event {
+            WindowEvent::ModifiersChanged(m) => {
+                self.modifiers = m.state();
+            }
+            WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {
+                match &event.logical_key {
+                    Key::Character(c) if c == "1" || c == "r" || c == "R" => {
+                        an.session.tool = AnnotateTool::Rect;
+                        an.window.set_title(
+                            "Pinora 标注 [矩形] — 1矩形 2箭头 3画笔 | Enter贴图 Esc跳过",
+                        );
+                        println!("pinora: tool = Rect");
+                    }
+                    Key::Character(c) if c == "2" || c == "a" || c == "A" => {
+                        an.session.tool = AnnotateTool::Arrow;
+                        an.window.set_title(
+                            "Pinora 标注 [箭头] — 1矩形 2箭头 3画笔 | Enter贴图 Esc跳过",
+                        );
+                        println!("pinora: tool = Arrow");
+                    }
+                    Key::Character(c) if c == "3" || c == "p" || c == "P" => {
+                        an.session.tool = AnnotateTool::Pen;
+                        an.window.set_title(
+                            "Pinora 标注 [画笔] — 1矩形 2箭头 3画笔 | Enter贴图 Esc跳过",
+                        );
+                        println!("pinora: tool = Pen");
+                    }
+                    Key::Character(c) if (c == "z" || c == "Z") && self.modifiers.control_key() => {
+                        an.session.doc.undo();
+                        an.needs_redraw = true;
+                        println!("pinora: annotate undo ({} left)", an.session.doc.len());
+                    }
+                    _ => {}
+                }
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => match state {
+                ElementState::Pressed => {
+                    let p = an.last_cursor;
+                    an.session.begin(p);
+                    an.dragging = true;
+                    an.needs_redraw = true;
+                }
+                ElementState::Released => {
+                    if an.dragging {
+                        an.session.commit();
+                        an.dragging = false;
+                        an.needs_redraw = true;
+                    }
+                }
+            },
+            WindowEvent::CursorMoved { position, .. } => {
+                let p = window_to_image(
+                    position.x,
+                    position.y,
+                    an.win_w,
+                    an.win_h,
+                    an.session.image_w,
+                    an.session.image_h,
+                );
+                an.last_cursor = p;
+                if an.dragging {
+                    an.session.drag(p);
+                    an.needs_redraw = true;
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                if let Err(e) = paint_annotate(an) {
+                    self.error = Some(e);
+                    event_loop.exit();
+                }
+            }
+            WindowEvent::Resized(size) => {
+                an.win_w = size.width.max(1);
+                an.win_h = size.height.max(1);
+                if let (Some(nw), Some(nh)) = (NonZeroU32::new(an.win_w), NonZeroU32::new(an.win_h))
+                {
+                    let _ = an.surface.resize(nw, nh);
+                }
+                an.needs_redraw = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn close_annotate(&mut self) {
+        if let Some(an) = self.annotate.take() {
+            an.window.set_visible(false);
+        }
+        if matches!(self.mode, Mode::Annotating) {
+            self.mode = Mode::Idle;
+        }
+        self.resume_frame_cache();
+    }
+
+    /// `apply_doc`: true 烧录标注；false 用原图贴图。
+    fn finish_annotate(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        apply_doc: bool,
+    ) -> Result<(), PinoraError> {
+        let an = self.annotate.take().ok_or_else(|| {
+            PinoraError::new(ErrorCode::Internal, "annotate missing")
+        })?;
+        an.window.set_visible(false);
+
+        let position = an.pin_position;
+        let image = if apply_doc && !an.session.doc.is_empty() {
+            println!(
+                "pinora: baking {} annotation(s)",
+                an.session.doc.len()
+            );
+            bake_annotations(&an.source, &an.session.doc)
+        } else {
+            an.source.clone()
+        };
+        drop(an);
 
         let rt = self.runtime.as_mut().unwrap();
         let pin = rt.dispatch(Command::create_pin(image.clone(), position))?;
@@ -895,8 +1193,8 @@ where
             .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "missing PinCreated"))?;
 
         println!(
-            "pinora: pin {pin_id} ({}x{}) at ({}, {}) — drag move, scroll zoom, Esc close",
-            size.width, size.height, position.x, position.y
+            "pinora: pin {pin_id} ({}x{}) — L锁定 [ ]透明度 滚轮缩放 Esc关闭",
+            image.pixels.size.width, image.pixels.size.height
         );
 
         if let Ok(save) = rt.dispatch(Command::invoke_action(ActionId::SaveLastCapture)) {
@@ -908,13 +1206,7 @@ where
         }
         let _ = rt.dispatch(Command::invoke_action(ActionId::CopyLastCapture));
 
-        // 先建贴图（先不可见 → 画完 → 钉位 → 再显示），全程 overlay 仍盖着
         self.spawn_pin(event_loop, pin_id, image, position, 1.0)?;
-
-        // 贴图已就位，最后才撤掉全屏遮罩
-        ov.window.set_visible(false);
-        drop(ov);
-
         self.mode = Mode::Idle;
         self.resume_frame_cache();
         Ok(())
@@ -971,6 +1263,8 @@ where
                 image,
                 pixels_xrgb,
                 scale,
+                opacity: 1.0,
+                locked: false,
                 window: window.clone(),
                 surface,
             },
@@ -1032,6 +1326,30 @@ where
                 }
                 if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
                     self.close_pin(window_id);
+                    return;
+                }
+                // L：锁定/解锁；[ ]：透明度
+                if let Key::Character(c) = &event.logical_key {
+                    if c == "l" || c == "L" {
+                        if let Some(pin) = self.pins.get_mut(&window_id) {
+                            pin.locked = !pin.locked;
+                            println!(
+                                "pinora: pin {} {}",
+                                pin.pin_id,
+                                if pin.locked { "LOCKED" } else { "unlocked" }
+                            );
+                            self.sync_pin_transform(window_id);
+                        }
+                        return;
+                    }
+                    if c == "[" {
+                        self.nudge_pin_opacity(window_id, -0.1);
+                        return;
+                    }
+                    if c == "]" {
+                        self.nudge_pin_opacity(window_id, 0.1);
+                        return;
+                    }
                 }
             }
             WindowEvent::MouseInput {
@@ -1039,8 +1357,12 @@ where
                 button: MouseButton::Left,
                 ..
             } => {
-                // Wayland 下用协议级拖动，set_outer_position 往往无效
                 if let Some(pin) = self.pins.get(&window_id) {
+                    if pin.locked {
+                        println!("pinora: pin locked — press L to unlock");
+                        return;
+                    }
+                    // Wayland 下用协议级拖动
                     if let Err(e) = pin.window.drag_window() {
                         eprintln!("pinora: drag_window failed: {e:?}");
                         self.drag_pin = Some(window_id);
@@ -1086,6 +1408,9 @@ where
                 let Some(pin) = self.pins.get_mut(&window_id) else {
                     return;
                 };
+                if pin.locked {
+                    return;
+                }
                 let factor = if steps > 0.0 { 1.1_f64 } else { 1.0 / 1.1 };
                 pin.scale = (pin.scale * factor).clamp(0.1, 8.0);
                 let (w, h) = scaled_window_size(pin.image.size(), pin.scale);
@@ -1094,6 +1419,7 @@ where
                     let _ = pin.surface.resize(nw, nh);
                 }
                 pin.window.request_redraw();
+                self.sync_pin_transform(window_id);
             }
             WindowEvent::RedrawRequested => {
                 if let Err(e) = self.paint_pin(window_id) {
@@ -1116,6 +1442,45 @@ where
                 // 确保键盘可用
             }
             _ => {}
+        }
+    }
+
+    fn nudge_pin_opacity(&mut self, window_id: WindowId, delta: f64) {
+        let Some(pin) = self.pins.get_mut(&window_id) else {
+            return;
+        };
+        if pin.locked {
+            return;
+        }
+        pin.opacity = (pin.opacity + delta).clamp(0.15, 1.0);
+        println!(
+            "pinora: pin {} opacity {:.0}%",
+            pin.pin_id,
+            pin.opacity * 100.0
+        );
+        // softbuffer 无真透明：用棋盘/变暗近似半透明观感
+        pin.window.request_redraw();
+        self.sync_pin_transform(window_id);
+    }
+
+    fn sync_pin_transform(&mut self, window_id: WindowId) {
+        let Some(pin) = self.pins.get(&window_id) else {
+            return;
+        };
+        let pin_id = pin.pin_id;
+        let transform = PinTransform {
+            position: PixelPoint::new(0, 0), // 位置由窗口管理，状态仅存缩放/透明
+            scale: pin.scale,
+            rotation_deg: 0.0,
+            opacity: pin.opacity,
+        }
+        .clamped();
+        let locked = pin.locked;
+        if let Some(rt) = self.runtime.as_mut() {
+            if let Some(p) = rt.state_mut().pin_mut(pin_id) {
+                p.transform = transform;
+                p.locked = locked;
+            }
         }
     }
 
@@ -1166,12 +1531,23 @@ where
         }
         let sw = pin.image.pixels.size.width as usize;
         let sh = pin.image.pixels.size.height as usize;
+        let opacity = pin.opacity;
+        let locked = pin.locked;
         if bw == sw && bh == sh {
             buffer[..bw * bh].copy_from_slice(&pin.pixels_xrgb);
         } else {
             scale_nearest(&pin.pixels_xrgb, sw, sh, &mut buffer[..bw * bh], bw, bh);
         }
-        draw_border(&mut buffer[..bw * bh], bw, bh, 0x00_40_A0_FF);
+        // softbuffer 无真透明：用不透明度压暗近似
+        if opacity < 0.999 {
+            apply_opacity_darken(&mut buffer[..bw * bh], opacity);
+        }
+        let border = if locked {
+            0x00_CC_44_22 // 锁定：偏红边
+        } else {
+            0x00_40_A0_FF
+        };
+        draw_border(&mut buffer[..bw * bh], bw, bh, border);
         buffer
             .present()
             .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("pin present: {e}")))?;
@@ -1261,6 +1637,49 @@ fn window_to_image(x: f64, y: f64, win_w: u32, win_h: u32, img_w: u32, img_h: u3
 fn rgba_to_xrgb(bytes: &[u8]) -> Vec<u32> {
     let (base, _) = rgba_to_xrgb_and_dim(bytes);
     base
+}
+
+fn paint_annotate(an: &mut AnnotateState) -> Result<(), PinoraError> {
+    let rgba = render_preview_rgba(&an.source, &an.session);
+    let xrgb = rgba_to_xrgb(&rgba);
+    let iw = an.session.image_w.max(1) as usize;
+    let ih = an.session.image_h.max(1) as usize;
+    let bw = an.win_w.max(1) as usize;
+    let bh = an.win_h.max(1) as usize;
+    if let (Some(nw), Some(nh)) = (
+        NonZeroU32::new(an.win_w.max(1)),
+        NonZeroU32::new(an.win_h.max(1)),
+    ) {
+        let _ = an.surface.resize(nw, nh);
+    }
+    let mut buffer = an.surface.buffer_mut().map_err(|e| {
+        PinoraError::new(ErrorCode::Internal, format!("annotate buffer: {e}"))
+    })?;
+    if buffer.len() < bw * bh {
+        return Ok(());
+    }
+    if bw == iw && bh == ih && xrgb.len() >= iw * ih {
+        buffer[..bw * bh].copy_from_slice(&xrgb[..bw * bh]);
+    } else {
+        scale_nearest(&xrgb, iw, ih, &mut buffer[..bw * bh], bw, bh);
+    }
+    draw_border(&mut buffer[..bw * bh], bw, bh, 0x00_FF_CC_33);
+    buffer
+        .present()
+        .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("annotate present: {e}")))?;
+    Ok(())
+}
+
+/// 无窗口透明时，用压暗模拟 opacity（1.0 = 原色，0.15 = 很暗）。
+fn apply_opacity_darken(buf: &mut [u32], opacity: f64) {
+    let o = opacity.clamp(0.05, 1.0);
+    let factor = (o * 256.0) as u32;
+    for px in buf.iter_mut() {
+        let r = ((*px >> 16) & 0xff) * factor / 256;
+        let g = ((*px >> 8) & 0xff) * factor / 256;
+        let b = (*px & 0xff) * factor / 256;
+        *px = (r << 16) | (g << 8) | b;
+    }
 }
 
 fn blit_rect(dst: &mut [u32], src: &[u32], stride: usize, height: usize, rect: PixelRect) {

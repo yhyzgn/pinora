@@ -3,6 +3,7 @@
 //! 本 crate 不得依赖 UI 框架或平台 SDK。
 
 mod action;
+mod annotate;
 mod capture;
 mod command;
 mod error;
@@ -16,6 +17,10 @@ mod selection;
 mod state;
 
 pub use action::{ActionId, KeyBinding};
+pub use annotate::{
+    bake_annotations, render_preview_rgba, AnnotateSession, AnnotateTool, Annotation,
+    AnnotationDoc, DraftShape, DEFAULT_STROKE, DEFAULT_WIDTH,
+};
 pub use capture::{resolve_capture_rect, CaptureProvider, CaptureRequest, DisplayInfo};
 pub use command::Command;
 pub use error::{ErrorCode, PinoraError};

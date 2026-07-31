@@ -21,6 +21,9 @@
 | 全局热键 | F2/Ctrl+N/Ctrl+Shift+S + `pinora capture` IPC |
 | 单实例 | flock + Unix socket Activate/CAPTURE/QUIT |
 | 帧缓存 | 空闲预截，overlay 瞬时弹出 |
+| 基础标注 | 选区后矩形/箭头/画笔；Enter 烧录贴图 |
+| 系统托盘 | 截图 / 退出（tray-icon） |
+| 贴图控制 | L 锁定，`[` `]` 透明度（压暗近似） |
 
 ## 主流程
 
@@ -41,4 +44,4 @@
 
 ## 未实现
 
-- GPUI/Liora、标注工具条、托盘、OCR、跨屏联合 Overlay、设置持久化。
+- GPUI/Liora、完整标注工具条（文本/马赛克等）、OCR、跨屏联合 Overlay、设置持久化、真透明。

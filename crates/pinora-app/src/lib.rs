@@ -16,6 +16,7 @@ mod region_overlay;
 mod region_workflow;
 mod runtime;
 mod single_instance;
+mod tray;
 
 pub use capture_fake::FakeCaptureProvider;
 pub use capture_kde::KdeSpectacleCaptureProvider;

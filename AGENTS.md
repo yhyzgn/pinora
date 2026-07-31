@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/011_system_clipboard.md`
-- 任务：`.context/tasks/011_system_clipboard.md`
+- 计划：`.context/plans/012_annotate_tray_pin_controls.md`
+- 任务：`.context/tasks/012_annotate_tray_pin_controls.md`
 
 ## 交付要求
 

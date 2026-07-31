@@ -72,6 +72,10 @@ where
         &self.state
     }
 
+    pub fn state_mut(&mut self) -> &mut AppState {
+        &mut self.state
+    }
+
     pub fn events(&self) -> &[EventEnvelope] {
         &self.events
     }
