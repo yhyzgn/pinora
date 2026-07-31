@@ -20,6 +20,10 @@ use crate::frame_cache::{rgba_to_xrgb_and_dim, FrameCache};
 use crate::hotkey::GlobalHotkeyHub;
 use crate::image_sink::copy_text_to_system_clipboard;
 use crate::ocr::{recognize_image, tesseract_available};
+use crate::overlay_toolbar::{
+    hit_test as toolbar_hit, layout_toolbar, paint_toolbar, toolbar_bounds, ToolbarAction,
+    ToolbarButton,
+};
 use crate::tray::{AppTray, TrayAction};
 use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
@@ -83,7 +87,6 @@ where
         mode: Mode::StartCapture,
         loading: None,
         overlay: None,
-        annotate: None,
         control: None,
         pins: HashMap::new(),
         drag_pin: None,
@@ -120,8 +123,6 @@ enum Mode {
     StartCapture,
     /// 正在后台截屏，显示小加载窗。
     LoadingCapture,
-    /// 标注编辑（确认选区后）。
-    Annotating,
     /// 空闲：仅贴图窗口。
     Idle,
 }
@@ -145,6 +146,21 @@ struct ControlState {
     window: Rc<Window>,
 }
 
+/// Overlay 内阶段：框选中 / 已出选区（工具栏就绪）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverlayPhase {
+    Selecting,
+    Ready,
+}
+
+/// 选区完成后的收尾动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverlayFinish {
+    Copy,
+    Pin,
+    Save,
+}
+
 struct OverlayState {
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
@@ -154,11 +170,19 @@ struct OverlayState {
     base: Vec<u32>,
     frame: Vec<u32>,
     session: SelectionSession,
+    phase: OverlayPhase,
     dragging: bool,
+    /// 在选区内画标注。
+    annotate_dragging: bool,
+    annotate: AnnotateSession,
+    toolbar: Vec<ToolbarButton>,
     last_cursor: PixelPoint,
     needs_redraw: bool,
     last_drawn_rect: Option<PixelRect>,
     last_present: Instant,
+    /// 双击检测。
+    last_click_at: Option<Instant>,
+    last_click_pos: PixelPoint,
     img_w: u32,
     img_h: u32,
     win_w: u32,
@@ -183,20 +207,6 @@ struct PinWin {
     ocr_show_boxes: bool,
 }
 
-/// 选区确认后的标注编辑窗。
-struct AnnotateState {
-    window: Rc<Window>,
-    surface: Surface<Rc<Window>, Rc<Window>>,
-    source: CaptureImage,
-    /// 贴图落点（选区全局坐标）。
-    pin_position: PixelPoint,
-    session: AnnotateSession,
-    dragging: bool,
-    last_cursor: PixelPoint,
-    needs_redraw: bool,
-    win_w: u32,
-    win_h: u32,
-}
 
 struct DesktopApp<L, P, C, S> {
     runtime: Option<AppRuntime<L, P, C, S>>,
@@ -204,7 +214,6 @@ struct DesktopApp<L, P, C, S> {
     mode: Mode,
     loading: Option<LoadingState>,
     overlay: Option<OverlayState>,
-    annotate: Option<AnnotateState>,
     /// 无选区/加载时的常驻控制窗（收 F2 / Ctrl+N / Ctrl+Q）。
     control: Option<ControlState>,
     pins: HashMap<WindowId, PinWin>,
@@ -299,12 +308,6 @@ where
             }
         }
 
-        if let Some(an) = self.annotate.as_mut() {
-            if an.needs_redraw {
-                an.needs_redraw = false;
-                an.window.request_redraw();
-            }
-        }
 
         // 启动/再截：优先等 frame-cache 出帧再弹 overlay（瞬时）
         if matches!(self.mode, Mode::StartCapture)
@@ -355,12 +358,6 @@ where
         if let Some(ov) = self.overlay.as_ref() {
             if ov.window.id() == window_id {
                 self.handle_overlay_event(event_loop, event);
-                return;
-            }
-        }
-        if let Some(an) = self.annotate.as_ref() {
-            if an.window.id() == window_id {
-                self.handle_annotate_event(event_loop, event);
                 return;
             }
         }
@@ -656,13 +653,10 @@ where
         }
     }
 
-    /// 任意模式触发再截：立刻关 overlay/loading/annotate，开新一轮 grab。
+    /// 任意模式触发再截：立刻关 overlay/loading，开新一轮 grab。
     fn request_new_capture(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(ov) = self.overlay.take() {
             ov.window.set_visible(false);
-        }
-        if let Some(an) = self.annotate.take() {
-            an.window.set_visible(false);
         }
         let _ = self.loading.take();
         self.hide_control();
@@ -745,7 +739,7 @@ where
         })?;
 
         let attrs = Window::default_attributes()
-            .with_title("Pinora — 拖拽选区，Enter 确认，Esc 取消")
+            .with_title("Pinora — 拖选后工具栏 | 双击复制 中键贴图 Enter贴图 Esc取消")
             .with_inner_size(PhysicalSize::new(img_w, img_h))
             .with_fullscreen(Some(Fullscreen::Borderless(None)))
             .with_cursor(CursorIcon::Crosshair)
@@ -770,9 +764,10 @@ where
 
         let frame = prep.dimmed.clone();
         println!(
-            "pinora: overlay ready {}x{} — selection hole shows live screenshot",
-            img_w, img_h
+            "pinora: overlay ready {}x{} display={} — 拖选后出工具栏；双击复制 · 中键贴图 · Enter贴图",
+            img_w, img_h, display_id
         );
+        window.set_ime_allowed(true);
 
         self.overlay = Some(OverlayState {
             window: window.clone(),
@@ -783,13 +778,19 @@ where
             session: SelectionSession::new()
                 .with_bounds(PixelRect::new(0, 0, img_w, img_h))
                 .with_min_edge(2),
+            phase: OverlayPhase::Selecting,
             dragging: false,
+            annotate_dragging: false,
+            annotate: AnnotateSession::new(1, 1),
+            toolbar: Vec::new(),
             last_cursor: PixelPoint::new(0, 0),
             needs_redraw: true,
             last_drawn_rect: None,
             last_present: Instant::now()
                 .checked_sub(MIN_FRAME_INTERVAL * 2)
                 .unwrap_or_else(Instant::now),
+            last_click_at: None,
+            last_click_pos: PixelPoint::new(0, 0),
             img_w,
             img_h,
             win_w,
@@ -819,73 +820,99 @@ where
             }
         }
 
+        // 会消费 overlay 的动作（贴图/复制等）先判定
+        match &event {
+            WindowEvent::CloseRequested => {
+                self.cancel_overlay();
+                return;
+            }
+            WindowEvent::KeyboardInput { event: key, .. } if key.state.is_pressed() => {
+                if matches!(key.logical_key, Key::Named(NamedKey::Escape)) {
+                    // 有草稿先取消草稿，否则关 overlay
+                    if let Some(ov) = self.overlay.as_mut() {
+                        if ov.annotate.draft.is_some() {
+                            ov.annotate.cancel_draft();
+                            ov.annotate_dragging = false;
+                            ov.needs_redraw = true;
+                            return;
+                        }
+                    }
+                    self.cancel_overlay();
+                    return;
+                }
+                if matches!(key.logical_key, Key::Named(NamedKey::Enter)) {
+                    // 文本草稿：先提交文字；Ctrl+Enter 同样。裸 Enter 贴图。
+                    if let Some(ov) = self.overlay.as_mut() {
+                        if ov.annotate.is_text_editing() {
+                            ov.annotate.commit();
+                            ov.needs_redraw = true;
+                            println!("pinora: text committed on overlay");
+                            return;
+                        }
+                    }
+                    if let Err(e) = self.finish_overlay_action(event_loop, OverlayFinish::Pin) {
+                        eprintln!("pinora: pin failed: {e}");
+                    }
+                    return;
+                }
+                if matches!(key.logical_key, Key::Named(NamedKey::Space)) {
+                    if let Some(ov) = self.overlay.as_mut() {
+                        if ov.annotate.is_text_editing() {
+                            ov.annotate.text_push(" ");
+                            ov.needs_redraw = true;
+                            return;
+                        }
+                    }
+                    if let Err(e) = self.finish_overlay_action(event_loop, OverlayFinish::Pin) {
+                        eprintln!("pinora: pin failed: {e}");
+                    }
+                    return;
+                }
+            }
+            _ => {}
+        }
+
         let Some(ov) = self.overlay.as_mut() else {
             return;
         };
 
         match event {
-            WindowEvent::CloseRequested => {
-                self.cancel_overlay();
-            }
             WindowEvent::ModifiersChanged(m) => {
                 self.modifiers = m.state();
             }
-            WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {
-                let step = if self.modifiers.shift_key() { 10 } else { 1 };
-                match &event.logical_key {
-                    Key::Named(NamedKey::Escape) => {
-                        self.cancel_overlay();
-                    }
-                    Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
-                        match ov.session.try_confirm() {
-                            Ok(rect) => {
-                                if let Err(e) = self.confirm_overlay(event_loop, rect) {
-                                    // 不崩溃退出：恢复空闲并提示，用户可 F2 再截
-                                    eprintln!("pinora: confirm failed: {e}");
-                                    self.mode = Mode::Idle;
-                                    if let Some(ov2) = self.overlay.take() {
-                                        ov2.window.set_visible(false);
-                                    }
-                                }
-                            }
-                            Err(_) => ov.needs_redraw = true,
-                        }
-                    }
-                    Key::Named(NamedKey::ArrowLeft) => {
-                        ov.session.nudge(-step, 0);
-                        ov.needs_redraw = true;
-                    }
-                    Key::Named(NamedKey::ArrowRight) => {
-                        ov.session.nudge(step, 0);
-                        ov.needs_redraw = true;
-                    }
-                    Key::Named(NamedKey::ArrowUp) => {
-                        ov.session.nudge(0, -step);
-                        ov.needs_redraw = true;
-                    }
-                    Key::Named(NamedKey::ArrowDown) => {
-                        ov.session.nudge(0, step);
-                        ov.needs_redraw = true;
-                    }
-                    _ => {}
+            WindowEvent::Ime(Ime::Commit(text)) => {
+                if ov.phase == OverlayPhase::Ready
+                    && ov.annotate.is_text_editing()
+                    && !text.is_empty()
+                {
+                    ov.annotate.text_push(&text);
+                    ov.needs_redraw = true;
                 }
+            }
+            WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {
+                let modifiers = self.modifiers;
+                handle_overlay_key(modifiers, ov, &event);
             }
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Left,
                 ..
-            } => match state {
-                ElementState::Pressed => {
-                    ov.dragging = true;
-                    ov.session.begin_drag(ov.last_cursor);
-                    ov.needs_redraw = true;
+            } => {
+                self.handle_overlay_left(event_loop, state);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Middle,
+                ..
+            } => {
+                if let Err(e) = self.finish_overlay_action(event_loop, OverlayFinish::Pin) {
+                    eprintln!("pinora: middle-pin failed: {e}");
                 }
-                ElementState::Released => {
-                    ov.dragging = false;
-                    ov.needs_redraw = true;
-                }
-            },
+            }
             WindowEvent::CursorMoved { position, .. } => {
+                let Some(ov) = self.overlay.as_mut() else {
+                    return;
+                };
                 ov.last_cursor = window_to_image(
                     position.x,
                     position.y,
@@ -896,7 +923,18 @@ where
                 );
                 if ov.dragging {
                     ov.session.update_cursor(ov.last_cursor);
+                    ov.phase = OverlayPhase::Selecting;
+                    ov.toolbar.clear();
                     ov.needs_redraw = true;
+                } else if ov.annotate_dragging {
+                    if let Ok(sel) = ov.session.try_confirm() {
+                        let local = PixelPoint::new(
+                            ov.last_cursor.x - sel.origin.x,
+                            ov.last_cursor.y - sel.origin.y,
+                        );
+                        ov.annotate.drag(local);
+                        ov.needs_redraw = true;
+                    }
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -916,375 +954,289 @@ where
                 if !ov.dimmed.is_empty() {
                     ov.frame = ov.dimmed.clone();
                 }
+                if ov.phase == OverlayPhase::Ready {
+                    if let Ok(sel) = ov.session.try_confirm() {
+                        ov.toolbar = layout_toolbar(sel, ov.img_w, ov.img_h);
+                    }
+                }
                 ov.needs_redraw = true;
             }
             _ => {}
         }
     }
 
-    fn cancel_overlay(&mut self) {
-        if let Some(ov) = self.overlay.take() {
-            ov.window.set_visible(false);
-        }
-        // Esc 只取消选区，绝不自动再截；再截仅 F2 / Ctrl+N
-        self.mode = Mode::Idle;
-        self.resume_frame_cache();
-        println!("pinora: selection cancelled (F2/Ctrl+N 再截，Ctrl+Q 退出)");
-        if let Some(pin) = self.pins.values().next() {
-            let _ = pin.window.focus_window();
+
+
+    fn handle_overlay_left(&mut self, event_loop: &ActiveEventLoop, state: ElementState) {
+        match state {
+            ElementState::Pressed => {
+                let Some(ov) = self.overlay.as_mut() else {
+                    return;
+                };
+                let p = ov.last_cursor;
+
+                // 工具栏点击
+                if ov.phase == OverlayPhase::Ready {
+                    if let Some(action) = toolbar_hit(&ov.toolbar, p) {
+                        self.apply_toolbar_action(event_loop, action);
+                        return;
+                    }
+                }
+
+                // 双击选区 → 复制
+                if ov.phase == OverlayPhase::Ready {
+                    if let Ok(sel) = ov.session.try_confirm() {
+                        if sel.contains_point(p) {
+                            let now = Instant::now();
+                            let is_double = ov
+                                .last_click_at
+                                .map(|t| now.duration_since(t) < Duration::from_millis(400))
+                                .unwrap_or(false)
+                                && (p.x - ov.last_click_pos.x).abs() < 12
+                                && (p.y - ov.last_click_pos.y).abs() < 12;
+                            ov.last_click_at = Some(now);
+                            ov.last_click_pos = p;
+                            if is_double {
+                                if let Err(e) =
+                                    self.finish_overlay_action(event_loop, OverlayFinish::Copy)
+                                {
+                                    eprintln!("pinora: double-click copy failed: {e}");
+                                }
+                                return;
+                            }
+                            // 选区内：开始标注
+                            let local = PixelPoint::new(p.x - sel.origin.x, p.y - sel.origin.y);
+                            ov.annotate.begin(local);
+                            ov.annotate_dragging = ov.annotate.tool != AnnotateTool::Text;
+                            ov.needs_redraw = true;
+                            return;
+                        }
+                    }
+                }
+
+                // 选区外 / 工具栏外：新选区
+                if let Some(bounds) = toolbar_bounds(&ov.toolbar) {
+                    if bounds.contains_point(p) {
+                        return;
+                    }
+                }
+                ov.phase = OverlayPhase::Selecting;
+                ov.toolbar.clear();
+                ov.annotate = AnnotateSession::new(1, 1);
+                ov.annotate_dragging = false;
+                ov.dragging = true;
+                ov.session.begin_drag(p);
+                ov.needs_redraw = true;
+            }
+            ElementState::Released => {
+                let Some(ov) = self.overlay.as_mut() else {
+                    return;
+                };
+                if ov.dragging {
+                    ov.dragging = false;
+                    if let Ok(sel) = ov.session.try_confirm() {
+                        ov.phase = OverlayPhase::Ready;
+                        ov.toolbar = layout_toolbar(sel, ov.img_w, ov.img_h);
+                        let tool = ov.annotate.tool;
+                        let color = ov.annotate.color;
+                        let stroke = ov.annotate.stroke;
+                        ov.annotate = AnnotateSession::new(sel.size.width, sel.size.height);
+                        ov.annotate.tool = tool;
+                        ov.annotate.color = color;
+                        ov.annotate.stroke = stroke;
+                        println!(
+                            "pinora: selection {}x{} — 工具栏就绪 | 双击复制 中键/Enter贴图",
+                            sel.size.width, sel.size.height
+                        );
+                    } else {
+                        ov.phase = OverlayPhase::Selecting;
+                        ov.toolbar.clear();
+                    }
+                    ov.needs_redraw = true;
+                } else if ov.annotate_dragging {
+                    ov.annotate.commit();
+                    ov.annotate_dragging = false;
+                    ov.needs_redraw = true;
+                } else if ov.annotate.is_text_editing() {
+                    // 文本：松手不提交，等再次点击或继续键入
+                    ov.needs_redraw = true;
+                }
+            }
         }
     }
 
-    fn confirm_overlay(
+    fn apply_toolbar_action(&mut self, event_loop: &ActiveEventLoop, action: ToolbarAction) {
+        match action {
+            ToolbarAction::Copy => {
+                if let Err(e) = self.finish_overlay_action(event_loop, OverlayFinish::Copy) {
+                    eprintln!("pinora: toolbar copy: {e}");
+                }
+            }
+            ToolbarAction::Pin => {
+                if let Err(e) = self.finish_overlay_action(event_loop, OverlayFinish::Pin) {
+                    eprintln!("pinora: toolbar pin: {e}");
+                }
+            }
+            ToolbarAction::Save => {
+                if let Err(e) = self.finish_overlay_action(event_loop, OverlayFinish::Save) {
+                    eprintln!("pinora: toolbar save: {e}");
+                }
+            }
+            ToolbarAction::Ocr => {
+                self.overlay_ocr();
+            }
+            ToolbarAction::Tool(tool) => {
+                if let Some(ov) = self.overlay.as_mut() {
+                    ov.annotate.tool = tool;
+                    ov.needs_redraw = true;
+                    println!("pinora: tool = {tool:?}");
+                }
+            }
+        }
+    }
+
+    fn overlay_ocr(&mut self) {
+        let Some(ov) = self.overlay.as_ref() else {
+            return;
+        };
+        let Ok(sel) = ov.session.try_confirm() else {
+            eprintln!("pinora: OCR 需要有效选区");
+            return;
+        };
+        let image = match self.crop_overlay_image(true) {
+            Ok(img) => img,
+            Err(e) => {
+                eprintln!("pinora: OCR crop: {e}");
+                return;
+            }
+        };
+        println!(
+            "pinora: OCR on selection {}x{}…",
+            sel.size.width, sel.size.height
+        );
+        match recognize_image(&image) {
+            Ok(result) => {
+                let preview: String = result.full_text.chars().take(240).collect();
+                println!(
+                    "pinora: OCR ok — {} words\n---\n{}\n---",
+                    result.word_count(),
+                    if preview.is_empty() {
+                        "(empty)"
+                    } else {
+                        &preview
+                    }
+                );
+                if !result.full_text.trim().is_empty() {
+                    match copy_text_to_system_clipboard(&result.full_text) {
+                        Ok(b) => println!("pinora: system clipboard ← text via {b}"),
+                        Err(e) => eprintln!("pinora: text clipboard: {e}"),
+                    }
+                }
+            }
+            Err(e) => eprintln!("pinora: OCR failed: {e}"),
+        }
+    }
+
+    /// 从当前 overlay 选区裁剪图像，可选烧录标注。
+    fn crop_overlay_image(&self, bake: bool) -> Result<CaptureImage, PinoraError> {
+        let ov = self.overlay.as_ref().ok_or_else(|| {
+            PinoraError::new(ErrorCode::Internal, "overlay missing")
+        })?;
+        let local = ov.session.try_confirm()?;
+        let crop = ov.full_image.crop_local(local)?;
+        if bake && !ov.annotate.doc.is_empty() {
+            Ok(bake_annotations(&crop, &ov.annotate.doc))
+        } else if bake {
+            // 仍可能有进行中的草稿
+            if ov.annotate.draft.is_some() {
+                let rgba = render_preview_rgba(&crop, &ov.annotate);
+                // 把预览写回 CaptureImage
+                let mut img = crop;
+                if rgba.len() == img.pixels.bytes.len() {
+                    img.pixels.bytes = rgba;
+                }
+                Ok(img)
+            } else {
+                Ok(crop)
+            }
+        } else {
+            Ok(crop)
+        }
+    }
+
+    fn finish_overlay_action(
         &mut self,
         event_loop: &ActiveEventLoop,
-        local: PixelRect,
+        action: OverlayFinish,
     ) -> Result<(), PinoraError> {
-        let ov = self.overlay.take().ok_or_else(|| {
-            PinoraError::new(ErrorCode::Internal, "overlay missing on confirm")
+        let ov = self.overlay.as_ref().ok_or_else(|| {
+            PinoraError::new(ErrorCode::Internal, "overlay missing")
         })?;
-
+        let local = match ov.session.try_confirm() {
+            Ok(r) => r,
+            Err(_) => {
+                println!("pinora: 尚无有效选区");
+                return Ok(());
+            }
+        };
         let global = PixelRect::new(
             ov.display_origin.x.saturating_add(local.origin.x),
             ov.display_origin.y.saturating_add(local.origin.y),
             local.size.width,
             local.size.height,
         );
-
-        println!(
-            "pinora: crop {}x{} @ ({},{}) — pin in place (seamless)",
-            local.size.width, local.size.height, global.origin.x, global.origin.y
-        );
-        let image = ov.full_image.crop_local(local)?;
-        let size = image.size();
+        let image = self.crop_overlay_image(true)?;
         let position = PixelPoint::new(global.origin.x, global.origin.y);
 
-        // 关闭选区遮罩，进入标注编辑（矩形/箭头/画笔），完成后再贴图
-        ov.window.set_visible(false);
-        drop(ov);
+        // 关闭 overlay
+        if let Some(ov) = self.overlay.take() {
+            ov.window.set_visible(false);
+        }
+        self.mode = Mode::Idle;
+        self.resume_frame_cache();
 
-        println!(
-            "pinora: annotate {}x{} — 1矩形 2箭头 3画笔 4椭圆 5马赛克 6文本  C颜色 +/-线宽  Enter贴图  Esc跳过",
-            size.width, size.height
-        );
-        self.open_annotate(event_loop, image, position)?;
+        match action {
+            OverlayFinish::Copy => {
+                if let Some(rt) = self.runtime.as_mut() {
+                    // 临时创建 pin 状态以便 CopyLast？直接 sink
+                    let _ = rt.dispatch(Command::create_pin(image.clone(), position));
+                    let _ = rt.dispatch(Command::invoke_action(ActionId::CopyLastCapture));
+                }
+                println!(
+                    "pinora: copied {}x{} (双击/工具栏复制)",
+                    image.pixels.size.width, image.pixels.size.height
+                );
+            }
+            OverlayFinish::Save => {
+                if let Some(rt) = self.runtime.as_mut() {
+                    let _ = rt.dispatch(Command::create_pin(image.clone(), position));
+                    if let Ok(save) = rt.dispatch(Command::invoke_action(ActionId::SaveLastCapture))
+                    {
+                        for event in &save.events {
+                            if let DomainEventKind::ImageSaved { image_id, path } = &event.event.kind
+                            {
+                                println!("pinora: saved {image_id} -> {}", path.display());
+                            }
+                        }
+                    }
+                }
+            }
+            OverlayFinish::Pin => {
+                self.open_pin_from_image(event_loop, image, position)?;
+            }
+        }
         Ok(())
     }
 
-    fn open_annotate(
+    fn open_pin_from_image(
         &mut self,
         event_loop: &ActiveEventLoop,
         image: CaptureImage,
-        pin_position: PixelPoint,
+        position: PixelPoint,
     ) -> Result<(), PinoraError> {
-        self.ensure_context(event_loop);
-        let context = self.context.as_ref().ok_or_else(|| {
-            PinoraError::new(ErrorCode::Internal, "softbuffer context unavailable")
+        let rt = self.runtime.as_mut().ok_or_else(|| {
+            PinoraError::new(ErrorCode::Internal, "runtime missing")
         })?;
-        let w = image.pixels.size.width.max(1);
-        let h = image.pixels.size.height.max(1);
-        let session = AnnotateSession::new(w, h);
-
-        let attrs = Window::default_attributes()
-            .with_title(annotate_title(&session))
-            .with_inner_size(PhysicalSize::new(w, h))
-            .with_decorations(true)
-            .with_resizable(true)
-            .with_visible(true)
-            .with_window_level(WindowLevel::AlwaysOnTop);
-        let window = event_loop
-            .create_window(attrs)
-            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("annotate window: {e}")))?;
-        let window = Rc::new(window);
-        let _ = window.focus_window();
-        window.set_ime_allowed(true);
-
-        let mut surface = Surface::new(context, window.clone()).map_err(|e| {
-            PinoraError::new(ErrorCode::Internal, format!("annotate surface: {e}"))
-        })?;
-        if let (Some(nw), Some(nh)) = (NonZeroU32::new(w), NonZeroU32::new(h)) {
-            let _ = surface.resize(nw, nh);
-        }
-
-        self.annotate = Some(AnnotateState {
-            window: window.clone(),
-            surface,
-            source: image,
-            pin_position,
-            session,
-            dragging: false,
-            last_cursor: PixelPoint::new(0, 0),
-            needs_redraw: true,
-            win_w: w,
-            win_h: h,
-        });
-        self.mode = Mode::Annotating;
-        if let Some(cache) = &self.frame_cache {
-            cache.pause();
-        }
-        window.request_redraw();
-        Ok(())
-    }
-
-    fn handle_annotate_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
-        // 会拿走 annotate 的动作先处理，避免借用冲突
-        match &event {
-            WindowEvent::CloseRequested => {
-                if let Err(e) = self.finish_annotate(event_loop, false) {
-                    eprintln!("pinora: finish annotate: {e}");
-                    self.close_annotate();
-                }
-                return;
-            }
-            WindowEvent::KeyboardInput { event: key, .. } if key.state.is_pressed() => {
-                if self.is_quit_key(key) {
-                    self.quit = true;
-                    event_loop.exit();
-                    return;
-                }
-                if self.is_new_capture_key(key) {
-                    self.close_annotate();
-                    self.request_new_capture(event_loop);
-                    return;
-                }
-                // Enter：文本草稿中先提交文字；否则烧录贴图
-                if matches!(key.logical_key, Key::Named(NamedKey::Enter)) {
-                    let editing_text = self
-                        .annotate
-                        .as_ref()
-                        .map(|a| a.session.is_text_editing())
-                        .unwrap_or(false);
-                    if editing_text {
-                        if let Some(an) = self.annotate.as_mut() {
-                            an.session.commit();
-                            an.needs_redraw = true;
-                            an.window.set_title(&annotate_title(&an.session));
-                            println!("pinora: text committed");
-                        }
-                        return;
-                    }
-                    if let Err(e) = self.finish_annotate(event_loop, true) {
-                        eprintln!("pinora: finish annotate: {e}");
-                    }
-                    return;
-                }
-                // Esc：有草稿则取消；否则跳过标注贴图
-                if matches!(key.logical_key, Key::Named(NamedKey::Escape)) {
-                    let has_draft = self
-                        .annotate
-                        .as_ref()
-                        .map(|a| a.session.draft.is_some())
-                        .unwrap_or(false);
-                    if has_draft {
-                        if let Some(an) = self.annotate.as_mut() {
-                            an.session.cancel_draft();
-                            an.dragging = false;
-                            an.needs_redraw = true;
-                            println!("pinora: draft cancelled");
-                        }
-                        return;
-                    }
-                    if let Err(e) = self.finish_annotate(event_loop, false) {
-                        eprintln!("pinora: finish annotate: {e}");
-                    }
-                    return;
-                }
-            }
-            _ => {}
-        }
-
-        let Some(an) = self.annotate.as_mut() else {
-            return;
-        };
-
-        match event {
-            WindowEvent::ModifiersChanged(m) => {
-                self.modifiers = m.state();
-            }
-            WindowEvent::Ime(Ime::Commit(text)) => {
-                if an.session.is_text_editing() && !text.is_empty() {
-                    an.session.text_push(&text);
-                    an.needs_redraw = true;
-                }
-            }
-            WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {
-                // 文本编辑中：Backspace / 可打印字符
-                if an.session.is_text_editing() {
-                    match &event.logical_key {
-                        Key::Named(NamedKey::Backspace) => {
-                            an.session.text_backspace();
-                            an.needs_redraw = true;
-                            return;
-                        }
-                        Key::Character(c)
-                            if !self.modifiers.control_key()
-                                && !self.modifiers.alt_key()
-                                && !c.chars().any(|ch| ch.is_control()) =>
-                        {
-                            // 工具切换键在编辑中也当作输入（除 Ctrl 组合）
-                            an.session.text_push(c.as_str());
-                            an.needs_redraw = true;
-                            return;
-                        }
-                        _ => {}
-                    }
-                }
-
-                match &event.logical_key {
-                    Key::Character(c) if c == "1" || c == "r" || c == "R" => {
-                        an.session.tool = AnnotateTool::Rect;
-                        an.window.set_title(&annotate_title(&an.session));
-                        println!("pinora: tool = Rect");
-                    }
-                    Key::Character(c) if c == "2" || c == "a" || c == "A" => {
-                        an.session.tool = AnnotateTool::Arrow;
-                        an.window.set_title(&annotate_title(&an.session));
-                        println!("pinora: tool = Arrow");
-                    }
-                    Key::Character(c) if c == "3" || c == "p" || c == "P" => {
-                        an.session.tool = AnnotateTool::Pen;
-                        an.window.set_title(&annotate_title(&an.session));
-                        println!("pinora: tool = Pen");
-                    }
-                    Key::Character(c) if c == "4" || c == "e" || c == "E" => {
-                        an.session.tool = AnnotateTool::Ellipse;
-                        an.window.set_title(&annotate_title(&an.session));
-                        println!("pinora: tool = Ellipse");
-                    }
-                    Key::Character(c) if c == "5" || c == "m" || c == "M" => {
-                        an.session.tool = AnnotateTool::Mosaic;
-                        an.window.set_title(&annotate_title(&an.session));
-                        println!("pinora: tool = Mosaic");
-                    }
-                    Key::Character(c) if c == "6" || c == "t" || c == "T" => {
-                        an.session.tool = AnnotateTool::Text;
-                        an.window.set_title(&annotate_title(&an.session));
-                        println!("pinora: tool = Text");
-                    }
-                    Key::Character(c) if c == "c" || c == "C" => {
-                        an.session.cycle_color();
-                        an.window.set_title(&annotate_title(&an.session));
-                        println!(
-                            "pinora: color = rgba{:?}",
-                            an.session.color
-                        );
-                        an.needs_redraw = true;
-                    }
-                    Key::Character(c) if c == "+" || c == "=" => {
-                        an.session.stroke_up();
-                        an.window.set_title(&annotate_title(&an.session));
-                        println!("pinora: stroke = {}", an.session.stroke);
-                        an.needs_redraw = true;
-                    }
-                    Key::Character(c) if c == "-" || c == "_" => {
-                        an.session.stroke_down();
-                        an.window.set_title(&annotate_title(&an.session));
-                        println!("pinora: stroke = {}", an.session.stroke);
-                        an.needs_redraw = true;
-                    }
-                    Key::Character(c) if (c == "z" || c == "Z") && self.modifiers.control_key() => {
-                        an.session.doc.undo();
-                        an.needs_redraw = true;
-                        println!("pinora: annotate undo ({} left)", an.session.doc.len());
-                    }
-                    _ => {}
-                }
-            }
-            WindowEvent::MouseInput {
-                state,
-                button: MouseButton::Left,
-                ..
-            } => match state {
-                ElementState::Pressed => {
-                    let p = an.last_cursor;
-                    an.session.begin(p);
-                    // 文本：点击落点后进入键入，不进入拖拽提交
-                    an.dragging = an.session.tool != AnnotateTool::Text;
-                    an.needs_redraw = true;
-                    if an.session.tool == AnnotateTool::Text {
-                        an.window.set_title(&annotate_title(&an.session));
-                        println!("pinora: text place — type, Enter=确认文字");
-                    }
-                }
-                ElementState::Released => {
-                    if an.dragging {
-                        // 非文本工具：松手提交
-                        if an.session.tool != AnnotateTool::Text {
-                            an.session.commit();
-                        }
-                        an.dragging = false;
-                        an.needs_redraw = true;
-                    }
-                }
-            },
-            WindowEvent::CursorMoved { position, .. } => {
-                let p = window_to_image(
-                    position.x,
-                    position.y,
-                    an.win_w,
-                    an.win_h,
-                    an.session.image_w,
-                    an.session.image_h,
-                );
-                an.last_cursor = p;
-                if an.dragging {
-                    an.session.drag(p);
-                    an.needs_redraw = true;
-                }
-            }
-            WindowEvent::RedrawRequested => {
-                if let Err(e) = paint_annotate(an) {
-                    self.error = Some(e);
-                    event_loop.exit();
-                }
-            }
-            WindowEvent::Resized(size) => {
-                an.win_w = size.width.max(1);
-                an.win_h = size.height.max(1);
-                if let (Some(nw), Some(nh)) = (NonZeroU32::new(an.win_w), NonZeroU32::new(an.win_h))
-                {
-                    let _ = an.surface.resize(nw, nh);
-                }
-                an.needs_redraw = true;
-            }
-            _ => {}
-        }
-    }
-
-    fn close_annotate(&mut self) {
-        if let Some(an) = self.annotate.take() {
-            an.window.set_visible(false);
-        }
-        if matches!(self.mode, Mode::Annotating) {
-            self.mode = Mode::Idle;
-        }
-        self.resume_frame_cache();
-    }
-
-    /// `apply_doc`: true 烧录标注；false 用原图贴图。
-    fn finish_annotate(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        apply_doc: bool,
-    ) -> Result<(), PinoraError> {
-        let an = self.annotate.take().ok_or_else(|| {
-            PinoraError::new(ErrorCode::Internal, "annotate missing")
-        })?;
-        an.window.set_visible(false);
-
-        let position = an.pin_position;
-        let image = if apply_doc && !an.session.doc.is_empty() {
-            println!(
-                "pinora: baking {} annotation(s)",
-                an.session.doc.len()
-            );
-            bake_annotations(&an.source, &an.session.doc)
-        } else {
-            an.source.clone()
-        };
-        drop(an);
-
-        let rt = self.runtime.as_mut().unwrap();
         let pin = rt.dispatch(Command::create_pin(image.clone(), position))?;
         let pin_id = pin
             .events
@@ -1296,13 +1248,13 @@ where
             .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "missing PinCreated"))?;
 
         println!(
-            "pinora: pin {pin_id} ({}x{}) — L锁定 [ ]透明度 O识别 T词框 滚轮缩放 Esc关闭{}",
+            "pinora: pin {pin_id} ({}x{}) — L锁定 [ ]透明度 O识别 T词框 滚轮 Esc{}",
             image.pixels.size.width,
             image.pixels.size.height,
             if tesseract_available() {
                 ""
             } else {
-                "（未装 tesseract，O 将提示安装）"
+                "（未装 tesseract）"
             }
         );
 
@@ -1319,6 +1271,19 @@ where
         self.mode = Mode::Idle;
         self.resume_frame_cache();
         Ok(())
+    }
+
+    fn cancel_overlay(&mut self) {
+        if let Some(ov) = self.overlay.take() {
+            ov.window.set_visible(false);
+        }
+        // Esc 只取消选区，绝不自动再截；再截仅 F2 / Ctrl+N
+        self.mode = Mode::Idle;
+        self.resume_frame_cache();
+        println!("pinora: selection cancelled (F2/Ctrl+N 再截，Ctrl+Q 退出)");
+        if let Some(pin) = self.pins.values().next() {
+            let _ = pin.window.focus_window();
+        }
     }
 
     fn spawn_pin(
@@ -1776,25 +1741,174 @@ where
     }
 }
 
+fn handle_overlay_key(
+    modifiers: ModifiersState,
+    ov: &mut OverlayState,
+    event: &winit::event::KeyEvent,
+) {
+    let step = if modifiers.shift_key() { 10 } else { 1 };
+
+    if ov.phase == OverlayPhase::Ready && ov.annotate.is_text_editing() {
+        match &event.logical_key {
+            Key::Named(NamedKey::Backspace) => {
+                ov.annotate.text_backspace();
+                ov.needs_redraw = true;
+                return;
+            }
+            Key::Character(c)
+                if !modifiers.control_key()
+                    && !modifiers.alt_key()
+                    && !c.chars().any(|ch| ch.is_control()) =>
+            {
+                ov.annotate.text_push(c.as_str());
+                ov.needs_redraw = true;
+                return;
+            }
+            _ => {}
+        }
+    }
+
+    match &event.logical_key {
+        Key::Named(NamedKey::ArrowLeft) => {
+            ov.session.nudge(-step, 0);
+            refresh_overlay_ready(ov);
+        }
+        Key::Named(NamedKey::ArrowRight) => {
+            ov.session.nudge(step, 0);
+            refresh_overlay_ready(ov);
+        }
+        Key::Named(NamedKey::ArrowUp) => {
+            ov.session.nudge(0, -step);
+            refresh_overlay_ready(ov);
+        }
+        Key::Named(NamedKey::ArrowDown) => {
+            ov.session.nudge(0, step);
+            refresh_overlay_ready(ov);
+        }
+        Key::Character(c) if (c == "c" || c == "C") && !modifiers.control_key() => {
+            if ov.phase == OverlayPhase::Ready {
+                ov.annotate.cycle_color();
+                ov.needs_redraw = true;
+                println!("pinora: stroke color rgba{:?}", ov.annotate.color);
+            }
+        }
+        Key::Character(c) if c == "+" || c == "=" => {
+            if ov.phase == OverlayPhase::Ready {
+                ov.annotate.stroke_up();
+                ov.needs_redraw = true;
+            }
+        }
+        Key::Character(c) if c == "-" || c == "_" => {
+            if ov.phase == OverlayPhase::Ready {
+                ov.annotate.stroke_down();
+                ov.needs_redraw = true;
+            }
+        }
+        Key::Character(c) if (c == "z" || c == "Z") && modifiers.control_key() => {
+            if ov.phase == OverlayPhase::Ready {
+                ov.annotate.doc.undo();
+                ov.needs_redraw = true;
+            }
+        }
+        Key::Character(c) if c == "1" || c == "r" || c == "R" => {
+            ov.annotate.tool = AnnotateTool::Rect;
+            println!("pinora: tool = Rect");
+            ov.needs_redraw = true;
+        }
+        Key::Character(c) if c == "2" || c == "a" || c == "A" => {
+            ov.annotate.tool = AnnotateTool::Arrow;
+            println!("pinora: tool = Arrow");
+            ov.needs_redraw = true;
+        }
+        Key::Character(c) if c == "3" => {
+            ov.annotate.tool = AnnotateTool::Pen;
+            println!("pinora: tool = Pen");
+            ov.needs_redraw = true;
+        }
+        Key::Character(c) if c == "4" || c == "e" || c == "E" => {
+            ov.annotate.tool = AnnotateTool::Ellipse;
+            println!("pinora: tool = Ellipse");
+            ov.needs_redraw = true;
+        }
+        Key::Character(c) if c == "5" || c == "m" || c == "M" => {
+            ov.annotate.tool = AnnotateTool::Mosaic;
+            println!("pinora: tool = Mosaic");
+            ov.needs_redraw = true;
+        }
+        Key::Character(c) if c == "6" || c == "t" || c == "T" => {
+            ov.annotate.tool = AnnotateTool::Text;
+            println!("pinora: tool = Text");
+            ov.needs_redraw = true;
+        }
+        _ => {}
+    }
+}
+
+fn refresh_overlay_ready(ov: &mut OverlayState) {
+    if let Ok(sel) = ov.session.try_confirm() {
+        if ov.phase == OverlayPhase::Ready {
+            ov.toolbar = layout_toolbar(sel, ov.img_w, ov.img_h);
+            if ov.annotate.image_w != sel.size.width || ov.annotate.image_h != sel.size.height {
+                let tool = ov.annotate.tool;
+                let color = ov.annotate.color;
+                let stroke = ov.annotate.stroke;
+                ov.annotate = AnnotateSession::new(sel.size.width, sel.size.height);
+                ov.annotate.tool = tool;
+                ov.annotate.color = color;
+                ov.annotate.stroke = stroke;
+            }
+        }
+    }
+    ov.needs_redraw = true;
+}
+
 fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
     let img_w = ov.img_w as usize;
     let img_h = ov.img_h as usize;
     let new_rect = ov.session.preview_rect();
 
-    // 脏矩形：恢复旧选区暗化底，绘制新选区原图 + 边框
-    if ov.last_drawn_rect != new_rect {
-        if let Some(old) = ov.last_drawn_rect {
-            blit_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, old);
-        }
-        if let Some(rect) = new_rect {
+    // 每帧从 dimmed 重建：选区洞 + 标注 + 工具栏（标注会变，脏矩形不够）
+    if ov.frame.len() == ov.dimmed.len() {
+        ov.frame.copy_from_slice(&ov.dimmed);
+    } else {
+        ov.frame = ov.dimmed.clone();
+    }
+
+    if let Some(rect) = new_rect {
+        // 选区内：原图或带标注预览
+        let use_annotate = ov.phase == OverlayPhase::Ready
+            && (ov.annotate.doc.len() > 0 || ov.annotate.draft.is_some())
+            && ov.annotate.image_w == rect.size.width
+            && ov.annotate.image_h == rect.size.height;
+        if use_annotate {
+            if let Ok(crop) = ov.full_image.crop_local(rect) {
+                let rgba = render_preview_rgba(&crop, &ov.annotate);
+                blit_rgba_into_xrgb(&mut ov.frame, img_w, img_h, rect, &rgba);
+            } else {
+                blit_rect(&mut ov.frame, &ov.base, img_w, img_h, rect);
+            }
+        } else {
             blit_rect(&mut ov.frame, &ov.base, img_w, img_h, rect);
-            let x0 = rect.origin.x.max(0) as usize;
-            let y0 = rect.origin.y.max(0) as usize;
-            let x1 = (rect.right() as usize).min(img_w);
-            let y1 = (rect.bottom() as usize).min(img_h);
-            draw_rect_border(&mut ov.frame, img_w, img_h, x0, y0, x1, y1, 0x00_FF_CC_33);
         }
-        ov.last_drawn_rect = new_rect;
+        let x0 = rect.origin.x.max(0) as usize;
+        let y0 = rect.origin.y.max(0) as usize;
+        let x1 = (rect.right() as usize).min(img_w);
+        let y1 = (rect.bottom() as usize).min(img_h);
+        draw_rect_border(&mut ov.frame, img_w, img_h, x0, y0, x1, y1, 0x00_FF_CC_33);
+
+        // 尺寸角标
+        // （省略文字；工具栏已足够）
+    }
+    ov.last_drawn_rect = new_rect;
+
+    if ov.phase == OverlayPhase::Ready && !ov.toolbar.is_empty() {
+        paint_toolbar(
+            &mut ov.frame,
+            img_w,
+            img_h,
+            &ov.toolbar,
+            ov.annotate.tool,
+        );
     }
 
     let mut buffer = ov.surface.buffer_mut().map_err(|e| {
@@ -1821,6 +1935,40 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
     Ok(())
 }
 
+/// 将 RGBA 块写入 XRGB frame 的 rect 区域。
+fn blit_rgba_into_xrgb(
+    frame: &mut [u32],
+    stride: usize,
+    height: usize,
+    rect: PixelRect,
+    rgba: &[u8],
+) {
+    let rw = rect.size.width as usize;
+    let rh = rect.size.height as usize;
+    if rw == 0 || rh == 0 || rgba.len() < rw * rh * 4 {
+        return;
+    }
+    let x0 = rect.origin.x.max(0) as usize;
+    let y0 = rect.origin.y.max(0) as usize;
+    for row in 0..rh {
+        let dy = y0 + row;
+        if dy >= height {
+            break;
+        }
+        for col in 0..rw {
+            let dx = x0 + col;
+            if dx >= stride {
+                break;
+            }
+            let si = (row * rw + col) * 4;
+            let r = rgba[si] as u32;
+            let g = rgba[si + 1] as u32;
+            let b = rgba[si + 2] as u32;
+            frame[dy * stride + dx] = (r << 16) | (g << 8) | b;
+        }
+    }
+}
+
 fn window_to_image(x: f64, y: f64, win_w: u32, win_h: u32, img_w: u32, img_h: u32) -> PixelPoint {
     let ix = if win_w == 0 {
         0
@@ -1841,58 +1989,6 @@ fn window_to_image(x: f64, y: f64, win_w: u32, win_h: u32, img_w: u32, img_h: u3
 fn rgba_to_xrgb(bytes: &[u8]) -> Vec<u32> {
     let (base, _) = rgba_to_xrgb_and_dim(bytes);
     base
-}
-
-fn annotate_title(session: &AnnotateSession) -> String {
-    let tool = match session.tool {
-        AnnotateTool::Rect => "矩形",
-        AnnotateTool::Arrow => "箭头",
-        AnnotateTool::Pen => "画笔",
-        AnnotateTool::Ellipse => "椭圆",
-        AnnotateTool::Mosaic => "马赛克",
-        AnnotateTool::Text => "文本",
-    };
-    let [r, g, b, _] = session.color;
-    let editing = if session.is_text_editing() {
-        " · 键入中 Enter确认"
-    } else {
-        ""
-    };
-    format!(
-        "Pinora [{tool}] 线宽{} RGB({r},{g},{b}){editing} | 1-6工具 C颜色 +/-线宽 Enter贴图 Esc",
-        session.stroke
-    )
-}
-
-fn paint_annotate(an: &mut AnnotateState) -> Result<(), PinoraError> {
-    let rgba = render_preview_rgba(&an.source, &an.session);
-    let xrgb = rgba_to_xrgb(&rgba);
-    let iw = an.session.image_w.max(1) as usize;
-    let ih = an.session.image_h.max(1) as usize;
-    let bw = an.win_w.max(1) as usize;
-    let bh = an.win_h.max(1) as usize;
-    if let (Some(nw), Some(nh)) = (
-        NonZeroU32::new(an.win_w.max(1)),
-        NonZeroU32::new(an.win_h.max(1)),
-    ) {
-        let _ = an.surface.resize(nw, nh);
-    }
-    let mut buffer = an.surface.buffer_mut().map_err(|e| {
-        PinoraError::new(ErrorCode::Internal, format!("annotate buffer: {e}"))
-    })?;
-    if buffer.len() < bw * bh {
-        return Ok(());
-    }
-    if bw == iw && bh == ih && xrgb.len() >= iw * ih {
-        buffer[..bw * bh].copy_from_slice(&xrgb[..bw * bh]);
-    } else {
-        scale_nearest(&xrgb, iw, ih, &mut buffer[..bw * bh], bw, bh);
-    }
-    draw_border(&mut buffer[..bw * bh], bw, bh, 0x00_FF_CC_33);
-    buffer
-        .present()
-        .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("annotate present: {e}")))?;
-    Ok(())
 }
 
 /// 无窗口透明时，用压暗模拟 opacity（1.0 = 原色，0.15 = 很暗）。

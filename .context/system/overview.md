@@ -15,13 +15,13 @@
 | 能力 | 说明 |
 | --- | --- |
 | 真实/降级截屏 | KDE 优先 spectacle/KWin；否则 xcap；再 fake |
-| 区域选区 Overlay | 拖拽、Enter/Esc、方向键；脏矩形优化 |
+| 区域选区 Overlay | 拖选后工具栏；双击复制、中键/Enter 贴图；选区内标注/OCR |
 | 贴图窗口 | 无边框置顶、拖动、滚轮缩放、Esc 关闭；多贴图 |
 | 导出 | PNG 文件 + 内存剪贴板 + 系统剪贴板（wl-copy/xclip） |
 | 全局热键 | F2/Ctrl+N/Ctrl+Shift+S + `pinora capture` IPC |
 | 单实例 | flock + Unix socket Activate/CAPTURE/QUIT |
 | 帧缓存 | 空闲预截，overlay 瞬时弹出 |
-| 基础标注 | 选区后矩形/箭头/画笔/椭圆/马赛克/文本；C 颜色；+/- 线宽；Enter 烧录贴图 |
+| 基础标注 | Overlay 选区内：矩形/箭头/画笔/椭圆/马赛克/文本；C 颜色；+/- 线宽 |
 | 系统托盘 | 截图 / 退出（tray-icon） |
 | 贴图控制 | L 锁定，`[` `]` 透明度（压暗近似）；`O` 本地 OCR；`T` 词框 |
 | OCR | 系统 `tesseract` CLI；全文复制剪贴板；词框叠加；缺引擎可降级提示 |
@@ -31,11 +31,10 @@
 统一 `desktop_shell` 事件循环（选区 + 贴图同一 loop，适配 Wayland）：
 
 ```text
-启动 → 选区 Overlay → 裁剪 → 贴图窗口（置顶）
-  ├─ 左键拖动（Wayland: drag_window 协议）
-  ├─ 滚轮缩放 · Esc 关闭贴图
-  ├─ F2 / Ctrl+N 再截
-  └─ Ctrl+Q 退出
+启动 → 选区 Overlay → 松手出工具栏
+  ├─ 选区内标注 / 工具栏：复制·贴图·保存·OCR·工具
+  ├─ 双击复制 · 中键贴图 · Enter 贴图 · Esc 取消
+  └─ 贴图窗：拖动·缩放·L 锁定·[ ]透明·O 再识别
 ```
 
 ## 构建与验证

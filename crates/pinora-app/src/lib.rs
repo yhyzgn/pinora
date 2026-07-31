@@ -10,6 +10,7 @@ mod image_sink;
 mod kwin_place;
 mod ocr;
 mod os_instance;
+mod overlay_toolbar;
 mod desktop_shell;
 mod pin_window;
 mod platform;

@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/014_ocr_pin.md`
-- 任务：`.context/tasks/014_ocr_pin.md`
+- 计划：`.context/plans/015_overlay_toolbar.md`
+- 任务：`.context/tasks/015_overlay_toolbar.md`
 
 ## 交付要求
 
