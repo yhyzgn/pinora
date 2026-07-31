@@ -769,17 +769,18 @@ where
         let mut surface = Surface::new(context, window.clone()).map_err(|e| {
             PinoraError::new(ErrorCode::Internal, format!("overlay surface: {e}"))
         })?;
+        // 关键：缓冲永远等于截图像素尺寸，禁止跟窗口物理尺寸走。
+        // 全屏后 win 常 ≠ img，若 surface 跟 win，每次 present 都会 scale 整屏（卡死）。
+        if let (Some(w), Some(h)) = (NonZeroU32::new(img_w), NonZeroU32::new(img_h)) {
+            let _ = surface.resize(w, h);
+        }
         let size = window.inner_size();
         let win_w = size.width.max(1);
         let win_h = size.height.max(1);
-        if let (Some(w), Some(h)) = (NonZeroU32::new(win_w), NonZeroU32::new(win_h)) {
-            let _ = surface.resize(w, h);
-        }
 
         let frame = prep.dimmed.clone();
         println!(
-            "pinora: overlay ready {}x{} display={display_id:?} — 拖选后出工具栏；双击复制 · 中键贴图 · Enter贴图",
-            img_w, img_h
+            "pinora: overlay ready img={img_w}x{img_h} win={win_w}x{win_h} display={display_id:?} — 缓冲固定为 img"
         );
         window.set_ime_allowed(true);
 
@@ -986,24 +987,13 @@ where
                 }
             }
             WindowEvent::Resized(size) => {
+                // 只更新鼠标映射用的窗口尺寸；softbuffer 保持 img 尺寸
                 ov.win_w = size.width.max(1);
                 ov.win_h = size.height.max(1);
-                if let (Some(w), Some(h)) = (NonZeroU32::new(ov.win_w), NonZeroU32::new(ov.win_h))
-                {
+                if let (Some(w), Some(h)) = (NonZeroU32::new(ov.img_w), NonZeroU32::new(ov.img_h)) {
                     let _ = ov.surface.resize(w, h);
                 }
-                ov.last_drawn_rect = None;
-                ov.last_toolbar_bounds = None;
-                ov.buffer_synced = false; // 尺寸变化后必须全量同步
-                if !ov.dimmed.is_empty() {
-                    ov.frame = ov.dimmed.clone();
-                }
-                if ov.phase == OverlayPhase::Ready {
-                    if let Ok(sel) = ov.session.try_confirm() {
-                        ov.toolbar = layout_toolbar(sel, ov.img_w, ov.img_h);
-                    }
-                }
-                ov.needs_redraw = true;
+                // 不在此全量 clone dimmed / 不清 buffer_synced，避免拖一下窗口就卡死
             }
             _ => {}
         }
@@ -1181,12 +1171,9 @@ where
                 self.overlay_ocr();
             }
             ToolbarAction::Tool(tool) => {
+                // 切换工具：零重绘（高亮可延后；点击必须瞬时）
                 if let Some(ov) = self.overlay.as_mut() {
-                    if ov.annotate.tool != tool {
-                        ov.annotate.tool = tool;
-                        ov.toolbar_chrome_dirty = true;
-                        ov.needs_redraw = true;
-                    }
+                    ov.annotate.tool = tool;
                     println!("pinora: tool = {tool:?}");
                 }
             }
@@ -1919,39 +1906,27 @@ fn handle_overlay_key(
         }
         Key::Character(c) if c == "1" || c == "r" || c == "R" => {
             ov.annotate.tool = AnnotateTool::Rect;
-            ov.toolbar_chrome_dirty = true;
             println!("pinora: tool = Rect");
-            ov.needs_redraw = true;
         }
         Key::Character(c) if c == "2" || c == "a" || c == "A" => {
             ov.annotate.tool = AnnotateTool::Arrow;
-            ov.toolbar_chrome_dirty = true;
             println!("pinora: tool = Arrow");
-            ov.needs_redraw = true;
         }
         Key::Character(c) if c == "3" => {
             ov.annotate.tool = AnnotateTool::Pen;
-            ov.toolbar_chrome_dirty = true;
             println!("pinora: tool = Pen");
-            ov.needs_redraw = true;
         }
         Key::Character(c) if c == "4" || c == "e" || c == "E" => {
             ov.annotate.tool = AnnotateTool::Ellipse;
-            ov.toolbar_chrome_dirty = true;
             println!("pinora: tool = Ellipse");
-            ov.needs_redraw = true;
         }
         Key::Character(c) if c == "5" || c == "m" || c == "M" => {
             ov.annotate.tool = AnnotateTool::Mosaic;
-            ov.toolbar_chrome_dirty = true;
             println!("pinora: tool = Mosaic");
-            ov.needs_redraw = true;
         }
         Key::Character(c) if c == "6" || c == "t" || c == "T" => {
             ov.annotate.tool = AnnotateTool::Text;
-            ov.toolbar_chrome_dirty = true;
             println!("pinora: tool = Text");
-            ov.needs_redraw = true;
         }
         _ => {}
     }
@@ -1978,6 +1953,7 @@ fn refresh_overlay_ready(ov: &mut OverlayState) {
 }
 
 fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
+    // softbuffer 缓冲 = 截图尺寸（与 frame 一致）；鼠标用 win_* 做坐标映射
     let img_w = ov.img_w as usize;
     let img_h = ov.img_h as usize;
     let new_rect = ov.session.preview_rect();
@@ -1995,11 +1971,9 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
         && !tb_layout_changed
         && ov.buffer_synced;
 
-    // 收集本帧要上传的脏区（图像坐标）
     let mut damage: Vec<PixelRect> = Vec::with_capacity(4);
 
     if chrome_only {
-        // 只重画工具栏高亮：几十 KB 级
         if let Some(tb) = ov.last_toolbar_bounds.or(new_tb) {
             blit_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, tb);
             if ov.phase == OverlayPhase::Ready && !ov.toolbar.is_empty() {
@@ -2075,54 +2049,57 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
         ov.annotate_dirty = false;
         ov.toolbar_chrome_dirty = false;
     } else {
-        // 无脏内容
         return Ok(());
+    }
+
+    // 确保 surface 仍是 img 尺寸（防止别处误 resize）
+    if let (Some(w), Some(h)) = (NonZeroU32::new(ov.img_w), NonZeroU32::new(ov.img_h)) {
+        let _ = ov.surface.resize(w, h);
     }
 
     let mut buffer = ov.surface.buffer_mut().map_err(|e| {
         PinoraError::new(ErrorCode::Internal, format!("overlay buffer: {e}"))
     })?;
-    let bw = ov.win_w as usize;
-    let bh = ov.win_h as usize;
-    let needed = bw * bh;
+    let needed = img_w * img_h;
     if buffer.len() < needed {
         return Err(PinoraError::new(
             ErrorCode::Internal,
-            "overlay buffer size mismatch",
+            format!(
+                "overlay buffer size mismatch have {} need {} (img {}x{}, win {}x{})",
+                buffer.len(),
+                needed,
+                img_w,
+                img_h,
+                ov.win_w,
+                ov.win_h
+            ),
         ));
     }
 
-    let same_size = bw == img_w && bh == img_h;
-    // 首帧或尺寸不一致：全量同步；否则只拷脏区
-    let full = !ov.buffer_synced || !same_size || damage.is_empty();
-    if full {
-        if same_size {
-            buffer[..needed].copy_from_slice(&ov.frame);
-        } else {
-            scale_nearest(&ov.frame, img_w, img_h, &mut buffer[..needed], bw, bh);
-        }
+    // 首帧全量；之后只上传脏区（与 frame 同分辨率，无 scale）
+    if !ov.buffer_synced {
+        buffer[..needed].copy_from_slice(&ov.frame[..needed]);
         buffer
             .present()
             .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("overlay present: {e}")))?;
-        ov.buffer_synced = same_size;
+        ov.buffer_synced = true;
     } else {
         let mut sb_damage = Vec::with_capacity(damage.len());
         for r in &damage {
             let x0 = r.origin.x.max(0) as usize;
             let y0 = r.origin.y.max(0) as usize;
-            let x1 = (r.right() as usize).min(img_w).min(bw);
-            let y1 = (r.bottom() as usize).min(img_h).min(bh);
+            let x1 = (r.right() as usize).min(img_w);
+            let y1 = (r.bottom() as usize).min(img_h);
             if x1 <= x0 || y1 <= y0 {
                 continue;
             }
-            let w = x1 - x0;
+            let row_w = x1 - x0;
             for y in y0..y1 {
-                let dst = y * bw + x0;
-                let src = y * img_w + x0;
-                buffer[dst..dst + w].copy_from_slice(&ov.frame[src..src + w]);
+                let off = y * img_w + x0;
+                buffer[off..off + row_w].copy_from_slice(&ov.frame[off..off + row_w]);
             }
             if let (Some(nw), Some(nh)) = (
-                NonZeroU32::new((x1 - x0) as u32),
+                NonZeroU32::new(row_w as u32),
                 NonZeroU32::new((y1 - y0) as u32),
             ) {
                 sb_damage.push(DamageRect {
@@ -2134,8 +2111,7 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
             }
         }
         if sb_damage.is_empty() {
-            // 退化全量
-            buffer[..needed].copy_from_slice(&ov.frame);
+            buffer[..needed].copy_from_slice(&ov.frame[..needed]);
             buffer.present().map_err(|e| {
                 PinoraError::new(ErrorCode::Internal, format!("overlay present: {e}"))
             })?;
