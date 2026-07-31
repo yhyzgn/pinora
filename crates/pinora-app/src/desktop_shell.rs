@@ -164,9 +164,9 @@ enum OverlayFinish {
 struct OverlayState {
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
-    /// 选区外：真实桌面暗化。
+    /// 选区外：真实桌面暗化（**交互缓冲分辨率**，非 4K 原图像素）。
     dimmed: Vec<u32>,
-    /// 选区内：真实桌面原图（视觉上“透明看到桌面”）。
+    /// 选区内：真实桌面原图。
     base: Vec<u32>,
     frame: Vec<u32>,
     session: SelectionSession,
@@ -178,7 +178,7 @@ struct OverlayState {
     /// 在选区内画标注。
     annotate_dragging: bool,
     annotate: AnnotateSession,
-    /// 标注预览缓存（选区局部 XRGB），避免每帧 crop+bake。
+    /// 标注预览缓存（选区在缓冲分辨率下的 XRGB）。
     annotate_cache: Option<Vec<u32>>,
     annotate_cache_wh: (u32, u32),
     annotate_dirty: bool,
@@ -194,11 +194,20 @@ struct OverlayState {
     needs_redraw: bool,
     last_drawn_rect: Option<PixelRect>,
     last_present: Instant,
+    /// 拖选时节流：上次真正重绘时的光标。
+    last_draw_cursor: PixelPoint,
     /// 双击检测。
     last_click_at: Option<Instant>,
     last_click_pos: PixelPoint,
-    img_w: u32,
-    img_h: u32,
+    /// 原图像素尺寸（裁剪/导出用）。
+    src_w: u32,
+    src_h: u32,
+    /// 交互缓冲尺寸（softbuffer / 选区坐标，最长边 ≤ 1920）。
+    buf_w: u32,
+    buf_h: u32,
+    /// Ready 时对应的原图选区（导出/标注坐标系）。
+    active_src_rect: Option<PixelRect>,
+    /// 窗口客户区（鼠标映射）。
     win_w: u32,
     win_h: u32,
     display_id: DisplayId,
@@ -769,29 +778,69 @@ where
         let mut surface = Surface::new(context, window.clone()).map_err(|e| {
             PinoraError::new(ErrorCode::Internal, format!("overlay surface: {e}"))
         })?;
-        // 关键：缓冲永远等于截图像素尺寸，禁止跟窗口物理尺寸走。
-        // 全屏后 win 常 ≠ img，若 surface 跟 win，每次 present 都会 scale 整屏（卡死）。
-        if let (Some(w), Some(h)) = (NonZeroU32::new(img_w), NonZeroU32::new(img_h)) {
+
+        // 4K 全分辨率 softbuffer 交互必卡；交互层最长边压到 1920，导出仍用 full_image。
+        let src_w = img_w.max(1);
+        let src_h = img_h.max(1);
+        let (buf_w, buf_h) = choose_overlay_buffer_size(src_w, src_h);
+        let dimmed = if buf_w == src_w && buf_h == src_h {
+            prep.dimmed
+        } else {
+            let mut out = vec![0u32; (buf_w as usize) * (buf_h as usize)];
+            scale_nearest(
+                &prep.dimmed,
+                src_w as usize,
+                src_h as usize,
+                &mut out,
+                buf_w as usize,
+                buf_h as usize,
+            );
+            out
+        };
+        let base = if buf_w == src_w && buf_h == src_h {
+            prep.base
+        } else {
+            let mut out = vec![0u32; (buf_w as usize) * (buf_h as usize)];
+            scale_nearest(
+                &prep.base,
+                src_w as usize,
+                src_h as usize,
+                &mut out,
+                buf_w as usize,
+                buf_h as usize,
+            );
+            out
+        };
+        if let (Some(w), Some(h)) = (NonZeroU32::new(buf_w), NonZeroU32::new(buf_h)) {
             let _ = surface.resize(w, h);
         }
         let size = window.inner_size();
         let win_w = size.width.max(1);
         let win_h = size.height.max(1);
 
-        let frame = prep.dimmed.clone();
+        let frame = dimmed.clone();
+        let pixels = (buf_w as u64) * (buf_h as u64);
+        let full_px = (src_w as u64) * (src_h as u64);
         println!(
-            "pinora: overlay ready img={img_w}x{img_h} win={win_w}x{win_h} display={display_id:?} — 缓冲固定为 img"
+            "pinora: overlay ready src={src_w}x{src_h} buf={buf_w}x{buf_h} win={win_w}x{win_h} \
+             ({:.0}x fewer px) display={display_id:?}",
+            full_px as f64 / pixels.max(1) as f64
         );
+        if cfg!(debug_assertions) && full_px > 2_000_000 {
+            println!(
+                "pinora: tip: 4K debug 构建仍偏慢，日常请用 `cargo run --release`"
+            );
+        }
         window.set_ime_allowed(true);
 
         self.overlay = Some(OverlayState {
             window: window.clone(),
             surface,
-            dimmed: prep.dimmed,
-            base: prep.base,
+            dimmed,
+            base,
             frame,
             session: SelectionSession::new()
-                .with_bounds(PixelRect::new(0, 0, img_w, img_h))
+                .with_bounds(PixelRect::new(0, 0, buf_w, buf_h))
                 .with_min_edge(2),
             phase: OverlayPhase::Selecting,
             dragging: false,
@@ -801,7 +850,7 @@ where
             annotate: AnnotateSession::new(1, 1),
             annotate_cache: None,
             annotate_cache_wh: (0, 0),
-            annotate_dirty: true,
+            annotate_dirty: false,
             toolbar: Vec::new(),
             toolbar_pressed: None,
             last_toolbar_bounds: None,
@@ -813,10 +862,14 @@ where
             last_present: Instant::now()
                 .checked_sub(MIN_FRAME_INTERVAL * 2)
                 .unwrap_or_else(Instant::now),
+            last_draw_cursor: PixelPoint::new(i32::MIN / 4, i32::MIN / 4),
             last_click_at: None,
             last_click_pos: PixelPoint::new(0, 0),
-            img_w,
-            img_h,
+            src_w,
+            src_h,
+            buf_w,
+            buf_h,
+            active_src_rect: None,
             win_w,
             win_h,
             display_id,
@@ -942,8 +995,8 @@ where
                     position.y,
                     ov.win_w,
                     ov.win_h,
-                    ov.img_w,
-                    ov.img_h,
+                    ov.buf_w,
+                    ov.buf_h,
                 );
                 if ov.dragging {
                     let p = ov.last_cursor;
@@ -959,6 +1012,7 @@ where
                             ov.last_toolbar_bounds = None;
                             ov.annotate = AnnotateSession::new(1, 1);
                             ov.annotate_cache = None;
+                            ov.active_src_rect = None;
                             ov.annotate_dirty = true;
                             ov.session.begin_drag(ov.drag_anchor);
                             ov.session.update_cursor(p);
@@ -966,14 +1020,17 @@ where
                         }
                     } else {
                         ov.session.update_cursor(p);
-                        ov.needs_redraw = true;
+                        // 拖选节流：小抖动不重绘，降低 4K 调试下事件风暴
+                        let dx = (p.x - ov.last_draw_cursor.x).abs();
+                        let dy = (p.y - ov.last_draw_cursor.y).abs();
+                        if dx >= 2 || dy >= 2 || ov.last_present.elapsed() >= Duration::from_millis(32)
+                        {
+                            ov.last_draw_cursor = p;
+                            ov.needs_redraw = true;
+                        }
                     }
                 } else if ov.annotate_dragging {
-                    if let Ok(sel) = ov.session.try_confirm() {
-                        let local = PixelPoint::new(
-                            ov.last_cursor.x - sel.origin.x,
-                            ov.last_cursor.y - sel.origin.y,
-                        );
+                    if let Some(local) = overlay_annotate_local(ov, ov.last_cursor) {
                         ov.annotate.drag(local);
                         ov.annotate_dirty = true;
                         ov.needs_redraw = true;
@@ -990,7 +1047,7 @@ where
                 // 只更新鼠标映射用的窗口尺寸；softbuffer 保持 img 尺寸
                 ov.win_w = size.width.max(1);
                 ov.win_h = size.height.max(1);
-                if let (Some(w), Some(h)) = (NonZeroU32::new(ov.img_w), NonZeroU32::new(ov.img_h)) {
+                if let (Some(w), Some(h)) = (NonZeroU32::new(ov.buf_w), NonZeroU32::new(ov.buf_h)) {
                     let _ = ov.surface.resize(w, h);
                 }
                 // 不在此全量 clone dimmed / 不清 buffer_synced，避免拖一下窗口就卡死
@@ -1053,11 +1110,12 @@ where
                                 }
                                 return;
                             }
-                            let local = PixelPoint::new(p.x - sel.origin.x, p.y - sel.origin.y);
-                            ov.annotate.begin(local);
-                            ov.annotate_dragging = ov.annotate.tool != AnnotateTool::Text;
-                            ov.annotate_dirty = true;
-                            ov.needs_redraw = true;
+                            if let Some(local) = overlay_annotate_local(ov, p) {
+                                ov.annotate.begin(local);
+                                ov.annotate_dragging = ov.annotate.tool != AnnotateTool::Text;
+                                ov.annotate_dirty = true;
+                                ov.needs_redraw = true;
+                            }
                             return;
                         }
                     }
@@ -1116,25 +1174,33 @@ where
                     }
                     if let Ok(sel) = ov.session.try_confirm() {
                         ov.phase = OverlayPhase::Ready;
-                        ov.toolbar = layout_toolbar(sel, ov.img_w, ov.img_h);
+                        ov.toolbar = layout_toolbar(sel, ov.buf_w, ov.buf_h);
+                        let src_sel =
+                            buf_rect_to_src(sel, ov.buf_w, ov.buf_h, ov.src_w, ov.src_h);
+                        ov.active_src_rect = Some(src_sel);
                         let tool = ov.annotate.tool;
                         let color = ov.annotate.color;
                         let stroke = ov.annotate.stroke;
-                        ov.annotate = AnnotateSession::new(sel.size.width, sel.size.height);
+                        // 标注坐标系 = 原图选区像素
+                        ov.annotate =
+                            AnnotateSession::new(src_sel.size.width, src_sel.size.height);
                         ov.annotate.tool = tool;
                         ov.annotate.color = color;
                         ov.annotate.stroke = stroke;
                         ov.annotate_cache = None;
                         ov.annotate_dirty = true;
                         println!(
-                            "pinora: selection {}x{} toolbar={}btns | 双击复制 中键/Enter贴图",
+                            "pinora: selection buf={}x{} src={}x{} toolbar={} | 双击复制 中键/Enter贴图",
                             sel.size.width,
                             sel.size.height,
+                            src_sel.size.width,
+                            src_sel.size.height,
                             ov.toolbar.len()
                         );
                     } else {
                         ov.phase = OverlayPhase::Selecting;
                         ov.toolbar.clear();
+                        ov.active_src_rect = None;
                     }
                     ov.needs_redraw = true;
                 } else if ov.annotate_dragging {
@@ -1215,20 +1281,23 @@ where
         });
     }
 
-    /// 从当前 overlay 选区裁剪图像，可选烧录标注。
+    /// 从当前 overlay 选区裁剪**原图像素**，可选烧录标注。
     fn crop_overlay_image(&self, bake: bool) -> Result<CaptureImage, PinoraError> {
         let ov = self.overlay.as_ref().ok_or_else(|| {
             PinoraError::new(ErrorCode::Internal, "overlay missing")
         })?;
-        let local = ov.session.try_confirm()?;
-        let crop = ov.full_image.crop_local(local)?;
+        let src_rect = if let Some(r) = ov.active_src_rect {
+            r
+        } else {
+            let disp = ov.session.try_confirm()?;
+            buf_rect_to_src(disp, ov.buf_w, ov.buf_h, ov.src_w, ov.src_h)
+        };
+        let crop = ov.full_image.crop_local(src_rect)?;
         if bake && !ov.annotate.doc.is_empty() {
             Ok(bake_annotations(&crop, &ov.annotate.doc))
         } else if bake {
-            // 仍可能有进行中的草稿
             if ov.annotate.draft.is_some() {
                 let rgba = render_preview_rgba(&crop, &ov.annotate);
-                // 把预览写回 CaptureImage
                 let mut img = crop;
                 if rgba.len() == img.pixels.bytes.len() {
                     img.pixels.bytes = rgba;
@@ -1250,21 +1319,25 @@ where
         let ov = self.overlay.as_ref().ok_or_else(|| {
             PinoraError::new(ErrorCode::Internal, "overlay missing")
         })?;
-        let local = match ov.session.try_confirm() {
-            Ok(r) => r,
-            Err(_) => {
-                println!("pinora: 尚无有效选区");
-                return Ok(());
+        let src_rect = if let Some(r) = ov.active_src_rect {
+            r
+        } else {
+            match ov.session.try_confirm() {
+                Ok(disp) => buf_rect_to_src(disp, ov.buf_w, ov.buf_h, ov.src_w, ov.src_h),
+                Err(_) => {
+                    println!("pinora: 尚无有效选区");
+                    return Ok(());
+                }
             }
         };
         let display_id = ov.display_id.clone();
         let global = PixelRect::new(
-            ov.display_origin.x.saturating_add(local.origin.x),
-            ov.display_origin.y.saturating_add(local.origin.y),
-            local.size.width,
-            local.size.height,
+            ov.display_origin.x.saturating_add(src_rect.origin.x),
+            ov.display_origin.y.saturating_add(src_rect.origin.y),
+            src_rect.size.width,
+            src_rect.size.height,
         );
-        // 先裁切（仍持有 overlay），再立刻关窗，避免用户感觉点了没反应
+        // 先裁切（仍持有 overlay），再立刻关窗
         let image = self.crop_overlay_image(true)?;
         let position = PixelPoint::new(global.origin.x, global.origin.y);
 
@@ -1276,7 +1349,7 @@ where
         self.resume_frame_cache();
         println!(
             "pinora: finish {action:?} {}x{} @ ({},{}) display={display_id:?}",
-            local.size.width, local.size.height, global.origin.x, global.origin.y
+            src_rect.size.width, src_rect.size.height, global.origin.x, global.origin.y
         );
 
         match action {
@@ -1935,7 +2008,7 @@ fn handle_overlay_key(
 fn refresh_overlay_ready(ov: &mut OverlayState) {
     if let Ok(sel) = ov.session.try_confirm() {
         if ov.phase == OverlayPhase::Ready {
-            ov.toolbar = layout_toolbar(sel, ov.img_w, ov.img_h);
+            ov.toolbar = layout_toolbar(sel, ov.buf_w, ov.buf_h);
             if ov.annotate.image_w != sel.size.width || ov.annotate.image_h != sel.size.height {
                 let tool = ov.annotate.tool;
                 let color = ov.annotate.color;
@@ -1954,8 +2027,8 @@ fn refresh_overlay_ready(ov: &mut OverlayState) {
 
 fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
     // softbuffer 缓冲 = 截图尺寸（与 frame 一致）；鼠标用 win_* 做坐标映射
-    let img_w = ov.img_w as usize;
-    let img_h = ov.img_h as usize;
+    let img_w = ov.buf_w as usize;
+    let img_h = ov.buf_h as usize;
     let new_rect = ov.session.preview_rect();
     let new_tb = if ov.phase == OverlayPhase::Ready && !ov.toolbar.is_empty() {
         toolbar_bounds(&ov.toolbar)
@@ -1990,7 +2063,7 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
         ov.toolbar_chrome_dirty = false;
     } else if ov.annotate_dirty || sel_changed || tb_layout_changed || !ov.buffer_synced {
         if let Some(old) = ov.last_drawn_rect {
-            let expanded = expand_rect(old, 3, ov.img_w, ov.img_h);
+            let expanded = expand_rect(old, 3, ov.buf_w, ov.buf_h);
             blit_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, expanded);
             damage.push(expanded);
         }
@@ -2002,8 +2075,9 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
         if let Some(rect) = new_rect {
             let use_annotate = ov.phase == OverlayPhase::Ready
                 && (ov.annotate.doc.len() > 0 || ov.annotate.draft.is_some())
-                && ov.annotate.image_w == rect.size.width
-                && ov.annotate.image_h == rect.size.height;
+                && ov.active_src_rect.is_some_and(|r| {
+                    ov.annotate.image_w == r.size.width && ov.annotate.image_h == r.size.height
+                });
 
             if use_annotate {
                 ensure_annotate_cache(ov, rect);
@@ -2028,7 +2102,7 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
             let x1 = (rect.right() as usize).min(img_w);
             let y1 = (rect.bottom() as usize).min(img_h);
             draw_rect_border(&mut ov.frame, img_w, img_h, x0, y0, x1, y1, 0x00_FF_CC_33);
-            damage.push(expand_rect(rect, 3, ov.img_w, ov.img_h));
+            damage.push(expand_rect(rect, 3, ov.buf_w, ov.buf_h));
         }
 
         if ov.phase == OverlayPhase::Ready && !ov.toolbar.is_empty() {
@@ -2053,7 +2127,7 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
     }
 
     // 确保 surface 仍是 img 尺寸（防止别处误 resize）
-    if let (Some(w), Some(h)) = (NonZeroU32::new(ov.img_w), NonZeroU32::new(ov.img_h)) {
+    if let (Some(w), Some(h)) = (NonZeroU32::new(ov.buf_w), NonZeroU32::new(ov.buf_h)) {
         let _ = ov.surface.resize(w, h);
     }
 
@@ -2133,22 +2207,94 @@ fn expand_rect(r: PixelRect, pad: i32, img_w: u32, img_h: u32) -> PixelRect {
     PixelRect::new(x0, y0, (x1 - x0).max(0) as u32, (y1 - y0).max(0) as u32)
 }
 
-/// 在选区变化/标注变化时重烤局部缓存。
-fn ensure_annotate_cache(ov: &mut OverlayState, rect: PixelRect) {
-    let wh = (rect.size.width, rect.size.height);
-    if !ov.annotate_dirty
-        && ov.annotate_cache.is_some()
-        && ov.annotate_cache_wh == wh
-    {
+/// 在选区变化/标注变化时重烤局部缓存（原图烤制 → 缩放到缓冲选区尺寸）。
+fn ensure_annotate_cache(ov: &mut OverlayState, disp_rect: PixelRect) {
+    let wh = (disp_rect.size.width, disp_rect.size.height);
+    if !ov.annotate_dirty && ov.annotate_cache.is_some() && ov.annotate_cache_wh == wh {
         return;
     }
     ov.annotate_cache = None;
-    if let Ok(crop) = ov.full_image.crop_local(rect) {
-        let rgba = render_preview_rgba(&crop, &ov.annotate);
-        let xrgb = rgba_to_xrgb(&rgba);
-        ov.annotate_cache = Some(xrgb);
-        ov.annotate_cache_wh = wh;
+    let Some(src_rect) = ov.active_src_rect else {
+        return;
+    };
+    let Ok(crop) = ov.full_image.crop_local(src_rect) else {
+        return;
+    };
+    let rgba = render_preview_rgba(&crop, &ov.annotate);
+    let xrgb = rgba_to_xrgb(&rgba);
+    let sw = crop.pixels.size.width as usize;
+    let sh = crop.pixels.size.height as usize;
+    let dw = disp_rect.size.width as usize;
+    let dh = disp_rect.size.height as usize;
+    if sw == 0 || sh == 0 || dw == 0 || dh == 0 {
+        return;
     }
+    if sw == dw && sh == dh {
+        ov.annotate_cache = Some(xrgb);
+    } else {
+        let mut scaled = vec![0u32; dw * dh];
+        scale_nearest(&xrgb, sw, sh, &mut scaled, dw, dh);
+        ov.annotate_cache = Some(scaled);
+    }
+    ov.annotate_cache_wh = wh;
+}
+
+/// 交互缓冲最长边；4K 会降到约 1920 宽，像素约 1/4。
+const OVERLAY_BUF_MAX_EDGE: u32 = 1920;
+
+fn choose_overlay_buffer_size(src_w: u32, src_h: u32) -> (u32, u32) {
+    let src_w = src_w.max(1);
+    let src_h = src_h.max(1);
+    let long = src_w.max(src_h);
+    if long <= OVERLAY_BUF_MAX_EDGE {
+        return (src_w, src_h);
+    }
+    let scale = f64::from(long) / f64::from(OVERLAY_BUF_MAX_EDGE);
+    let dw = (f64::from(src_w) / scale).round().max(1.0) as u32;
+    let dh = (f64::from(src_h) / scale).round().max(1.0) as u32;
+    (dw, dh)
+}
+
+fn buf_rect_to_src(
+    disp: PixelRect,
+    buf_w: u32,
+    buf_h: u32,
+    src_w: u32,
+    src_h: u32,
+) -> PixelRect {
+    let buf_w = buf_w.max(1) as i64;
+    let buf_h = buf_h.max(1) as i64;
+    let src_w = src_w.max(1) as i64;
+    let src_h = src_h.max(1) as i64;
+    let x0 = (i64::from(disp.origin.x) * src_w / buf_w).clamp(0, src_w - 1);
+    let y0 = (i64::from(disp.origin.y) * src_h / buf_h).clamp(0, src_h - 1);
+    let x1 = ((i64::from(disp.right()) * src_w + buf_w - 1) / buf_w).clamp(x0 + 1, src_w);
+    let y1 = ((i64::from(disp.bottom()) * src_h + buf_h - 1) / buf_h).clamp(y0 + 1, src_h);
+    PixelRect::new(
+        x0 as i32,
+        y0 as i32,
+        (x1 - x0) as u32,
+        (y1 - y0) as u32,
+    )
+}
+
+/// 缓冲坐标光标 → 原图选区内标注坐标。
+fn overlay_annotate_local(ov: &OverlayState, buf_cursor: PixelPoint) -> Option<PixelPoint> {
+    let disp_sel = ov.session.try_confirm().ok()?;
+    let src_sel = ov.active_src_rect?;
+    if !disp_sel.contains_point(buf_cursor) {
+        return None;
+    }
+    let lx = buf_cursor.x - disp_sel.origin.x;
+    let ly = buf_cursor.y - disp_sel.origin.y;
+    let dw = disp_sel.size.width.max(1) as i64;
+    let dh = disp_sel.size.height.max(1) as i64;
+    let sw = src_sel.size.width.max(1) as i64;
+    let sh = src_sel.size.height.max(1) as i64;
+    Some(PixelPoint::new(
+        (i64::from(lx) * sw / dw) as i32,
+        (i64::from(ly) * sh / dh) as i32,
+    ))
 }
 
 fn blit_xrgb_block(
@@ -2179,6 +2325,33 @@ fn blit_xrgb_block(
         let dst = dy * stride + x0;
         let src_i = row * sw;
         frame[dst..dst + copy_w].copy_from_slice(&src[src_i..src_i + copy_w]);
+    }
+}
+
+#[cfg(test)]
+mod overlay_scale_tests {
+    use super::*;
+
+    #[test]
+    fn buffer_size_downscales_4k() {
+        let (w, h) = choose_overlay_buffer_size(3840, 2160);
+        assert!(w <= 1920 && h <= 1920);
+        assert_eq!((w, h), (1920, 1080));
+    }
+
+    #[test]
+    fn buf_to_src_maps_full() {
+        let r = buf_rect_to_src(
+            PixelRect::new(0, 0, 1920, 1080),
+            1920,
+            1080,
+            3840,
+            2160,
+        );
+        assert_eq!(r.origin.x, 0);
+        assert_eq!(r.origin.y, 0);
+        assert_eq!(r.size.width, 3840);
+        assert_eq!(r.size.height, 2160);
     }
 }
 
