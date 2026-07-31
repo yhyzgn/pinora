@@ -205,6 +205,31 @@ pub fn detect_system_clipboard_backend() -> Option<&'static str> {
     }
 }
 
+/// 将纯文本写入系统剪贴板（OCR 全文等）。
+pub fn copy_text_to_system_clipboard(text: &str) -> Result<&'static str, String> {
+    if std::env::var_os("PINORA_NO_SYSTEM_CLIPBOARD").is_some() {
+        return Err("disabled by PINORA_NO_SYSTEM_CLIPBOARD".into());
+    }
+    let bytes = text.as_bytes();
+    if let Some(bin) = which("wl-copy") {
+        pipe_to_cmd(&bin, &["--type", "text/plain"], bytes)?;
+        return Ok("wl-copy");
+    }
+    if let Some(bin) = which("xclip") {
+        pipe_to_cmd(
+            &bin,
+            &["-selection", "clipboard", "-t", "text/plain", "-i"],
+            bytes,
+        )?;
+        return Ok("xclip");
+    }
+    if let Some(bin) = which("xsel") {
+        pipe_to_cmd(&bin, &["--clipboard", "--input"], bytes)?;
+        return Ok("xsel");
+    }
+    Err("no wl-copy/xclip/xsel in PATH".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

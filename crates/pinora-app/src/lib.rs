@@ -8,6 +8,7 @@ mod frame_cache;
 mod hotkey;
 mod image_sink;
 mod kwin_place;
+mod ocr;
 mod os_instance;
 mod desktop_shell;
 mod pin_window;
@@ -28,7 +29,10 @@ pub use desktop_shell::run_desktop_shell;
 pub use hotkey::{
     ensure_user_desktop_entry, FakeHotkeySource, GlobalHotkeyHub, GlobalHotkeyStatus, HotkeySource,
 };
-pub use image_sink::{detect_system_clipboard_backend, LocalImageSink};
+pub use image_sink::{
+    copy_text_to_system_clipboard, detect_system_clipboard_backend, LocalImageSink,
+};
+pub use ocr::{recognize_image, tesseract_available};
 pub use os_instance::OsSingleInstance;
 pub use pin_window::{
     run_pin_session, scaled_window_size, PinSessionEnd, PinView,

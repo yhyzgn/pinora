@@ -14,10 +14,12 @@ use std::time::{Duration, Instant};
 use pinora_core::{
     bake_annotations, render_preview_rgba, ActionId, AnnotateSession, AnnotateTool, CaptureImage,
     CaptureProvider, CaptureRequest, Command, DisplayId, DomainEventKind, ErrorCode, ImageSink,
-    PinId, PinTransform, PinoraError, PixelPoint, PixelRect, SelectionSession,
+    OcrResult, PinId, PinTransform, PinoraError, PixelPoint, PixelRect, SelectionSession,
 };
 use crate::frame_cache::{rgba_to_xrgb_and_dim, FrameCache};
 use crate::hotkey::GlobalHotkeyHub;
+use crate::image_sink::copy_text_to_system_clipboard;
+use crate::ocr::{recognize_image, tesseract_available};
 use crate::tray::{AppTray, TrayAction};
 use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
@@ -175,6 +177,10 @@ struct PinWin {
     locked: bool,
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
+    /// 最近一次 OCR 结果。
+    ocr: Option<OcrResult>,
+    /// 是否绘制 OCR 词框。
+    ocr_show_boxes: bool,
 }
 
 /// 选区确认后的标注编辑窗。
@@ -1290,8 +1296,14 @@ where
             .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "missing PinCreated"))?;
 
         println!(
-            "pinora: pin {pin_id} ({}x{}) — L锁定 [ ]透明度 滚轮缩放 Esc关闭",
-            image.pixels.size.width, image.pixels.size.height
+            "pinora: pin {pin_id} ({}x{}) — L锁定 [ ]透明度 O识别 T词框 滚轮缩放 Esc关闭{}",
+            image.pixels.size.width,
+            image.pixels.size.height,
+            if tesseract_available() {
+                ""
+            } else {
+                "（未装 tesseract，O 将提示安装）"
+            }
         );
 
         if let Ok(save) = rt.dispatch(Command::invoke_action(ActionId::SaveLastCapture)) {
@@ -1364,6 +1376,8 @@ where
                 locked: false,
                 window: window.clone(),
                 surface,
+                ocr: None,
+                ocr_show_boxes: true,
             },
         );
 
@@ -1425,7 +1439,7 @@ where
                     self.close_pin(window_id);
                     return;
                 }
-                // L：锁定/解锁；[ ]：透明度
+                // L：锁定；[ ]：透明度；O：OCR；T：词框
                 if let Key::Character(c) = &event.logical_key {
                     if c == "l" || c == "L" {
                         if let Some(pin) = self.pins.get_mut(&window_id) {
@@ -1445,6 +1459,22 @@ where
                     }
                     if c == "]" {
                         self.nudge_pin_opacity(window_id, 0.1);
+                        return;
+                    }
+                    if c == "o" || c == "O" {
+                        self.run_pin_ocr(window_id);
+                        return;
+                    }
+                    if c == "t" || c == "T" {
+                        if let Some(pin) = self.pins.get_mut(&window_id) {
+                            pin.ocr_show_boxes = !pin.ocr_show_boxes;
+                            println!(
+                                "pinora: pin {} OCR boxes {}",
+                                pin.pin_id,
+                                if pin.ocr_show_boxes { "ON" } else { "OFF" }
+                            );
+                            pin.window.request_redraw();
+                        }
                         return;
                     }
                 }
@@ -1542,6 +1572,53 @@ where
         }
     }
 
+    fn run_pin_ocr(&mut self, window_id: WindowId) {
+        let Some(pin) = self.pins.get(&window_id) else {
+            return;
+        };
+        let pin_id = pin.pin_id;
+        println!("pinora: pin {pin_id} OCR…");
+        let image = pin.image.clone();
+        match recognize_image(&image) {
+            Ok(result) => {
+                let preview: String = result
+                    .full_text
+                    .chars()
+                    .take(200)
+                    .collect();
+                println!(
+                    "pinora: pin {pin_id} OCR ok — {} words, {} lines, langs={:?}\n---\n{}\n---",
+                    result.word_count(),
+                    result.lines.len(),
+                    result.languages,
+                    if preview.is_empty() {
+                        "(empty)"
+                    } else {
+                        &preview
+                    }
+                );
+                if !result.full_text.trim().is_empty() {
+                    match copy_text_to_system_clipboard(&result.full_text) {
+                        Ok(backend) => {
+                            println!("pinora: system clipboard ← text via {backend}");
+                        }
+                        Err(e) => {
+                            eprintln!("pinora: text clipboard skipped: {e}");
+                        }
+                    }
+                }
+                if let Some(pin) = self.pins.get_mut(&window_id) {
+                    pin.ocr = Some(result);
+                    pin.ocr_show_boxes = true;
+                    pin.window.request_redraw();
+                }
+            }
+            Err(e) => {
+                eprintln!("pinora: pin {pin_id} OCR failed: {e}");
+            }
+        }
+    }
+
     fn nudge_pin_opacity(&mut self, window_id: WindowId, delta: f64) {
         let Some(pin) = self.pins.get_mut(&window_id) else {
             return;
@@ -1630,6 +1707,15 @@ where
         let sh = pin.image.pixels.size.height as usize;
         let opacity = pin.opacity;
         let locked = pin.locked;
+        let show_ocr = pin.ocr_show_boxes;
+        let ocr_boxes: Vec<PixelRect> = if show_ocr {
+            pin.ocr
+                .as_ref()
+                .map(|r| r.lines.iter().flat_map(|l| l.words.iter().map(|w| w.bbox)).collect())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         if bw == sw && bh == sh {
             buffer[..bw * bh].copy_from_slice(&pin.pixels_xrgb);
         } else {
@@ -1638,6 +1724,27 @@ where
         // softbuffer 无真透明：用不透明度压暗近似
         if opacity < 0.999 {
             apply_opacity_darken(&mut buffer[..bw * bh], opacity);
+        }
+        // OCR 词框（图像坐标 → 窗口坐标）
+        if !ocr_boxes.is_empty() && sw > 0 && sh > 0 {
+            let sx = bw as f64 / sw as f64;
+            let sy = bh as f64 / sh as f64;
+            for rect in ocr_boxes {
+                let x0 = (rect.origin.x as f64 * sx).round() as i32;
+                let y0 = (rect.origin.y as f64 * sy).round() as i32;
+                let x1 = (rect.right() as f64 * sx).round() as i32;
+                let y1 = (rect.bottom() as f64 * sy).round() as i32;
+                draw_rect_outline_xrgb(
+                    &mut buffer[..bw * bh],
+                    bw,
+                    bh,
+                    x0,
+                    y0,
+                    x1.max(x0 + 1),
+                    y1.max(y0 + 1),
+                    0x00_22_EE_66,
+                );
+            }
         }
         let border = if locked {
             0x00_CC_44_22 // 锁定：偏红边
@@ -1862,6 +1969,37 @@ fn draw_rect_border(
                 buf[y * stride + xr] = color;
             }
         }
+    }
+}
+
+/// XRGB 缓冲区上画轴对齐矩形轮廓（OCR 词框）。
+fn draw_rect_outline_xrgb(
+    buf: &mut [u32],
+    stride: usize,
+    height: usize,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    color: u32,
+) {
+    if stride == 0 || height == 0 {
+        return;
+    }
+    let x0 = x0.clamp(0, stride as i32 - 1) as usize;
+    let x1 = x1.clamp(0, stride as i32 - 1) as usize;
+    let y0 = y0.clamp(0, height as i32 - 1) as usize;
+    let y1 = y1.clamp(0, height as i32 - 1) as usize;
+    if x1 < x0 || y1 < y0 {
+        return;
+    }
+    for x in x0..=x1 {
+        buf[y0 * stride + x] = color;
+        buf[y1 * stride + x] = color;
+    }
+    for y in y0..=y1 {
+        buf[y * stride + x0] = color;
+        buf[y * stride + x1] = color;
     }
 }
 
