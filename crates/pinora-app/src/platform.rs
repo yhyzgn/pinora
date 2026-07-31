@@ -33,11 +33,16 @@ impl CapabilityProbe for RuntimeCapabilityProbe {
             "capture backend: {}",
             self.capture_backend.as_str()
         ));
-        notes.push("clipboard=LocalImageSink memory only".into());
         notes.push(
             "global hotkey: F2/Ctrl+N via global-hotkey when available; else `pinora capture` IPC"
                 .into(),
         );
+        match crate::image_sink::detect_system_clipboard_backend() {
+            Some(b) => notes.push(format!("system clipboard: {b} (image/png)")),
+            None => notes.push(
+                "system clipboard: unavailable (install wl-clipboard or xclip)".into(),
+            ),
+        }
 
         CapabilitySnapshot {
             capture_available: true,

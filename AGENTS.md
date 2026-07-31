@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/010_pin_window.md`
-- 任务：`.context/tasks/010_pin_window.md`
+- 计划：`.context/plans/011_system_clipboard.md`
+- 任务：`.context/tasks/011_system_clipboard.md`
 
 ## 交付要求
 

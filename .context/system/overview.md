@@ -8,6 +8,7 @@
 - **截图后端优先级（KDE Wayland）**：`kde-spectacle`（KWin，~0.5s）→ `xcap`/portal（慢）→ `fake`。
 - **不要默认 portal**：portal/PipeWire 是通用 Wayland 兜底，不是 Snipaste 级体验。
 - **全局热键**：`global-hotkey`（F2/Ctrl+N/Ctrl+Shift+S）+ 单实例 IPC `pinora capture`；启动时写入 `~/.local/share/applications/pinora.desktop`。
+- **系统剪贴板**：Linux 优先 `wl-copy`，回退 `xclip`；另保留内存副本。
 
 ## 已实现能力
 
@@ -16,8 +17,10 @@
 | 真实/降级截屏 | KDE 优先 spectacle/KWin；否则 xcap；再 fake |
 | 区域选区 Overlay | 拖拽、Enter/Esc、方向键；脏矩形优化 |
 | 贴图窗口 | 无边框置顶、拖动、滚轮缩放、Esc 关闭；多贴图 |
-| 导出 | PNG + 内存剪贴板 |
-| 单实例 | flock + Unix socket Activate |
+| 导出 | PNG 文件 + 内存剪贴板 + 系统剪贴板（wl-copy/xclip） |
+| 全局热键 | F2/Ctrl+N/Ctrl+Shift+S + `pinora capture` IPC |
+| 单实例 | flock + Unix socket Activate/CAPTURE/QUIT |
+| 帧缓存 | 空闲预截，overlay 瞬时弹出 |
 
 ## 主流程
 
@@ -38,4 +41,4 @@
 
 ## 未实现
 
-- GPUI/Liora、标注、全局热键、系统剪贴板、跨屏联合 Overlay、托盘。
+- GPUI/Liora、标注工具条、托盘、OCR、跨屏联合 Overlay、设置持久化。
