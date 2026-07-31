@@ -2451,6 +2451,7 @@ version = "0.1.0"
 dependencies = [
  "fs2",
  "global-hotkey",
+ "gtk",
  "pinora-core",
  "png 0.17.16",
  "softbuffer",

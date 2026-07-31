@@ -1,4 +1,8 @@
-//! 系统托盘（Linux StatusNotifier / 兼容层 via tray-icon）。
+//! 系统托盘（Linux StatusNotifier / appindicator via tray-icon）。
+//!
+//! 注意：Linux 后端基于 GTK，创建托盘前必须 `gtk::init()`，否则会直接 panic。
+
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
@@ -20,39 +24,26 @@ pub struct AppTray {
 impl AppTray {
     /// 创建托盘图标。失败时返回错误（无托盘环境不致命，由调用方降级）。
     pub fn try_new() -> Result<Self, String> {
-        let icon = make_icon().map_err(|e| format!("tray icon: {e}"))?;
-        let menu = Menu::new();
-        let capture = MenuItem::new("截图 (F2)", true, None);
-        let quit = MenuItem::new("退出", true, None);
-        menu.append(&capture)
-            .map_err(|e| format!("menu append capture: {e}"))?;
-        menu.append(&PredefinedMenuItem::separator())
-            .map_err(|e| format!("menu sep: {e}"))?;
-        menu.append(&quit)
-            .map_err(|e| format!("menu append quit: {e}"))?;
-
-        let capture_id = capture.id().clone();
-        let quit_id = quit.id().clone();
-
-        let tray = TrayIconBuilder::new()
-            .with_menu(Box::new(menu))
-            .with_tooltip("Pinora — 截图 / 贴图")
-            .with_icon(icon)
-            .build()
-            .map_err(|e| format!("tray build: {e}"))?;
-
-        Ok(Self {
-            _tray: tray,
-            capture_id,
-            quit_id,
-        })
+        // tray-icon 内部可能 panic（未 gtk::init），必须 catch
+        match catch_unwind(AssertUnwindSafe(try_new_inner)) {
+            Ok(r) => r,
+            Err(_) => Err(
+                "tray panicked (often GTK not initialized or no display)".into(),
+            ),
+        }
     }
 
     /// 非阻塞轮询菜单动作。
     pub fn poll(&self) -> Option<TrayAction> {
-        // 吞掉图标点击（左键）也可触发截图
         while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
-            if matches!(ev, TrayIconEvent::Click { .. }) {
+            if matches!(
+                ev,
+                TrayIconEvent::Click {
+                    button: tray_icon::MouseButton::Left,
+                    button_state: tray_icon::MouseButtonState::Up,
+                    ..
+                }
+            ) {
                 return Some(TrayAction::Capture);
             }
         }
@@ -68,8 +59,45 @@ impl AppTray {
     }
 }
 
+fn try_new_inner() -> Result<AppTray, String> {
+    // Linux tray-icon → appindicator → GTK 菜单
+    if gtk::init().is_err() {
+        // 可能已初始化
+        if !gtk::is_initialized() {
+            return Err("gtk::init failed".into());
+        }
+    }
+
+    let icon = make_icon().map_err(|e| format!("tray icon: {e}"))?;
+    let menu = Menu::new();
+    let capture = MenuItem::new("截图 (F2)", true, None);
+    let quit = MenuItem::new("退出", true, None);
+    menu.append(&capture)
+        .map_err(|e| format!("menu append capture: {e}"))?;
+    menu.append(&PredefinedMenuItem::separator())
+        .map_err(|e| format!("menu sep: {e}"))?;
+    menu.append(&quit)
+        .map_err(|e| format!("menu append quit: {e}"))?;
+
+    let capture_id = capture.id().clone();
+    let quit_id = quit.id().clone();
+
+    let tray = TrayIconBuilder::new()
+        .with_menu(Box::new(menu))
+        .with_tooltip("Pinora — 截图 / 贴图")
+        .with_icon(icon)
+        .build()
+        .map_err(|e| format!("tray build: {e}"))?;
+
+    Ok(AppTray {
+        _tray: tray,
+        capture_id,
+        quit_id,
+    })
+}
+
 fn make_icon() -> Result<Icon, String> {
-    // 32x32 简单蓝底白十字（截图工具感）
+    // 32x32 简单蓝底白十字
     let w = 32u32;
     let h = 32u32;
     let mut rgba = vec![0u8; (w * h * 4) as usize];

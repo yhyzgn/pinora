@@ -16,3 +16,5 @@ softbuffer = "0.4"
 global-hotkey = "0.7"
 # 关闭 libxdo 默认特性，避免链接 -lxdo（Wayland/KDE 不需要）
 tray-icon = { version = "0.19", default-features = false }
+# tray-icon/muda 在 Linux 上依赖 GTK 菜单；创建托盘前必须 gtk::init
+gtk = "0.18"
