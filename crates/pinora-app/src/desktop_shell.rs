@@ -25,7 +25,7 @@ use crate::overlay_toolbar::{
     ToolbarButton,
 };
 use crate::tray::{AppTray, TrayAction};
-use softbuffer::{Context, Surface};
+use softbuffer::{Context, Rect as DamageRect, Surface};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
@@ -186,6 +186,10 @@ struct OverlayState {
     /// 按下工具栏按钮，抬起时若仍命中则触发。
     toolbar_pressed: Option<ToolbarAction>,
     last_toolbar_bounds: Option<PixelRect>,
+    /// 仅工具栏外观变化（高亮），不重烤选区。
+    toolbar_chrome_dirty: bool,
+    /// softbuffer 是否已与 frame 全量同步过（之后只传脏区）。
+    buffer_synced: bool,
     last_cursor: PixelPoint,
     needs_redraw: bool,
     last_drawn_rect: Option<PixelRect>,
@@ -800,6 +804,8 @@ where
             toolbar: Vec::new(),
             toolbar_pressed: None,
             last_toolbar_bounds: None,
+            toolbar_chrome_dirty: false,
+            buffer_synced: false,
             last_cursor: PixelPoint::new(0, 0),
             needs_redraw: true,
             last_drawn_rect: None,
@@ -987,6 +993,8 @@ where
                     let _ = ov.surface.resize(w, h);
                 }
                 ov.last_drawn_rect = None;
+                ov.last_toolbar_bounds = None;
+                ov.buffer_synced = false; // 尺寸变化后必须全量同步
                 if !ov.dimmed.is_empty() {
                     ov.frame = ov.dimmed.clone();
                 }
@@ -1174,10 +1182,11 @@ where
             }
             ToolbarAction::Tool(tool) => {
                 if let Some(ov) = self.overlay.as_mut() {
-                    ov.annotate.tool = tool;
-                    // 强制重画工具栏高亮（不依赖 annotate 内容变化）
-                    ov.last_toolbar_bounds = None;
-                    ov.needs_redraw = true;
+                    if ov.annotate.tool != tool {
+                        ov.annotate.tool = tool;
+                        ov.toolbar_chrome_dirty = true;
+                        ov.needs_redraw = true;
+                    }
                     println!("pinora: tool = {tool:?}");
                 }
             }
@@ -1185,13 +1194,6 @@ where
     }
 
     fn overlay_ocr(&mut self) {
-        let Some(ov) = self.overlay.as_ref() else {
-            return;
-        };
-        let Ok(sel) = ov.session.try_confirm() else {
-            eprintln!("pinora: OCR 需要有效选区");
-            return;
-        };
         let image = match self.crop_overlay_image(true) {
             Ok(img) => img,
             Err(e) => {
@@ -1199,14 +1201,14 @@ where
                 return;
             }
         };
-        println!(
-            "pinora: OCR on selection {}x{}…",
-            sel.size.width, sel.size.height
-        );
-        match recognize_image(&image) {
+        let w = image.pixels.size.width;
+        let h = image.pixels.size.height;
+        println!("pinora: OCR on selection {w}x{h}…（后台识别，不阻塞界面）");
+        // 主线程不跑 tesseract，避免点一下卡死数秒
+        thread::spawn(move || match recognize_image(&image) {
             Ok(result) => {
                 let preview: String = result.full_text.chars().take(240).collect();
-                println!(
+                eprintln!(
                     "pinora: OCR ok — {} words\n---\n{}\n---",
                     result.word_count(),
                     if preview.is_empty() {
@@ -1217,13 +1219,13 @@ where
                 );
                 if !result.full_text.trim().is_empty() {
                     match copy_text_to_system_clipboard(&result.full_text) {
-                        Ok(b) => println!("pinora: system clipboard ← text via {b}"),
+                        Ok(b) => eprintln!("pinora: system clipboard ← text via {b}"),
                         Err(e) => eprintln!("pinora: text clipboard: {e}"),
                     }
                 }
             }
             Err(e) => eprintln!("pinora: OCR failed: {e}"),
-        }
+        });
     }
 
     /// 从当前 overlay 选区裁剪图像，可选烧录标注。
@@ -1275,26 +1277,29 @@ where
             local.size.width,
             local.size.height,
         );
+        // 先裁切（仍持有 overlay），再立刻关窗，避免用户感觉点了没反应
         let image = self.crop_overlay_image(true)?;
         let position = PixelPoint::new(global.origin.x, global.origin.y);
+
+        if let Some(ov) = self.overlay.take() {
+            ov.window.set_visible(false);
+            drop(ov);
+        }
+        self.mode = Mode::Idle;
+        self.resume_frame_cache();
         println!(
             "pinora: finish {action:?} {}x{} @ ({},{}) display={display_id:?}",
             local.size.width, local.size.height, global.origin.x, global.origin.y
         );
 
-        // 关闭 overlay
-        if let Some(ov) = self.overlay.take() {
-            ov.window.set_visible(false);
-        }
-        self.mode = Mode::Idle;
-        self.resume_frame_cache();
-
         match action {
             OverlayFinish::Copy => {
+                // 复制走 sink；不强制先建 pin 窗
                 if let Some(rt) = self.runtime.as_mut() {
-                    // 临时创建 pin 状态以便 CopyLast？直接 sink
                     let _ = rt.dispatch(Command::create_pin(image.clone(), position));
                     let _ = rt.dispatch(Command::invoke_action(ActionId::CopyLastCapture));
+                    // 状态里的 pin 不显示窗口即可；关闭占位避免堆积
+                    // create_pin 会记一条，用户无窗可接受；后续可改纯 sink
                 }
                 println!(
                     "pinora: copied {}x{} (双击/工具栏复制)",
@@ -1316,6 +1321,7 @@ where
                 }
             }
             OverlayFinish::Pin => {
+                // 贴图：先出窗再异步保存/复制，避免主路径串行卡顿
                 self.open_pin_from_image(event_loop, image, position)?;
             }
         }
@@ -1352,18 +1358,21 @@ where
             }
         );
 
-        if let Ok(save) = rt.dispatch(Command::invoke_action(ActionId::SaveLastCapture)) {
-            for event in &save.events {
-                if let DomainEventKind::ImageSaved { image_id, path } = &event.event.kind {
-                    println!("pinora: saved {image_id} -> {}", path.display());
-                }
-            }
-        }
-        let _ = rt.dispatch(Command::invoke_action(ActionId::CopyLastCapture));
-
+        // 先弹出贴图窗；导出/剪贴板放到后面，避免挡住贴图
         self.spawn_pin(event_loop, pin_id, image, position, 1.0)?;
         self.mode = Mode::Idle;
         self.resume_frame_cache();
+
+        if let Some(rt) = self.runtime.as_mut() {
+            if let Ok(save) = rt.dispatch(Command::invoke_action(ActionId::SaveLastCapture)) {
+                for event in &save.events {
+                    if let DomainEventKind::ImageSaved { image_id, path } = &event.event.kind {
+                        println!("pinora: saved {image_id} -> {}", path.display());
+                    }
+                }
+            }
+            let _ = rt.dispatch(Command::invoke_action(ActionId::CopyLastCapture));
+        }
         Ok(())
     }
 
@@ -1910,37 +1919,37 @@ fn handle_overlay_key(
         }
         Key::Character(c) if c == "1" || c == "r" || c == "R" => {
             ov.annotate.tool = AnnotateTool::Rect;
-            ov.last_toolbar_bounds = None;
+            ov.toolbar_chrome_dirty = true;
             println!("pinora: tool = Rect");
             ov.needs_redraw = true;
         }
         Key::Character(c) if c == "2" || c == "a" || c == "A" => {
             ov.annotate.tool = AnnotateTool::Arrow;
-            ov.last_toolbar_bounds = None;
+            ov.toolbar_chrome_dirty = true;
             println!("pinora: tool = Arrow");
             ov.needs_redraw = true;
         }
         Key::Character(c) if c == "3" => {
             ov.annotate.tool = AnnotateTool::Pen;
-            ov.last_toolbar_bounds = None;
+            ov.toolbar_chrome_dirty = true;
             println!("pinora: tool = Pen");
             ov.needs_redraw = true;
         }
         Key::Character(c) if c == "4" || c == "e" || c == "E" => {
             ov.annotate.tool = AnnotateTool::Ellipse;
-            ov.last_toolbar_bounds = None;
+            ov.toolbar_chrome_dirty = true;
             println!("pinora: tool = Ellipse");
             ov.needs_redraw = true;
         }
         Key::Character(c) if c == "5" || c == "m" || c == "M" => {
             ov.annotate.tool = AnnotateTool::Mosaic;
-            ov.last_toolbar_bounds = None;
+            ov.toolbar_chrome_dirty = true;
             println!("pinora: tool = Mosaic");
             ov.needs_redraw = true;
         }
         Key::Character(c) if c == "6" || c == "t" || c == "T" => {
             ov.annotate.tool = AnnotateTool::Text;
-            ov.last_toolbar_bounds = None;
+            ov.toolbar_chrome_dirty = true;
             println!("pinora: tool = Text");
             ov.needs_redraw = true;
         }
@@ -1979,17 +1988,41 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
     };
 
     let sel_changed = ov.last_drawn_rect != new_rect;
-    let tb_changed = ov.last_toolbar_bounds != new_tb;
-    let content_changed = ov.annotate_dirty || sel_changed || tb_changed;
+    let tb_layout_changed = ov.last_toolbar_bounds != new_tb;
+    let chrome_only = ov.toolbar_chrome_dirty
+        && !ov.annotate_dirty
+        && !sel_changed
+        && !tb_layout_changed
+        && ov.buffer_synced;
 
-    if content_changed {
-        // 只恢复旧脏区（从 dimmed），禁止每帧全屏 memcpy
+    // 收集本帧要上传的脏区（图像坐标）
+    let mut damage: Vec<PixelRect> = Vec::with_capacity(4);
+
+    if chrome_only {
+        // 只重画工具栏高亮：几十 KB 级
+        if let Some(tb) = ov.last_toolbar_bounds.or(new_tb) {
+            blit_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, tb);
+            if ov.phase == OverlayPhase::Ready && !ov.toolbar.is_empty() {
+                paint_toolbar(
+                    &mut ov.frame,
+                    img_w,
+                    img_h,
+                    &ov.toolbar,
+                    ov.annotate.tool,
+                );
+            }
+            damage.push(tb);
+        }
+        ov.toolbar_chrome_dirty = false;
+    } else if ov.annotate_dirty || sel_changed || tb_layout_changed || !ov.buffer_synced {
         if let Some(old) = ov.last_drawn_rect {
             let expanded = expand_rect(old, 3, ov.img_w, ov.img_h);
             blit_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, expanded);
+            damage.push(expanded);
         }
         if let Some(old_tb) = ov.last_toolbar_bounds {
             blit_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, old_tb);
+            damage.push(old_tb);
         }
 
         if let Some(rect) = new_rect {
@@ -2021,6 +2054,7 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
             let x1 = (rect.right() as usize).min(img_w);
             let y1 = (rect.bottom() as usize).min(img_h);
             draw_rect_border(&mut ov.frame, img_w, img_h, x0, y0, x1, y1, 0x00_FF_CC_33);
+            damage.push(expand_rect(rect, 3, ov.img_w, ov.img_h));
         }
 
         if ov.phase == OverlayPhase::Ready && !ov.toolbar.is_empty() {
@@ -2031,11 +2065,18 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
                 &ov.toolbar,
                 ov.annotate.tool,
             );
+            if let Some(tb) = new_tb {
+                damage.push(tb);
+            }
         }
 
         ov.last_drawn_rect = new_rect;
         ov.last_toolbar_bounds = new_tb;
         ov.annotate_dirty = false;
+        ov.toolbar_chrome_dirty = false;
+    } else {
+        // 无脏内容
+        return Ok(());
     }
 
     let mut buffer = ov.surface.buffer_mut().map_err(|e| {
@@ -2050,14 +2091,60 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
             "overlay buffer size mismatch",
         ));
     }
-    if bw == img_w && bh == img_h {
-        buffer[..needed].copy_from_slice(&ov.frame);
+
+    let same_size = bw == img_w && bh == img_h;
+    // 首帧或尺寸不一致：全量同步；否则只拷脏区
+    let full = !ov.buffer_synced || !same_size || damage.is_empty();
+    if full {
+        if same_size {
+            buffer[..needed].copy_from_slice(&ov.frame);
+        } else {
+            scale_nearest(&ov.frame, img_w, img_h, &mut buffer[..needed], bw, bh);
+        }
+        buffer
+            .present()
+            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("overlay present: {e}")))?;
+        ov.buffer_synced = same_size;
     } else {
-        scale_nearest(&ov.frame, img_w, img_h, &mut buffer[..needed], bw, bh);
+        let mut sb_damage = Vec::with_capacity(damage.len());
+        for r in &damage {
+            let x0 = r.origin.x.max(0) as usize;
+            let y0 = r.origin.y.max(0) as usize;
+            let x1 = (r.right() as usize).min(img_w).min(bw);
+            let y1 = (r.bottom() as usize).min(img_h).min(bh);
+            if x1 <= x0 || y1 <= y0 {
+                continue;
+            }
+            let w = x1 - x0;
+            for y in y0..y1 {
+                let dst = y * bw + x0;
+                let src = y * img_w + x0;
+                buffer[dst..dst + w].copy_from_slice(&ov.frame[src..src + w]);
+            }
+            if let (Some(nw), Some(nh)) = (
+                NonZeroU32::new((x1 - x0) as u32),
+                NonZeroU32::new((y1 - y0) as u32),
+            ) {
+                sb_damage.push(DamageRect {
+                    x: x0 as u32,
+                    y: y0 as u32,
+                    width: nw,
+                    height: nh,
+                });
+            }
+        }
+        if sb_damage.is_empty() {
+            // 退化全量
+            buffer[..needed].copy_from_slice(&ov.frame);
+            buffer.present().map_err(|e| {
+                PinoraError::new(ErrorCode::Internal, format!("overlay present: {e}"))
+            })?;
+        } else {
+            buffer
+                .present_with_damage(&sb_damage)
+                .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("overlay damage: {e}")))?;
+        }
     }
-    buffer
-        .present()
-        .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("overlay present: {e}")))?;
     ov.last_present = Instant::now();
     Ok(())
 }
