@@ -22,7 +22,7 @@ use crate::tray::{AppTray, TrayAction};
 use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::{CursorIcon, Fullscreen, Window, WindowId, WindowLevel};
@@ -958,7 +958,7 @@ where
         drop(ov);
 
         println!(
-            "pinora: annotate {}x{} — [1]Rect [2]Arrow [3]Pen  Enter=贴图  Ctrl+Z=撤销  Esc=跳过标注",
+            "pinora: annotate {}x{} — 1矩形 2箭头 3画笔 4椭圆 5马赛克 6文本  C颜色 +/-线宽  Enter贴图  Esc跳过",
             size.width, size.height
         );
         self.open_annotate(event_loop, image, position)?;
@@ -980,7 +980,7 @@ where
         let session = AnnotateSession::new(w, h);
 
         let attrs = Window::default_attributes()
-            .with_title("Pinora 标注 — 1矩形 2箭头 3画笔 | Enter贴图 Esc跳过 Ctrl+Z撤销")
+            .with_title(annotate_title(&session))
             .with_inner_size(PhysicalSize::new(w, h))
             .with_decorations(true)
             .with_resizable(true)
@@ -991,6 +991,7 @@ where
             .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("annotate window: {e}")))?;
         let window = Rc::new(window);
         let _ = window.focus_window();
+        window.set_ime_allowed(true);
 
         let mut surface = Surface::new(context, window.clone()).map_err(|e| {
             PinoraError::new(ErrorCode::Internal, format!("annotate surface: {e}"))
@@ -1040,13 +1041,43 @@ where
                     self.request_new_capture(event_loop);
                     return;
                 }
+                // Enter：文本草稿中先提交文字；否则烧录贴图
                 if matches!(key.logical_key, Key::Named(NamedKey::Enter)) {
+                    let editing_text = self
+                        .annotate
+                        .as_ref()
+                        .map(|a| a.session.is_text_editing())
+                        .unwrap_or(false);
+                    if editing_text {
+                        if let Some(an) = self.annotate.as_mut() {
+                            an.session.commit();
+                            an.needs_redraw = true;
+                            an.window.set_title(&annotate_title(&an.session));
+                            println!("pinora: text committed");
+                        }
+                        return;
+                    }
                     if let Err(e) = self.finish_annotate(event_loop, true) {
                         eprintln!("pinora: finish annotate: {e}");
                     }
                     return;
                 }
+                // Esc：有草稿则取消；否则跳过标注贴图
                 if matches!(key.logical_key, Key::Named(NamedKey::Escape)) {
+                    let has_draft = self
+                        .annotate
+                        .as_ref()
+                        .map(|a| a.session.draft.is_some())
+                        .unwrap_or(false);
+                    if has_draft {
+                        if let Some(an) = self.annotate.as_mut() {
+                            an.session.cancel_draft();
+                            an.dragging = false;
+                            an.needs_redraw = true;
+                            println!("pinora: draft cancelled");
+                        }
+                        return;
+                    }
                     if let Err(e) = self.finish_annotate(event_loop, false) {
                         eprintln!("pinora: finish annotate: {e}");
                     }
@@ -1064,28 +1095,86 @@ where
             WindowEvent::ModifiersChanged(m) => {
                 self.modifiers = m.state();
             }
+            WindowEvent::Ime(Ime::Commit(text)) => {
+                if an.session.is_text_editing() && !text.is_empty() {
+                    an.session.text_push(&text);
+                    an.needs_redraw = true;
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {
+                // 文本编辑中：Backspace / 可打印字符
+                if an.session.is_text_editing() {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::Backspace) => {
+                            an.session.text_backspace();
+                            an.needs_redraw = true;
+                            return;
+                        }
+                        Key::Character(c)
+                            if !self.modifiers.control_key()
+                                && !self.modifiers.alt_key()
+                                && !c.chars().any(|ch| ch.is_control()) =>
+                        {
+                            // 工具切换键在编辑中也当作输入（除 Ctrl 组合）
+                            an.session.text_push(c.as_str());
+                            an.needs_redraw = true;
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+
                 match &event.logical_key {
                     Key::Character(c) if c == "1" || c == "r" || c == "R" => {
                         an.session.tool = AnnotateTool::Rect;
-                        an.window.set_title(
-                            "Pinora 标注 [矩形] — 1矩形 2箭头 3画笔 | Enter贴图 Esc跳过",
-                        );
+                        an.window.set_title(&annotate_title(&an.session));
                         println!("pinora: tool = Rect");
                     }
                     Key::Character(c) if c == "2" || c == "a" || c == "A" => {
                         an.session.tool = AnnotateTool::Arrow;
-                        an.window.set_title(
-                            "Pinora 标注 [箭头] — 1矩形 2箭头 3画笔 | Enter贴图 Esc跳过",
-                        );
+                        an.window.set_title(&annotate_title(&an.session));
                         println!("pinora: tool = Arrow");
                     }
                     Key::Character(c) if c == "3" || c == "p" || c == "P" => {
                         an.session.tool = AnnotateTool::Pen;
-                        an.window.set_title(
-                            "Pinora 标注 [画笔] — 1矩形 2箭头 3画笔 | Enter贴图 Esc跳过",
-                        );
+                        an.window.set_title(&annotate_title(&an.session));
                         println!("pinora: tool = Pen");
+                    }
+                    Key::Character(c) if c == "4" || c == "e" || c == "E" => {
+                        an.session.tool = AnnotateTool::Ellipse;
+                        an.window.set_title(&annotate_title(&an.session));
+                        println!("pinora: tool = Ellipse");
+                    }
+                    Key::Character(c) if c == "5" || c == "m" || c == "M" => {
+                        an.session.tool = AnnotateTool::Mosaic;
+                        an.window.set_title(&annotate_title(&an.session));
+                        println!("pinora: tool = Mosaic");
+                    }
+                    Key::Character(c) if c == "6" || c == "t" || c == "T" => {
+                        an.session.tool = AnnotateTool::Text;
+                        an.window.set_title(&annotate_title(&an.session));
+                        println!("pinora: tool = Text");
+                    }
+                    Key::Character(c) if c == "c" || c == "C" => {
+                        an.session.cycle_color();
+                        an.window.set_title(&annotate_title(&an.session));
+                        println!(
+                            "pinora: color = rgba{:?}",
+                            an.session.color
+                        );
+                        an.needs_redraw = true;
+                    }
+                    Key::Character(c) if c == "+" || c == "=" => {
+                        an.session.stroke_up();
+                        an.window.set_title(&annotate_title(&an.session));
+                        println!("pinora: stroke = {}", an.session.stroke);
+                        an.needs_redraw = true;
+                    }
+                    Key::Character(c) if c == "-" || c == "_" => {
+                        an.session.stroke_down();
+                        an.window.set_title(&annotate_title(&an.session));
+                        println!("pinora: stroke = {}", an.session.stroke);
+                        an.needs_redraw = true;
                     }
                     Key::Character(c) if (c == "z" || c == "Z") && self.modifiers.control_key() => {
                         an.session.doc.undo();
@@ -1103,12 +1192,20 @@ where
                 ElementState::Pressed => {
                     let p = an.last_cursor;
                     an.session.begin(p);
-                    an.dragging = true;
+                    // 文本：点击落点后进入键入，不进入拖拽提交
+                    an.dragging = an.session.tool != AnnotateTool::Text;
                     an.needs_redraw = true;
+                    if an.session.tool == AnnotateTool::Text {
+                        an.window.set_title(&annotate_title(&an.session));
+                        println!("pinora: text place — type, Enter=确认文字");
+                    }
                 }
                 ElementState::Released => {
                     if an.dragging {
-                        an.session.commit();
+                        // 非文本工具：松手提交
+                        if an.session.tool != AnnotateTool::Text {
+                            an.session.commit();
+                        }
                         an.dragging = false;
                         an.needs_redraw = true;
                     }
@@ -1637,6 +1734,27 @@ fn window_to_image(x: f64, y: f64, win_w: u32, win_h: u32, img_w: u32, img_h: u3
 fn rgba_to_xrgb(bytes: &[u8]) -> Vec<u32> {
     let (base, _) = rgba_to_xrgb_and_dim(bytes);
     base
+}
+
+fn annotate_title(session: &AnnotateSession) -> String {
+    let tool = match session.tool {
+        AnnotateTool::Rect => "矩形",
+        AnnotateTool::Arrow => "箭头",
+        AnnotateTool::Pen => "画笔",
+        AnnotateTool::Ellipse => "椭圆",
+        AnnotateTool::Mosaic => "马赛克",
+        AnnotateTool::Text => "文本",
+    };
+    let [r, g, b, _] = session.color;
+    let editing = if session.is_text_editing() {
+        " · 键入中 Enter确认"
+    } else {
+        ""
+    };
+    format!(
+        "Pinora [{tool}] 线宽{} RGB({r},{g},{b}){editing} | 1-6工具 C颜色 +/-线宽 Enter贴图 Esc",
+        session.stroke
+    )
 }
 
 fn paint_annotate(an: &mut AnnotateState) -> Result<(), PinoraError> {

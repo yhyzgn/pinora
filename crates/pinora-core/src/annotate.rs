@@ -1,4 +1,6 @@
-//! 基础标注：矩形、箭头、自由画笔；图像坐标；栅格化到 RGBA。
+//! 标注：矩形/箭头/画笔/椭圆/马赛克/文本；颜色与线宽；栅格化到 RGBA。
+
+use std::sync::OnceLock;
 
 use crate::geometry::PixelPoint;
 use crate::image::{CaptureImage, RgbaBuffer};
@@ -11,6 +13,9 @@ pub enum AnnotateTool {
     Rect,
     Arrow,
     Pen,
+    Ellipse,
+    Mosaic,
+    Text,
 }
 
 /// 单条标注（已提交）。
@@ -32,6 +37,24 @@ pub enum Annotation {
         points: Vec<PixelPoint>,
         color: [u8; 4],
         stroke: u32,
+    },
+    Ellipse {
+        a: PixelPoint,
+        b: PixelPoint,
+        color: [u8; 4],
+        stroke: u32,
+    },
+    Mosaic {
+        a: PixelPoint,
+        b: PixelPoint,
+        block: u32,
+    },
+    Text {
+        origin: PixelPoint,
+        content: String,
+        color: [u8; 4],
+        /// 字号（像素高度近似）。
+        size: f32,
     },
 }
 
@@ -66,13 +89,30 @@ impl AnnotationDoc {
 /// 默认描边色（亮红）。
 pub const DEFAULT_STROKE: [u8; 4] = [255, 64, 64, 255];
 pub const DEFAULT_WIDTH: u32 = 3;
+pub const MIN_STROKE: u32 = 1;
+pub const MAX_STROKE: u32 = 24;
 
-/// 进行中的拖拽草稿。
+/// 可循环调色板。
+pub const STROKE_PALETTE: [[u8; 4]; 8] = [
+    [255, 64, 64, 255],   // 红
+    [255, 160, 0, 255],   // 橙
+    [255, 220, 0, 255],   // 黄
+    [64, 200, 80, 255],   // 绿
+    [64, 160, 255, 255],  // 蓝
+    [180, 80, 255, 255],  // 紫
+    [255, 255, 255, 255], // 白
+    [32, 32, 32, 255],    // 近黑
+];
+
+/// 进行中的拖拽/输入草稿。
 #[derive(Debug, Clone, PartialEq)]
 pub enum DraftShape {
     Rect { a: PixelPoint, b: PixelPoint },
     Arrow { from: PixelPoint, to: PixelPoint },
     Pen { points: Vec<PixelPoint> },
+    Ellipse { a: PixelPoint, b: PixelPoint },
+    Mosaic { a: PixelPoint, b: PixelPoint },
+    Text { origin: PixelPoint, content: String },
 }
 
 /// 标注编辑会话（纯逻辑）。
@@ -82,6 +122,7 @@ pub struct AnnotateSession {
     pub doc: AnnotationDoc,
     pub draft: Option<DraftShape>,
     pub color: [u8; 4],
+    pub color_index: usize,
     pub stroke: u32,
     pub image_w: u32,
     pub image_h: u32,
@@ -94,6 +135,7 @@ impl AnnotateSession {
             doc: AnnotationDoc::new(),
             draft: None,
             color: DEFAULT_STROKE,
+            color_index: 0,
             stroke: DEFAULT_WIDTH,
             image_w: image_w.max(1),
             image_h: image_h.max(1),
@@ -107,12 +149,45 @@ impl AnnotateSession {
         )
     }
 
+    /// 循环下一颜色。
+    pub fn cycle_color(&mut self) {
+        self.color_index = (self.color_index + 1) % STROKE_PALETTE.len();
+        self.color = STROKE_PALETTE[self.color_index];
+    }
+
+    pub fn stroke_up(&mut self) {
+        self.stroke = (self.stroke + 1).min(MAX_STROKE);
+    }
+
+    pub fn stroke_down(&mut self) {
+        self.stroke = self.stroke.saturating_sub(1).max(MIN_STROKE);
+    }
+
+    /// 是否正在编辑文本草稿（键入中）。
+    pub fn is_text_editing(&self) -> bool {
+        matches!(self.draft, Some(DraftShape::Text { .. }))
+    }
+
     pub fn begin(&mut self, p: PixelPoint) {
         let p = self.clamp_point(p);
+        // 文本：若已在编辑中则先提交再在新位置开始
+        if self.tool == AnnotateTool::Text {
+            if self.is_text_editing() {
+                self.commit();
+            }
+            self.draft = Some(DraftShape::Text {
+                origin: p,
+                content: String::new(),
+            });
+            return;
+        }
         self.draft = Some(match self.tool {
             AnnotateTool::Rect => DraftShape::Rect { a: p, b: p },
             AnnotateTool::Arrow => DraftShape::Arrow { from: p, to: p },
             AnnotateTool::Pen => DraftShape::Pen { points: vec![p] },
+            AnnotateTool::Ellipse => DraftShape::Ellipse { a: p, b: p },
+            AnnotateTool::Mosaic => DraftShape::Mosaic { a: p, b: p },
+            AnnotateTool::Text => unreachable!(),
         });
     }
 
@@ -121,8 +196,9 @@ impl AnnotateSession {
         match &mut self.draft {
             Some(DraftShape::Rect { b, .. }) => *b = p,
             Some(DraftShape::Arrow { to, .. }) => *to = p,
+            Some(DraftShape::Ellipse { b, .. }) => *b = p,
+            Some(DraftShape::Mosaic { b, .. }) => *b = p,
             Some(DraftShape::Pen { points }) => {
-                // 插值补点，折线更密、AA 更顺滑
                 if let Some(last) = points.last().copied() {
                     let dx = p.x - last.x;
                     let dy = p.y - last.y;
@@ -143,7 +219,21 @@ impl AnnotateSession {
                     points.push(p);
                 }
             }
-            None => {}
+            Some(DraftShape::Text { .. }) | None => {}
+        }
+    }
+
+    /// 文本草稿追加字符（IME commit / 键盘字符）。
+    pub fn text_push(&mut self, s: &str) {
+        if let Some(DraftShape::Text { content, .. }) = &mut self.draft {
+            content.push_str(s);
+        }
+    }
+
+    /// 文本草稿退格一个 Unicode 标量。
+    pub fn text_backspace(&mut self) {
+        if let Some(DraftShape::Text { content, .. }) = &mut self.draft {
+            content.pop();
         }
     }
 
@@ -186,6 +276,37 @@ impl AnnotateSession {
                     stroke,
                 }
             }
+            DraftShape::Ellipse { a, b } => {
+                if (a.x - b.x).abs() < 2 && (a.y - b.y).abs() < 2 {
+                    return;
+                }
+                Annotation::Ellipse {
+                    a,
+                    b,
+                    color,
+                    stroke,
+                }
+            }
+            DraftShape::Mosaic { a, b } => {
+                if (a.x - b.x).abs() < 2 && (a.y - b.y).abs() < 2 {
+                    return;
+                }
+                let block = (stroke * 2).clamp(4, 32);
+                Annotation::Mosaic { a, b, block }
+            }
+            DraftShape::Text { origin, content } => {
+                let content = content.trim().to_string();
+                if content.is_empty() {
+                    return;
+                }
+                let size = (12.0 + stroke as f32 * 4.0).clamp(12.0, 72.0);
+                Annotation::Text {
+                    origin,
+                    content,
+                    color,
+                    size,
+                }
+            }
         };
         self.doc.push(item);
     }
@@ -200,6 +321,8 @@ pub fn bake_annotations(source: &CaptureImage, doc: &AnnotationDoc) -> CaptureIm
     let mut bytes = source.pixels.bytes.clone();
     let w = source.pixels.size.width as i32;
     let h = source.pixels.size.height as i32;
+    // 马赛克需要源像素；先 clone 一份只读源
+    let src_bytes = source.pixels.bytes.clone();
     for item in &doc.items {
         match item {
             Annotation::Rect {
@@ -219,6 +342,21 @@ pub fn bake_annotations(source: &CaptureImage, doc: &AnnotationDoc) -> CaptureIm
                 color,
                 stroke,
             } => draw_polyline(&mut bytes, w, h, points, *color, *stroke),
+            Annotation::Ellipse {
+                a,
+                b,
+                color,
+                stroke,
+            } => draw_ellipse_outline(&mut bytes, w, h, *a, *b, *color, *stroke),
+            Annotation::Mosaic { a, b, block } => {
+                draw_mosaic(&mut bytes, &src_bytes, w, h, *a, *b, *block)
+            }
+            Annotation::Text {
+                origin,
+                content,
+                color,
+                size,
+            } => draw_text(&mut bytes, w, h, *origin, content, *color, *size),
         }
     }
     let pixels = RgbaBuffer {
@@ -257,6 +395,32 @@ pub fn render_preview_rgba(source: &CaptureImage, session: &AnnotateSession) -> 
                 color,
                 stroke,
             }),
+            DraftShape::Ellipse { a, b } => doc.push(Annotation::Ellipse {
+                a: *a,
+                b: *b,
+                color,
+                stroke,
+            }),
+            DraftShape::Mosaic { a, b } => {
+                let block = (stroke * 2).clamp(4, 32);
+                doc.push(Annotation::Mosaic {
+                    a: *a,
+                    b: *b,
+                    block,
+                });
+            }
+            DraftShape::Text { origin, content } => {
+                // 预览时显示光标
+                let mut shown = content.clone();
+                shown.push('|');
+                let size = (12.0 + stroke as f32 * 4.0).clamp(12.0, 72.0);
+                doc.push(Annotation::Text {
+                    origin: *origin,
+                    content: shown,
+                    color,
+                    size,
+                });
+            }
         }
     }
     bake_annotations(source, &doc).pixels.bytes
@@ -326,24 +490,17 @@ fn draw_line(
     let x1 = x1 as f64;
     let y1 = y1 as f64;
     let radius = (stroke as f64 * 0.5).max(0.75);
-    let aa = 1.0; // 软边宽度（像素）
+    let aa = 1.0;
     let pad = (radius + aa + 1.0).ceil() as i32;
 
-    let min_x = x0.min(x1).floor() as i32 - pad;
-    let max_x = x0.max(x1).ceil() as i32 + pad;
-    let min_y = y0.min(y1).floor() as i32 - pad;
-    let max_y = y0.max(y1).ceil() as i32 + pad;
-
-    let min_x = min_x.max(0);
-    let min_y = min_y.max(0);
-    let max_x = max_x.min(w - 1);
-    let max_y = max_y.min(h - 1);
+    let min_x = (x0.min(x1).floor() as i32 - pad).max(0);
+    let max_x = (x0.max(x1).ceil() as i32 + pad).min(w - 1);
+    let min_y = (y0.min(y1).floor() as i32 - pad).max(0);
+    let max_y = (y0.max(y1).ceil() as i32 + pad).min(h - 1);
 
     for y in min_y..=max_y {
         for x in min_x..=max_x {
-            // 像素中心采样
             let d = dist_point_segment(x as f64 + 0.5, y as f64 + 0.5, x0, y0, x1, y1);
-            // 覆盖率：半径内为 1，外缘 1px 线性衰减
             let cov = ((radius + aa * 0.5 - d) / aa).clamp(0.0, 1.0);
             if cov > 0.0 {
                 blend_coverage(buf, w, h, x, y, color, cov);
@@ -353,15 +510,7 @@ fn draw_line(
 }
 
 /// 抗锯齿圆点（画笔端点 / 补点）。
-fn stamp_disc(
-    buf: &mut [u8],
-    w: i32,
-    h: i32,
-    cx: f64,
-    cy: f64,
-    radius: f64,
-    color: [u8; 4],
-) {
+fn stamp_disc(buf: &mut [u8], w: i32, h: i32, cx: f64, cy: f64, radius: f64, color: [u8; 4]) {
     let aa = 1.0;
     let pad = (radius + aa + 1.0).ceil() as i32;
     let min_x = (cx.floor() as i32 - pad).max(0);
@@ -394,7 +543,6 @@ fn draw_rect_outline(
     let y0 = a.y.min(b.y);
     let x1 = a.x.max(b.x);
     let y1 = a.y.max(b.y);
-    // 四边独立 AA 线；角点自然重叠混合
     draw_line(buf, w, h, x0, y0, x1, y0, color, stroke);
     draw_line(buf, w, h, x1, y0, x1, y1, color, stroke);
     draw_line(buf, w, h, x1, y1, x0, y1, color, stroke);
@@ -413,7 +561,6 @@ fn draw_polyline(
         return;
     }
     let r = (stroke as f64 * 0.5).max(0.75);
-    // 端点圆头，避免折线关节缺口
     stamp_disc(buf, w, h, points[0].x as f64, points[0].y as f64, r, color);
     for win in points.windows(2) {
         draw_line(
@@ -461,9 +608,203 @@ fn draw_arrow(
     let ry = (by - py * wing).round() as i32;
     draw_line(buf, w, h, to.x, to.y, lx, ly, color, stroke);
     draw_line(buf, w, h, to.x, to.y, rx, ry, color, stroke);
-    // 箭头尖端更圆润
     let r = (stroke as f64 * 0.5).max(0.75);
     stamp_disc(buf, w, h, to.x as f64, to.y as f64, r, color);
+}
+
+/// 椭圆轮廓：用隐式方程距离近似做抗锯齿描边。
+fn draw_ellipse_outline(
+    buf: &mut [u8],
+    w: i32,
+    h: i32,
+    a: PixelPoint,
+    b: PixelPoint,
+    color: [u8; 4],
+    stroke: u32,
+) {
+    let x0 = a.x.min(b.x) as f64;
+    let y0 = a.y.min(b.y) as f64;
+    let x1 = a.x.max(b.x) as f64;
+    let y1 = a.y.max(b.y) as f64;
+    let cx = (x0 + x1) * 0.5;
+    let cy = (y0 + y1) * 0.5;
+    let rx = ((x1 - x0) * 0.5).max(1.0);
+    let ry = ((y1 - y0) * 0.5).max(1.0);
+    let half = (stroke as f64 * 0.5).max(0.75);
+    let aa = 1.0;
+    let pad = (half + aa + 2.0).ceil() as i32;
+
+    let min_x = ((cx - rx).floor() as i32 - pad).max(0);
+    let max_x = ((cx + rx).ceil() as i32 + pad).min(w - 1);
+    let min_y = ((cy - ry).floor() as i32 - pad).max(0);
+    let max_y = ((cy + ry).ceil() as i32 + pad).min(h - 1);
+
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let px = x as f64 + 0.5;
+            let py = y as f64 + 0.5;
+            // 归一化半径 r_norm；边界处 = 1
+            let nx = (px - cx) / rx;
+            let ny = (py - cy) / ry;
+            let r_norm = (nx * nx + ny * ny).sqrt();
+            if r_norm < 1e-6 {
+                continue;
+            }
+            // 近似到椭圆边界的欧氏距离（梯度归一化）
+            let grad = ((nx / rx).powi(2) + (ny / ry).powi(2)).sqrt().max(1e-6);
+            let dist = ((r_norm - 1.0) / grad).abs();
+            let cov = ((half + aa * 0.5 - dist) / aa).clamp(0.0, 1.0);
+            if cov > 0.0 {
+                blend_coverage(buf, w, h, x, y, color, cov);
+            }
+        }
+    }
+}
+
+/// 马赛克：将选区内像素按 block 平均后回填。
+fn draw_mosaic(
+    buf: &mut [u8],
+    src: &[u8],
+    w: i32,
+    h: i32,
+    a: PixelPoint,
+    b: PixelPoint,
+    block: u32,
+) {
+    let x0 = a.x.min(b.x).max(0);
+    let y0 = a.y.min(b.y).max(0);
+    let x1 = a.x.max(b.x).min(w - 1);
+    let y1 = a.y.max(b.y).min(h - 1);
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let bs = block.max(2) as i32;
+    let mut by = y0;
+    while by <= y1 {
+        let mut bx = x0;
+        while bx <= x1 {
+            let ex = (bx + bs - 1).min(x1);
+            let ey = (by + bs - 1).min(y1);
+            let mut sum = [0u64; 4];
+            let mut n = 0u64;
+            for y in by..=ey {
+                for x in bx..=ex {
+                    let i = ((y * w + x) * 4) as usize;
+                    if i + 3 < src.len() {
+                        sum[0] += src[i] as u64;
+                        sum[1] += src[i + 1] as u64;
+                        sum[2] += src[i + 2] as u64;
+                        sum[3] += src[i + 3] as u64;
+                        n += 1;
+                    }
+                }
+            }
+            if n > 0 {
+                let avg = [
+                    (sum[0] / n) as u8,
+                    (sum[1] / n) as u8,
+                    (sum[2] / n) as u8,
+                    (sum[3] / n) as u8,
+                ];
+                for y in by..=ey {
+                    for x in bx..=ex {
+                        let i = ((y * w + x) * 4) as usize;
+                        if i + 3 < buf.len() {
+                            buf[i] = avg[0];
+                            buf[i + 1] = avg[1];
+                            buf[i + 2] = avg[2];
+                            buf[i + 3] = avg[3];
+                        }
+                    }
+                }
+            }
+            bx += bs;
+        }
+        by += bs;
+    }
+}
+
+/// 候选系统字体路径（优先 CJK TTF）。
+fn font_candidates() -> &'static [&'static str] {
+    &[
+        "/usr/share/fonts/lxgw-wenkai-fonts/LXGWWenKai-Regular.ttf",
+        "/usr/share/fonts/lxgw-wenkai-fonts/LXGWWenKai-Medium.ttf",
+        "/usr/share/fonts/google-droid-sans-fonts/DroidSansFallbackFull.ttf",
+        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf",
+    ]
+}
+
+struct FontCache {
+    font: fontdue::Font,
+}
+
+fn load_font() -> Option<&'static FontCache> {
+    static FONT: OnceLock<Option<FontCache>> = OnceLock::new();
+    FONT.get_or_init(|| {
+        for path in font_candidates() {
+            if let Ok(bytes) = std::fs::read(path) {
+                // TTC 可能失败；仅接受可解析字体
+                if let Ok(font) = fontdue::Font::from_bytes(bytes.as_slice(), fontdue::FontSettings::default())
+                {
+                    return Some(FontCache { font });
+                }
+            }
+        }
+        None
+    })
+    .as_ref()
+}
+
+fn draw_text(
+    buf: &mut [u8],
+    w: i32,
+    h: i32,
+    origin: PixelPoint,
+    content: &str,
+    color: [u8; 4],
+    size: f32,
+) {
+    let Some(cache) = load_font() else {
+        // 无字体：画占位横线
+        draw_line(
+            buf,
+            w,
+            h,
+            origin.x,
+            origin.y,
+            origin.x + (content.chars().count() as i32 * 8).max(8),
+            origin.y,
+            color,
+            2,
+        );
+        return;
+    };
+    let size = size.clamp(8.0, 96.0);
+    let mut pen_x = origin.x as f32;
+    let pen_y = origin.y as f32;
+    for ch in content.chars() {
+        if ch == '\n' {
+            continue;
+        }
+        let (metrics, bitmap) = cache.font.rasterize(ch, size);
+        // fontdue：位图原点相对基线左下系；ymin 常为负（上移）
+        let gx = (pen_x + metrics.xmin as f32).round() as i32;
+        let gy = (pen_y + metrics.ymin as f32).round() as i32;
+        for row in 0..metrics.height {
+            for col in 0..metrics.width {
+                let alpha = bitmap[row * metrics.width + col] as f64 / 255.0;
+                if alpha > 0.01 {
+                    blend_coverage(buf, w, h, gx + col as i32, gy + row as i32, color, alpha);
+                }
+            }
+        }
+        pen_x += metrics.advance_width;
+    }
 }
 
 #[cfg(test)]
@@ -516,5 +857,54 @@ mod tests {
         assert_eq!(s.doc.len(), 1);
         s.doc.undo();
         assert!(s.doc.is_empty());
+    }
+
+    #[test]
+    fn ellipse_and_mosaic_commit() {
+        let mut s = AnnotateSession::new(80, 60);
+        s.tool = AnnotateTool::Ellipse;
+        s.begin(PixelPoint::new(5, 5));
+        s.drag(PixelPoint::new(40, 30));
+        s.commit();
+        s.tool = AnnotateTool::Mosaic;
+        s.begin(PixelPoint::new(10, 10));
+        s.drag(PixelPoint::new(30, 25));
+        s.commit();
+        assert_eq!(s.doc.len(), 2);
+        let src = solid(80, 60);
+        let out = bake_annotations(&src, &s.doc);
+        assert_ne!(out.pixels.bytes, src.pixels.bytes);
+    }
+
+    #[test]
+    fn color_and_stroke_cycle() {
+        let mut s = AnnotateSession::new(10, 10);
+        let c0 = s.color;
+        s.cycle_color();
+        assert_ne!(s.color, c0);
+        let w0 = s.stroke;
+        s.stroke_up();
+        assert!(s.stroke > w0);
+        s.stroke_down();
+        assert_eq!(s.stroke, w0);
+    }
+
+    #[test]
+    fn text_session_commit() {
+        let mut s = AnnotateSession::new(100, 40);
+        s.tool = AnnotateTool::Text;
+        s.begin(PixelPoint::new(8, 24));
+        s.text_push("hi");
+        assert!(s.is_text_editing());
+        s.commit();
+        assert_eq!(s.doc.len(), 1);
+        match &s.doc.items[0] {
+            Annotation::Text { content, .. } => assert_eq!(content, "hi"),
+            _ => panic!("expected text"),
+        }
+        let src = solid(100, 40);
+        let out = bake_annotations(&src, &s.doc);
+        // 有系统字体时应改变像素；无字体时也会画占位线
+        assert_ne!(out.pixels.bytes, src.pixels.bytes);
     }
 }

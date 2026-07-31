@@ -3,7 +3,7 @@
 ## 技术与运行基线
 
 - Rust 2024 workspace：`pinora`（`src/main.rs`）+ `pinora-core` + `pinora-app`。
-- 依赖：`ctrlc`、`fs2`、`png`、`xcap`、`winit`、`softbuffer`。
+- 依赖：`ctrlc`、`fs2`、`png`、`xcap`、`winit`、`softbuffer`、`fontdue`（标注文本）、`tray-icon`/`gtk`（托盘）。
 - Linux xcap 需 `pipewire-devel`、`mesa-libgbm-devel`（**仅 xcap/portal 兜底路径**）。
 - **截图后端优先级（KDE Wayland）**：`kde-spectacle`（KWin，~0.5s）→ `xcap`/portal（慢）→ `fake`。
 - **不要默认 portal**：portal/PipeWire 是通用 Wayland 兜底，不是 Snipaste 级体验。
@@ -21,7 +21,7 @@
 | 全局热键 | F2/Ctrl+N/Ctrl+Shift+S + `pinora capture` IPC |
 | 单实例 | flock + Unix socket Activate/CAPTURE/QUIT |
 | 帧缓存 | 空闲预截，overlay 瞬时弹出 |
-| 基础标注 | 选区后矩形/箭头/画笔；Enter 烧录贴图 |
+| 基础标注 | 选区后矩形/箭头/画笔/椭圆/马赛克/文本；C 颜色；+/- 线宽；Enter 烧录贴图 |
 | 系统托盘 | 截图 / 退出（tray-icon） |
 | 贴图控制 | L 锁定，`[` `]` 透明度（压暗近似） |
 
@@ -44,4 +44,4 @@
 
 ## 未实现
 
-- GPUI/Liora、完整标注工具条（文本/马赛克等）、OCR、跨屏联合 Overlay、设置持久化、真透明。
+- GPUI/Liora、完整 GUI 工具条、OCR、跨屏联合 Overlay、设置持久化、真透明。

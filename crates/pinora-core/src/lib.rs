@@ -19,7 +19,8 @@ mod state;
 pub use action::{ActionId, KeyBinding};
 pub use annotate::{
     bake_annotations, render_preview_rgba, AnnotateSession, AnnotateTool, Annotation,
-    AnnotationDoc, DraftShape, DEFAULT_STROKE, DEFAULT_WIDTH,
+    AnnotationDoc, DraftShape, DEFAULT_STROKE, DEFAULT_WIDTH, MAX_STROKE, MIN_STROKE,
+    STROKE_PALETTE,
 };
 pub use capture::{resolve_capture_rect, CaptureProvider, CaptureRequest, DisplayInfo};
 pub use command::Command;
