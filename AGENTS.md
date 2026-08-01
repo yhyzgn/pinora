@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/043_history_management.md`
-- 任务：`.context/tasks/043_history_management.md`
+- 计划：`.context/plans/044_tray_actions.md`
+- 任务：`.context/tasks/044_tray_actions.md`
 
 ## 交付要求
 

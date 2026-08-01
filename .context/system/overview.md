@@ -22,7 +22,7 @@
 | 单实例 | flock + Unix socket Activate/CAPTURE/QUIT |
 | 帧缓存 | 空闲预截，overlay 瞬时弹出 |
 | 基础标注 | Overlay 选区内：矩形/箭头/画笔/椭圆/马赛克/文本；C 颜色；+/- 线宽；`Ctrl+Z` 撤销，`Ctrl+Shift+Z`/`Ctrl+Y` 重做 |
-| 系统托盘 | 截图 / 退出（tray-icon） |
+| 系统托盘 | 截图、设置、历史、显示/隐藏/关闭全部贴图、退出（tray-icon；真实跨平台菜单仍待探针） |
 | 贴图控制 | L 锁定，`[` `]` 透明度（压暗近似）；`O` 本地 OCR；`T` 词框 |
 | OCR | 系统 `tesseract` CLI；全文复制剪贴板；词框叠加；缺引擎可降级提示 |
 

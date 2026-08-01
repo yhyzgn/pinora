@@ -469,6 +469,30 @@ where
                     println!("pinora: tray → capture");
                     self.request_new_capture(event_loop);
                 }
+                TrayAction::Settings => {
+                    println!("pinora: tray → settings");
+                    if let Err(error) = self.open_settings(event_loop) {
+                        self.error = Some(error);
+                    }
+                }
+                TrayAction::History => {
+                    println!("pinora: tray → history");
+                    if let Err(error) = self.open_history(event_loop) {
+                        self.error = Some(error);
+                    }
+                }
+                TrayAction::ShowAllPins => {
+                    println!("pinora: tray → show all pins");
+                    self.set_all_pins_visible(true);
+                }
+                TrayAction::HideAllPins => {
+                    println!("pinora: tray → hide all pins");
+                    self.set_all_pins_visible(false);
+                }
+                TrayAction::CloseAllPins => {
+                    println!("pinora: tray → close all pins");
+                    self.close_all_pins();
+                }
                 TrayAction::Quit => {
                     println!("pinora: tray → quit");
                     self.quit = true;
@@ -601,6 +625,22 @@ where
     C: CaptureProvider + Clone + Send + 'static,
     S: ImageSink,
 {
+    fn set_all_pins_visible(&mut self, visible: bool) {
+        for pin in self.pins.values() {
+            pin.window.set_visible(visible);
+        }
+        if visible && let Some(pin) = self.pins.values().next() {
+            pin.window.focus_window();
+        }
+    }
+
+    fn close_all_pins(&mut self) {
+        let window_ids: Vec<_> = self.pins.keys().copied().collect();
+        for window_id in window_ids {
+            self.close_pin(window_id);
+        }
+    }
+
     fn ensure_context(&mut self, event_loop: &ActiveEventLoop) {
         if self.context.is_some() {
             return;

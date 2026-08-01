@@ -12,6 +12,11 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayAction {
     Capture,
+    Settings,
+    History,
+    ShowAllPins,
+    HideAllPins,
+    CloseAllPins,
     Quit,
 }
 
@@ -19,6 +24,11 @@ pub enum TrayAction {
 pub struct AppTray {
     _tray: TrayIcon,
     capture_id: tray_icon::menu::MenuId,
+    settings_id: tray_icon::menu::MenuId,
+    history_id: tray_icon::menu::MenuId,
+    show_all_pins_id: tray_icon::menu::MenuId,
+    hide_all_pins_id: tray_icon::menu::MenuId,
+    close_all_pins_id: tray_icon::menu::MenuId,
     quit_id: tray_icon::menu::MenuId,
 }
 
@@ -50,6 +60,21 @@ impl AppTray {
             if ev.id == self.capture_id {
                 return Some(TrayAction::Capture);
             }
+            if ev.id == self.settings_id {
+                return Some(TrayAction::Settings);
+            }
+            if ev.id == self.history_id {
+                return Some(TrayAction::History);
+            }
+            if ev.id == self.show_all_pins_id {
+                return Some(TrayAction::ShowAllPins);
+            }
+            if ev.id == self.hide_all_pins_id {
+                return Some(TrayAction::HideAllPins);
+            }
+            if ev.id == self.close_all_pins_id {
+                return Some(TrayAction::CloseAllPins);
+            }
             if ev.id == self.quit_id {
                 return Some(TrayAction::Quit);
             }
@@ -71,15 +96,37 @@ fn try_new_inner() -> Result<AppTray, String> {
     let icon = make_icon().map_err(|e| format!("tray icon: {e}"))?;
     let menu = Menu::new();
     let capture = MenuItem::new("截图 (F2)", true, None);
+    let settings = MenuItem::new("设置", true, None);
+    let history = MenuItem::new("历史", true, None);
+    let show_all_pins = MenuItem::new("显示全部贴图", true, None);
+    let hide_all_pins = MenuItem::new("隐藏全部贴图", true, None);
+    let close_all_pins = MenuItem::new("关闭全部贴图", true, None);
     let quit = MenuItem::new("退出", true, None);
     menu.append(&capture)
         .map_err(|e| format!("menu append capture: {e}"))?;
+    menu.append(&settings)
+        .map_err(|e| format!("menu append settings: {e}"))?;
+    menu.append(&history)
+        .map_err(|e| format!("menu append history: {e}"))?;
+    menu.append(&PredefinedMenuItem::separator())
+        .map_err(|e| format!("menu sep pins: {e}"))?;
+    menu.append(&show_all_pins)
+        .map_err(|e| format!("menu append show pins: {e}"))?;
+    menu.append(&hide_all_pins)
+        .map_err(|e| format!("menu append hide pins: {e}"))?;
+    menu.append(&close_all_pins)
+        .map_err(|e| format!("menu append close pins: {e}"))?;
     menu.append(&PredefinedMenuItem::separator())
         .map_err(|e| format!("menu sep: {e}"))?;
     menu.append(&quit)
         .map_err(|e| format!("menu append quit: {e}"))?;
 
     let capture_id = capture.id().clone();
+    let settings_id = settings.id().clone();
+    let history_id = history.id().clone();
+    let show_all_pins_id = show_all_pins.id().clone();
+    let hide_all_pins_id = hide_all_pins.id().clone();
+    let close_all_pins_id = close_all_pins.id().clone();
     let quit_id = quit.id().clone();
 
     let tray = TrayIconBuilder::new()
@@ -92,6 +139,11 @@ fn try_new_inner() -> Result<AppTray, String> {
     Ok(AppTray {
         _tray: tray,
         capture_id,
+        settings_id,
+        history_id,
+        show_all_pins_id,
+        hide_all_pins_id,
+        close_all_pins_id,
         quit_id,
     })
 }
