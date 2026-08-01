@@ -1717,6 +1717,7 @@ where
             pin_id,
             image,
             position,
+            1.0,
             self.default_pin_opacity,
         )?;
         self.mode = Mode::Idle;
@@ -1775,6 +1776,7 @@ where
         image: CaptureImage,
         position: PixelPoint,
         scale: f64,
+        opacity: f64,
     ) -> Result<(), PinoraError> {
         self.ensure_context(event_loop);
         let context = self.context.as_ref().ok_or_else(|| {
@@ -1820,7 +1822,7 @@ where
                 asset,
                 pixels_xrgb,
                 scale,
-                opacity: 1.0,
+                opacity: opacity.clamp(0.15, 1.0),
                 locked: false,
                 window: window.clone(),
                 surface,
