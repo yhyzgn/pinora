@@ -45,7 +45,7 @@
 - `OcrJobService` 与 `ExportJobService` 已于 2026-08-01 保存自己创建的 worker 句柄，正常轮询会回收结束线程；桌面退出先取消、最多等待 2 秒并输出取消/join/panic/残留计数。协作式 worker 若不响应取消会被如实报告为残留，不能视为已回收。
 - `pinora-core::annotate` 已于 2026-08-01 新增 `AnnotationRevision`：新文档从非零版本开始，有效提交、非空撤销和非空重做均单调推进且在 `u64::MAX` 饱和；标注集合与 redo 栈只暴露只读查询。Overlay 已为确认选区建立稳定派生 `ImageId`，将 revision 映射为 `AssetRef.generation` 并用于 OCR、复制和保存；有效编辑、撤销、重做或重选会拒绝晚到结果。贴图尚无标注回编辑。
 - `pinora-core::settings` 与 `pinora-app::SettingsStore` 已于 2026-08-02 建立版本化设置与原子文件基础：格式有 magic、schema 与长度校验，非法数值逐字段修复，损坏/未知版本保留源文件并回退内存默认。035 已将 `pin_limit` 和新贴图默认不透明度接入 runtime/desktop shell；启动仍只读 Linux XDG/HOME 默认路径，不自动写入，设置 UI、主题渲染和跨平台目录策略仍未交付。
-- `pinora-core::history` 与 `pinora-app::HistoryStore` 已于 2026-08-02 建立历史索引基础，并由桌面壳接入受监督 PNG 导出：条目包含不可变图像/代际引用、显示器与选区元数据、受管目录单文件名、SHA-256 内容摘要、OCR 状态和 tombstone 状态；索引 codec 有 magic/schema/长度/CRC 校验，保存使用同目录临时文件、`sync_all`、rename 与读取校验。只有通过 owner、generation 和截止时间门禁的 `SavePng` 完成事件才会写入历史；损坏索引启动时保留原文件并使用空内存索引，保存失败恢复本次内存插入。领域层按摘要和大小去重并按条数/字节配额将旧条目标记为 tombstone；尚未接入历史 UI、PNG 删除事务或贴图复用入口，且未建立真实桌面探针。
+- `pinora-core::history` 与 `pinora-app::HistoryStore` 已于 2026-08-02 建立历史索引基础，并由桌面壳接入受监督 PNG 导出与受管文件清理：条目包含不可变图像/代际引用、显示器与选区元数据、受管目录单文件名、SHA-256 内容摘要、OCR 状态和 tombstone 状态；索引 codec 有 magic/schema/长度/CRC 校验，保存使用同目录临时文件、`sync_all`、rename 与读取校验。只有通过 owner、generation 和截止时间门禁的 `SavePng` 完成事件才会写入历史；损坏索引启动时保留原文件并使用空内存索引，保存失败恢复本次内存插入。领域层按摘要和大小去重并按条数/字节配额将旧条目标记为 tombstone；清理器仅删除直属受管 PNG，在活动同名保护、删除失败或索引保存失败时保留 tombstone 供重试。尚未接入历史 UI、用户手动删除或贴图复用入口，且未建立真实桌面探针。
 - `pinora-core::ocr` 与贴图窗口已于 2026-08-02 新增 `OcrTextSelection`：Ctrl+左键拖拽将物理窗口坐标映射为图像坐标，按相交词框和 OCR 阅读顺序生成局部文本，选中词框高亮；文本复制经既有 `ExportJobService` 监督并绑定 pin owner/asset，未通过真实 GUI/系统剪贴板探针。
 
 ## 2026-08-02 跨平台交付基线

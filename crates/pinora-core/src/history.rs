@@ -276,6 +276,20 @@ impl HistoryIndex {
         self.entries.retain(HistoryEntry::is_active);
         before.saturating_sub(self.entries.len())
     }
+
+    /// Physically remove only tombstones whose external file operation has completed.
+    ///
+    /// Callers must retain every tombstone for which deletion was not confirmed, so a later
+    /// recovery pass can retry without losing the durable deletion intent.
+    pub fn compact_confirmed_tombstones<F>(&mut self, mut is_confirmed: F) -> usize
+    where
+        F: FnMut(&HistoryEntry) -> bool,
+    {
+        let before = self.entries.len();
+        self.entries
+            .retain(|entry| entry.is_active() || !is_confirmed(entry));
+        before.saturating_sub(self.entries.len())
+    }
 }
 
 // SHA-256 is kept local to avoid adding a serialization/hash dependency to the core crate.
@@ -410,6 +424,31 @@ mod tests {
         assert_eq!(index.entries().len(), 1);
         assert_eq!(index.compact(), 1);
         assert!(index.entries().is_empty());
+    }
+
+    #[test]
+    fn confirmed_tombstone_compaction_preserves_unconfirmed_entries() {
+        let mut index = HistoryIndex::new(4, 100);
+        index
+            .insert(entry(5, 5, 4, ContentDigest::of(b"5")))
+            .expect("insert first");
+        index
+            .insert(entry(6, 6, 4, ContentDigest::of(b"6")))
+            .expect("insert second");
+        index
+            .mark_deleted(ImageId::from_raw(5))
+            .expect("mark first");
+        index
+            .mark_deleted(ImageId::from_raw(6))
+            .expect("mark second");
+
+        let compacted =
+            index.compact_confirmed_tombstones(|entry| entry.image_id == ImageId::from_raw(5));
+
+        assert_eq!(compacted, 1);
+        assert_eq!(index.entries().len(), 1);
+        assert_eq!(index.entries()[0].image_id, ImageId::from_raw(6));
+        assert_eq!(index.entries()[0].state, HistoryEntryState::Tombstone);
     }
 
     #[test]

@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 use crate::export_job::{ExportJobCompletion, ExportJobInput, ExportJobService};
 use crate::frame_cache::{FrameCache, rgba_to_xrgb_and_dim};
 use crate::history_export::{
-    HistoryExportCandidate, history_candidate_for_export, load_history_index,
-    record_history_candidate,
+    HistoryExportCandidate, cleanup_history_tombstones, history_candidate_for_export,
+    load_history_index, record_history_candidate,
 };
 use crate::history_store::{HistoryStore, default_history_path};
 use crate::hotkey::GlobalHotkeyHub;
@@ -1526,11 +1526,39 @@ where
                                     &mut self.history_index,
                                     candidate,
                                 ) {
-                                    Ok(inserted) => println!(
-                                        "pinora: history indexed active={} tombstoned={}",
-                                        self.history_index.active_count(),
-                                        inserted.evicted.len()
-                                    ),
+                                    Ok(inserted) => {
+                                        println!(
+                                            "pinora: history indexed active={} tombstoned={}",
+                                            self.history_index.active_count(),
+                                            inserted.evicted.len()
+                                        );
+                                        if let Some(export_dir) = self
+                                            .runtime
+                                            .as_ref()
+                                            .map(|runtime| runtime.export_dir().clone())
+                                        {
+                                            match cleanup_history_tombstones(
+                                                &self.history_store,
+                                                &export_dir,
+                                                &mut self.history_index,
+                                            ) {
+                                                Ok(cleanup) if cleanup.compacted_entries > 0 => {
+                                                    println!(
+                                                        "pinora: history cleanup removed={} missing={} protected={} failed={} compacted={}",
+                                                        cleanup.removed_files,
+                                                        cleanup.missing_files,
+                                                        cleanup.protected_files,
+                                                        cleanup.failed_files,
+                                                        cleanup.compacted_entries
+                                                    );
+                                                }
+                                                Ok(_) => {}
+                                                Err(_) => eprintln!(
+                                                    "pinora: history cleanup index write failed"
+                                                ),
+                                            }
+                                        }
+                                    }
                                     Err(_) => eprintln!(
                                         "pinora: history index write failed after managed PNG export"
                                     ),
