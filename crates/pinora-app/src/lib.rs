@@ -22,6 +22,7 @@ mod platform;
 mod region_overlay;
 mod region_workflow;
 mod runtime;
+mod settings_panel;
 mod settings_store;
 mod single_instance;
 mod tray;
@@ -53,6 +54,9 @@ pub use platform::{CapabilityProbe, FakeCapabilityProbe, RuntimeCapabilityProbe}
 pub use region_overlay::run_region_selection;
 pub use region_workflow::{RegionCaptureResult, capture_region_interactive};
 pub use runtime::{AppRuntime, BootstrapOutcome, DispatchResult};
+pub use settings_panel::{
+    SettingField, SettingsPanel, SettingsPanelAction, SettingsPanelKey, SettingsPanelStatus,
+};
 pub use settings_store::{SettingsLoad, SettingsStore, default_settings_path};
 pub use single_instance::{
     InMemorySingleInstance, InstanceAcquisition, SingleInstance, SingleInstanceError,

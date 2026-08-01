@@ -230,6 +230,24 @@ impl HistoryIndex {
         self.active_entries().map(|entry| entry.byte_len).sum()
     }
 
+    /// 更新配额并将超出部分按最旧优先标记为 tombstone。
+    ///
+    /// 返回本次被标记的条目，应用层可在索引持久化成功后执行受管文件清理。
+    pub fn set_limits(&mut self, max_entries: usize, max_bytes: u64) -> Vec<HistoryEntry> {
+        self.max_entries = max_entries.clamp(1, HISTORY_MAX_ENTRIES);
+        self.max_bytes = max_bytes.max(1);
+        let mut evicted = Vec::new();
+        while self.active_count() > self.max_entries || self.active_bytes() > self.max_bytes {
+            let Some(index) = self.entries.iter().rposition(HistoryEntry::is_active) else {
+                break;
+            };
+            let entry = &mut self.entries[index];
+            entry.mark_tombstone();
+            evicted.push(entry.clone());
+        }
+        evicted
+    }
+
     pub fn insert(&mut self, entry: HistoryEntry) -> Result<HistoryInsert, &'static str> {
         entry.validate()?;
         if !entry.is_active() {
@@ -424,6 +442,21 @@ mod tests {
         assert_eq!(index.entries().len(), 1);
         assert_eq!(index.compact(), 1);
         assert!(index.entries().is_empty());
+    }
+
+    #[test]
+    fn changing_limits_marks_oldest_entries_as_tombstones() {
+        let mut index = HistoryIndex::new(4, 100);
+        index
+            .insert(entry(10, 10, 4, ContentDigest::of(b"10")))
+            .expect("insert first");
+        index
+            .insert(entry(11, 11, 4, ContentDigest::of(b"11")))
+            .expect("insert second");
+        let evicted = index.set_limits(1, 100);
+        assert_eq!(evicted.len(), 1);
+        assert_eq!(evicted[0].image_id, ImageId::from_raw(10));
+        assert_eq!(index.active_count(), 1);
     }
 
     #[test]

@@ -29,6 +29,8 @@ use crate::overlay_toolbar::{
     ToolbarAction, ToolbarButton, hit_test as toolbar_hit, layout_toolbar, paint_toolbar,
     toolbar_bounds,
 };
+use crate::settings_panel::{self, SettingsPanel, SettingsPanelAction, SettingsPanelKey};
+use crate::settings_store::{SettingsStore, default_settings_path};
 use crate::tray::{AppTray, TrayAction};
 use pinora_core::{
     ActionId, AnnotateSession, AnnotateTool, AnnotationRevision, AssetGeneration, AssetRef,
@@ -169,6 +171,7 @@ where
         loading: None,
         overlay: None,
         control: None,
+        settings: None,
         pins: HashMap::new(),
         drag_pin: None,
         modifiers: ModifiersState::empty(),
@@ -244,6 +247,16 @@ struct LoadingState {
 /// Idle 时保持一个小控制窗，否则 Wayland 下无焦点窗口时 F2 永远收不到。
 struct ControlState {
     window: Rc<Window>,
+}
+
+struct SettingsState {
+    window: Rc<Window>,
+    surface: Surface<Rc<Window>, Rc<Window>>,
+    panel: SettingsPanel,
+    store: SettingsStore,
+    cursor: PixelPoint,
+    width: u32,
+    height: u32,
 }
 
 /// Overlay 内阶段：框选中 / 已出选区（工具栏就绪）。
@@ -385,6 +398,8 @@ struct DesktopApp<L, P, C, S> {
     overlay: Option<OverlayState>,
     /// 无选区/加载时的常驻控制窗（收 F2 / Ctrl+N / Ctrl+Q）。
     control: Option<ControlState>,
+    /// 显式设置窗口；草稿只在保存成功后应用到 runtime。
+    settings: Option<SettingsState>,
     pins: HashMap<WindowId, PinWin>,
     drag_pin: Option<WindowId>,
     modifiers: ModifiersState,
@@ -499,7 +514,8 @@ where
         }
 
         // Idle 且无贴图：必须有控制窗收 F2（有贴图时贴图窗自身收键）
-        if matches!(self.mode, Mode::Idle)
+        if self.settings.is_none()
+            && matches!(self.mode, Mode::Idle)
             && self.overlay.is_none()
             && self.loading.is_none()
             && self.pins.is_empty()
@@ -526,6 +542,12 @@ where
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        if let Some(settings) = self.settings.as_ref()
+            && settings.window.id() == window_id
+        {
+            self.handle_settings_event(event_loop, event);
+            return;
+        }
         if let Some(control) = self.control.as_ref()
             && control.window.id() == window_id
         {
@@ -788,6 +810,253 @@ where
         Ok(())
     }
 
+    fn open_settings(&mut self, event_loop: &ActiveEventLoop) -> Result<(), PinoraError> {
+        if let Some(settings) = self.settings.as_ref() {
+            settings.window.focus_window();
+            return Ok(());
+        }
+        self.ensure_context(event_loop);
+        let context = self.context.as_ref().ok_or_else(|| {
+            PinoraError::new(ErrorCode::Internal, "softbuffer context unavailable")
+        })?;
+        let attrs = Window::default_attributes()
+            .with_title("Pinora Settings")
+            .with_inner_size(PhysicalSize::new(
+                settings_panel::PANEL_WIDTH,
+                settings_panel::PANEL_HEIGHT,
+            ))
+            .with_resizable(false)
+            .with_window_level(WindowLevel::AlwaysOnTop)
+            .with_visible(true);
+        let window = event_loop
+            .create_window(attrs)
+            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("settings window: {e}")))?;
+        let window = Rc::new(window);
+        let mut surface = Surface::new(context, window.clone())
+            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("settings surface: {e}")))?;
+        if let (Some(w), Some(h)) = (
+            NonZeroU32::new(settings_panel::PANEL_WIDTH),
+            NonZeroU32::new(settings_panel::PANEL_HEIGHT),
+        ) {
+            surface.resize(w, h).map_err(|e| {
+                PinoraError::new(ErrorCode::Internal, format!("settings resize: {e}"))
+            })?;
+        }
+        let current = self
+            .runtime
+            .as_ref()
+            .map(AppRuntime::settings)
+            .unwrap_or_default();
+        let panel = SettingsPanel::new(current);
+        window.focus_window();
+        self.hide_control();
+        self.settings = Some(SettingsState {
+            window: window.clone(),
+            surface,
+            panel,
+            store: SettingsStore::new(default_settings_path()),
+            cursor: PixelPoint::new(0, 0),
+            width: settings_panel::PANEL_WIDTH,
+            height: settings_panel::PANEL_HEIGHT,
+        });
+        window.request_redraw();
+        println!("pinora: settings opened (arrows edit, Enter save, Esc cancel)");
+        Ok(())
+    }
+
+    fn close_settings(&mut self) {
+        if let Some(settings) = self.settings.take() {
+            settings.window.set_visible(false);
+        }
+    }
+
+    fn handle_settings_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
+        match event {
+            WindowEvent::CloseRequested => self.close_settings(),
+            WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
+            WindowEvent::CursorMoved { position, .. } => {
+                if let Some(settings) = self.settings.as_mut() {
+                    settings.cursor =
+                        PixelPoint::new(position.x.round() as i32, position.y.round() as i32);
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let action = self
+                    .settings
+                    .as_ref()
+                    .and_then(|settings| SettingsPanel::hit_test(settings.cursor));
+                if let Some(action) = action {
+                    self.apply_settings_action(event_loop, action);
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {
+                if self.is_quit_key(&event) {
+                    self.quit = true;
+                    event_loop.exit();
+                    return;
+                }
+                if self.is_new_capture_key(&event) {
+                    self.close_settings();
+                    self.request_new_capture(event_loop);
+                    return;
+                }
+                let key = match event.physical_key {
+                    PhysicalKey::Code(KeyCode::ArrowUp) => Some(SettingsPanelKey::Up),
+                    PhysicalKey::Code(KeyCode::ArrowDown) => Some(SettingsPanelKey::Down),
+                    PhysicalKey::Code(KeyCode::ArrowLeft) => Some(SettingsPanelKey::Left),
+                    PhysicalKey::Code(KeyCode::ArrowRight) => Some(SettingsPanelKey::Right),
+                    PhysicalKey::Code(KeyCode::Enter) => Some(SettingsPanelKey::Enter),
+                    PhysicalKey::Code(KeyCode::Escape) => Some(SettingsPanelKey::Escape),
+                    _ => None,
+                };
+                let Some(key) = key else { return };
+                let action = self
+                    .settings
+                    .as_mut()
+                    .and_then(|settings| settings.panel.handle_key(key));
+                if let Some(action) = action {
+                    self.apply_settings_action(event_loop, action);
+                } else if let Some(settings) = self.settings.as_ref() {
+                    settings.window.request_redraw();
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                if let Err(error) = self.paint_settings() {
+                    self.error = Some(error);
+                    event_loop.exit();
+                }
+            }
+            WindowEvent::Resized(size) => {
+                if let Some(settings) = self.settings.as_mut() {
+                    settings.width = size.width.max(1);
+                    settings.height = size.height.max(1);
+                    if let (Some(w), Some(h)) = (
+                        NonZeroU32::new(settings.width),
+                        NonZeroU32::new(settings.height),
+                    ) {
+                        let _ = settings.surface.resize(w, h);
+                    }
+                    settings.window.request_redraw();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn apply_settings_action(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        action: SettingsPanelAction,
+    ) {
+        match action {
+            SettingsPanelAction::Select(_)
+            | SettingsPanelAction::Decrement
+            | SettingsPanelAction::Increment => {
+                if let Some(settings) = self.settings.as_mut() {
+                    settings.panel.apply_action(action);
+                    settings.window.request_redraw();
+                }
+            }
+            SettingsPanelAction::Cancel => self.close_settings(),
+            SettingsPanelAction::Save => self.save_settings(),
+        }
+    }
+
+    fn save_settings(&mut self) {
+        let Some((draft, window)) = self
+            .settings
+            .as_ref()
+            .map(|settings| (settings.panel.draft(), settings.window.clone()))
+        else {
+            return;
+        };
+        let save_result = self
+            .settings
+            .as_ref()
+            .map(|settings| settings.store.save(draft));
+        match save_result {
+            Some(Ok(())) => {
+                if let Some(rt) = self.runtime.as_mut() {
+                    rt.apply_settings(draft);
+                }
+                self.default_pin_opacity =
+                    opacity_from_settings_percent(draft.default_pin_opacity_percent);
+                let max_bytes = self.history_store.max_bytes();
+                self.history_store
+                    .set_limits(draft.history_limit as usize, max_bytes);
+                let evicted = self
+                    .history_index
+                    .set_limits(draft.history_limit as usize, max_bytes);
+                if !evicted.is_empty() {
+                    if self.history_store.save(&self.history_index).is_err() {
+                        eprintln!("pinora: history quota update deferred");
+                    } else if let Some(export_dir) = self.runtime.as_ref().map(|rt| rt.export_dir())
+                        && cleanup_history_tombstones(
+                            &self.history_store,
+                            export_dir,
+                            &mut self.history_index,
+                        )
+                        .is_err()
+                    {
+                        eprintln!("pinora: history quota cleanup deferred");
+                    }
+                }
+                if let Some(settings) = self.settings.as_mut() {
+                    settings.panel.mark_saved();
+                }
+                println!("pinora: settings saved (theme={:?})", draft.theme);
+                window.request_redraw();
+            }
+            Some(Err(_)) => {
+                if let Some(settings) = self.settings.as_mut() {
+                    settings.panel.mark_save_failed("settings_save_failed");
+                }
+                eprintln!("pinora: settings save failed; runtime values unchanged");
+                window.request_redraw();
+            }
+            None => {}
+        }
+    }
+
+    fn paint_settings(&mut self) -> Result<(), PinoraError> {
+        let Some(settings) = self.settings.as_mut() else {
+            return Ok(());
+        };
+        let size = settings.window.inner_size();
+        let width = size.width.max(1);
+        let height = size.height.max(1);
+        settings.width = width;
+        settings.height = height;
+        if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
+            settings.surface.resize(w, h).map_err(|e| {
+                PinoraError::new(ErrorCode::Internal, format!("settings surface resize: {e}"))
+            })?;
+        }
+        let mut buffer = settings
+            .surface
+            .buffer_mut()
+            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("settings buffer: {e}")))?;
+        let width = width as usize;
+        let height = height as usize;
+        if buffer.len() < width.saturating_mul(height) {
+            return Ok(());
+        }
+        settings_panel::paint(
+            &settings.panel,
+            &mut buffer[..width * height],
+            width,
+            height,
+        );
+        buffer
+            .present()
+            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("settings present: {e}")))?;
+        Ok(())
+    }
+
     fn hide_control(&mut self) {
         if let Some(control) = self.control.as_ref() {
             control.window.set_visible(false);
@@ -809,6 +1078,14 @@ where
                     event_loop.exit();
                 } else if self.is_new_capture_key(&event) {
                     self.request_new_capture(event_loop);
+                } else if matches!(event.logical_key, Key::Character(ref c) if c == "s" || c == "S")
+                    || (self.modifiers.control_key()
+                        && matches!(event.logical_key, Key::Character(ref c) if c == ","))
+                {
+                    if let Err(error) = self.open_settings(event_loop) {
+                        self.error = Some(error);
+                        event_loop.exit();
+                    }
                 } else if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
                     // Esc 在控制窗：若有贴图则聚焦贴图，否则退出
                     if let Some(pin) = self.pins.values().next() {
@@ -831,6 +1108,7 @@ where
                 .close_owner(JobOwner::Session(ov.session_id));
             ov.window.set_visible(false);
         }
+        self.close_settings();
         let _ = self.loading.take();
         self.hide_control();
         self.mode = Mode::StartCapture;

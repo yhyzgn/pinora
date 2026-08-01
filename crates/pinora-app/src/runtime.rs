@@ -73,10 +73,18 @@ where
 
     /// 应用启动时注入经过 `SettingsStore` 校验的设置，并立即应用安全策略。
     pub fn with_settings(mut self, settings: AppSettings) -> Self {
+        self.apply_settings(settings);
+        self
+    }
+
+    /// 应用已通过 SettingsStore/领域校验的设置。
+    ///
+    /// 该方法只更新进程内策略；调用方应先成功持久化，再调用它，
+    /// 从而避免磁盘写入失败时出现半应用状态。
+    pub fn apply_settings(&mut self, settings: AppSettings) {
         let (settings, _) = settings.with_repaired_values();
         self.state.max_pins = settings.pin_limit as usize;
         self.settings = settings;
-        self
     }
 
     pub fn state(&self) -> &AppState {

@@ -44,6 +44,19 @@ impl HistoryStore {
         &self.path
     }
 
+    pub fn max_entries(&self) -> usize {
+        self.max_entries
+    }
+
+    pub fn max_bytes(&self) -> u64 {
+        self.max_bytes
+    }
+
+    pub fn set_limits(&mut self, max_entries: usize, max_bytes: u64) {
+        self.max_entries = max_entries.clamp(1, HISTORY_MAX_ENTRIES);
+        self.max_bytes = max_bytes.max(1);
+    }
+
     pub fn empty_index(&self) -> HistoryIndex {
         HistoryIndex::new(self.max_entries, self.max_bytes)
     }
