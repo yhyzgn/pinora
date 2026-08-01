@@ -10,6 +10,7 @@ mod frame_cache;
 mod history_browser;
 mod history_export;
 mod history_store;
+mod history_window;
 mod hotkey;
 mod image_sink;
 mod job_supervisor;

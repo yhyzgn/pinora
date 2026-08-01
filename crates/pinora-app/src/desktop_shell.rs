@@ -17,15 +17,14 @@ use std::time::{Duration, Instant};
 
 use crate::export_job::{ExportJobCompletion, ExportJobInput, ExportJobService};
 use crate::frame_cache::{FrameCache, rgba_to_xrgb_and_dim};
-use crate::history_browser::{
-    self, HistoryPanel, HistoryPanelAction, HistoryPanelKey, HistoryPreview,
-};
+use crate::history_browser::{HistoryPanelAction, HistoryPanelKey};
 use crate::history_export::{
     HistoryExportCandidate, cleanup_history_tombstones, clear_history_entries,
     delete_history_entry, history_candidate_for_export, load_history_image, load_history_index,
     record_history_candidate,
 };
 use crate::history_store::{HistoryStore, default_history_path};
+use crate::history_window::HistoryWindow;
 use crate::hotkey::GlobalHotkeyHub;
 use crate::ocr::tesseract_available;
 use crate::ocr_job::{OcrJobCompletion, OcrJobService};
@@ -264,22 +263,6 @@ struct SettingsState {
     height: u32,
 }
 
-struct HistoryPreviewCache {
-    entry_image_id: ImageId,
-    pixels_xrgb: Vec<u32>,
-    size: pinora_core::PixelSize,
-}
-
-struct HistoryState {
-    window: Rc<Window>,
-    surface: Surface<Rc<Window>, Rc<Window>>,
-    panel: HistoryPanel,
-    cursor: PixelPoint,
-    width: u32,
-    height: u32,
-    preview: Option<HistoryPreviewCache>,
-}
-
 /// Overlay 内阶段：框选中 / 已出选区（工具栏就绪）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OverlayPhase {
@@ -422,7 +405,7 @@ struct DesktopApp<L, P, C, S> {
     /// 显式设置窗口；草稿只在保存成功后应用到 runtime。
     settings: Option<SettingsState>,
     /// 受管历史浏览窗口；文件读取和删除必须经 history_export 安全边界。
-    history: Option<HistoryState>,
+    history: Option<HistoryWindow>,
     pins: HashMap<WindowId, PinWin>,
     drag_pin: Option<WindowId>,
     modifiers: ModifiersState,
@@ -591,7 +574,7 @@ where
         event: WindowEvent,
     ) {
         if let Some(history) = self.history.as_ref()
-            && history.window.id() == window_id
+            && history.window_id() == window_id
         {
             self.handle_history_event(event_loop, event);
             return;
@@ -1129,57 +1112,27 @@ where
 
     fn open_history(&mut self, event_loop: &ActiveEventLoop) -> Result<(), PinoraError> {
         if let Some(history) = self.history.as_ref() {
-            history.window.focus_window();
+            history.focus();
             return Ok(());
         }
         self.ensure_context(event_loop);
+        let entries = self.history_index.active_entries().cloned().collect();
+        self.hide_control();
         let context = self.context.as_ref().ok_or_else(|| {
             PinoraError::new(ErrorCode::Internal, "softbuffer context unavailable")
         })?;
-        let attrs = Window::default_attributes()
-            .with_title("Pinora History")
-            .with_inner_size(PhysicalSize::new(
-                history_browser::PANEL_WIDTH,
-                history_browser::PANEL_HEIGHT,
-            ))
-            .with_resizable(false)
-            .with_window_level(WindowLevel::AlwaysOnTop)
-            .with_visible(true);
-        let window = event_loop
-            .create_window(attrs)
-            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("history window: {e}")))?;
-        let window = Rc::new(window);
-        let mut surface = Surface::new(context, window.clone())
-            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("history surface: {e}")))?;
-        if let (Some(w), Some(h)) = (
-            NonZeroU32::new(history_browser::PANEL_WIDTH),
-            NonZeroU32::new(history_browser::PANEL_HEIGHT),
-        ) {
-            surface.resize(w, h).map_err(|e| {
-                PinoraError::new(ErrorCode::Internal, format!("history resize: {e}"))
-            })?;
-        }
-        let entries = self.history_index.active_entries().cloned().collect();
-        self.hide_control();
-        self.history = Some(HistoryState {
-            window: window.clone(),
-            surface,
-            panel: HistoryPanel::new(entries),
-            cursor: PixelPoint::new(0, 0),
-            width: history_browser::PANEL_WIDTH,
-            height: history_browser::PANEL_HEIGHT,
-            preview: None,
-        });
+        let history = HistoryWindow::open(event_loop, context, entries)?;
+        history.focus();
+        history.request_redraw();
+        self.history = Some(history);
         self.refresh_history_preview();
-        window.focus_window();
-        window.request_redraw();
         println!("pinora: history opened (Enter pin, Delete remove, Esc close)");
         Ok(())
     }
 
     fn close_history(&mut self) {
         if let Some(history) = self.history.take() {
-            history.window.set_visible(false);
+            history.close();
         }
     }
 
@@ -1187,7 +1140,7 @@ where
         let Some(entry) = self
             .history
             .as_ref()
-            .and_then(|history| history.panel.selected_entry())
+            .and_then(|history| history.panel().selected_entry())
             .cloned()
         else {
             return;
@@ -1198,20 +1151,16 @@ where
         match load_history_image(&export_dir, &entry) {
             Ok(image) => {
                 if let Some(history) = self.history.as_mut() {
-                    history.preview = Some(HistoryPreviewCache {
-                        entry_image_id: entry.image_id,
-                        pixels_xrgb: rgba_to_xrgb(&image.pixels.bytes),
-                        size: image.pixels.size,
-                    });
-                    history.panel.clear_error();
-                    history.window.request_redraw();
+                    history.cache_preview(entry.image_id, &image.pixels.bytes, image.pixels.size);
+                    history.panel_mut().clear_error();
+                    history.request_redraw();
                 }
             }
             Err(_) => {
                 if let Some(history) = self.history.as_mut() {
-                    history.preview = None;
-                    history.panel.mark_error("history_load_failed");
-                    history.window.request_redraw();
+                    history.clear_preview();
+                    history.panel_mut().mark_error("history_load_failed");
+                    history.request_redraw();
                 }
             }
         }
@@ -1223,8 +1172,10 @@ where
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(history) = self.history.as_mut() {
-                    history.cursor =
-                        PixelPoint::new(position.x.round() as i32, position.y.round() as i32);
+                    history.set_cursor(PixelPoint::new(
+                        position.x.round() as i32,
+                        position.y.round() as i32,
+                    ));
                 }
             }
             WindowEvent::MouseInput {
@@ -1235,7 +1186,7 @@ where
                 let action = self
                     .history
                     .as_ref()
-                    .and_then(|history| history.panel.hit_test(history.cursor));
+                    .and_then(|history| history.panel().hit_test(history.cursor()));
                 if let Some(action) = action {
                     self.apply_history_action(event_loop, action);
                 }
@@ -1263,7 +1214,7 @@ where
                 let action = if let Some(key) = key {
                     self.history
                         .as_mut()
-                        .and_then(|history| history.panel.handle_key(key))
+                        .and_then(|history| history.panel_mut().handle_key(key))
                 } else if !self.modifiers.control_key()
                     && !self.modifiers.alt_key()
                     && !self.modifiers.super_key()
@@ -1277,7 +1228,7 @@ where
                         && let Some(history) = self.history.as_mut()
                     {
                         for character in text.chars() {
-                            changed |= history.panel.input_char(character);
+                            changed |= history.panel_mut().input_char(character);
                         }
                     }
                     if changed {
@@ -1293,7 +1244,7 @@ where
                     self.refresh_history_preview();
                 }
                 if let Some(history) = self.history.as_ref() {
-                    history.window.request_redraw();
+                    history.request_redraw();
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -1304,15 +1255,7 @@ where
             }
             WindowEvent::Resized(size) => {
                 if let Some(history) = self.history.as_mut() {
-                    history.width = size.width.max(1);
-                    history.height = size.height.max(1);
-                    if let (Some(w), Some(h)) = (
-                        NonZeroU32::new(history.width),
-                        NonZeroU32::new(history.height),
-                    ) {
-                        let _ = history.surface.resize(w, h);
-                    }
-                    history.window.request_redraw();
+                    history.resize(size.width, size.height);
                 }
             }
             _ => {}
@@ -1323,8 +1266,8 @@ where
         match action {
             HistoryPanelAction::Select(index) => {
                 if let Some(history) = self.history.as_mut() {
-                    history.panel.select(index);
-                    history.preview = None;
+                    history.panel_mut().select(index);
+                    history.clear_preview();
                 }
                 self.refresh_history_preview();
             }
@@ -1333,14 +1276,14 @@ where
             HistoryPanelAction::Delete => self.delete_selected_history_entry(),
             HistoryPanelAction::RequestClear => {
                 if let Some(history) = self.history.as_mut() {
-                    let _ = history.panel.request_clear();
-                    history.window.request_redraw();
+                    let _ = history.panel_mut().request_clear();
+                    history.request_redraw();
                 }
             }
             HistoryPanelAction::CancelClear => {
                 if let Some(history) = self.history.as_mut() {
-                    history.panel.cancel_clear();
-                    history.window.request_redraw();
+                    history.panel_mut().cancel_clear();
+                    history.request_redraw();
                 }
             }
             HistoryPanelAction::ConfirmClear => self.clear_all_history_entries(),
@@ -1355,23 +1298,23 @@ where
             clear_history_entries(&self.history_store, &export_dir, &mut self.history_index);
         let active = self.history_index.active_entries().cloned().collect();
         if let Some(history) = self.history.as_mut() {
-            history.preview = None;
-            history.panel.replace_entries(active);
-            history.panel.cancel_clear();
+            history.clear_preview();
+            history.panel_mut().replace_entries(active);
+            history.panel_mut().cancel_clear();
             match result {
                 Err(error) => {
                     eprintln!("pinora: history clear failed: {error}");
-                    history.panel.mark_error("history_clear_failed");
+                    history.panel_mut().mark_error("history_clear_failed");
                 }
                 Ok(cleanup) => {
                     if cleanup.failed_files > 0 || cleanup.protected_files > 0 {
-                        history.panel.mark_error("history_clear_partial");
+                        history.panel_mut().mark_error("history_clear_partial");
                     } else {
-                        history.panel.clear_error();
+                        history.panel_mut().clear_error();
                     }
                 }
             }
-            history.window.request_redraw();
+            history.request_redraw();
         }
     }
 
@@ -1379,7 +1322,7 @@ where
         let Some(entry) = self
             .history
             .as_ref()
-            .and_then(|history| history.panel.selected_entry())
+            .and_then(|history| history.panel().selected_entry())
             .cloned()
         else {
             return;
@@ -1391,9 +1334,9 @@ where
             Ok(image) => image,
             Err(_) => {
                 if let Some(history) = self.history.as_mut() {
-                    history.panel.mark_error("history_load_failed");
-                    history.preview = None;
-                    history.window.request_redraw();
+                    history.panel_mut().mark_error("history_load_failed");
+                    history.clear_preview();
+                    history.request_redraw();
                 }
                 return;
             }
@@ -1403,8 +1346,8 @@ where
             Err(error) => {
                 eprintln!("pinora: history reopen failed ({})", error.code);
                 if let Some(history) = self.history.as_mut() {
-                    history.panel.mark_error("history_pin_failed");
-                    history.window.request_redraw();
+                    history.panel_mut().mark_error("history_pin_failed");
+                    history.request_redraw();
                 }
             }
         }
@@ -1414,7 +1357,7 @@ where
         let Some(image_id) = self
             .history
             .as_ref()
-            .and_then(|history| history.panel.selected_entry())
+            .and_then(|history| history.panel().selected_entry())
             .map(|entry| entry.image_id)
         else {
             return;
@@ -1431,19 +1374,19 @@ where
         if delete_result.is_err() {
             let remaining = self.history_index.active_entries().cloned().collect();
             if let Some(history) = self.history.as_mut() {
-                history.preview = None;
-                history.panel.replace_entries(remaining);
-                history.panel.mark_error("history_delete_failed");
-                history.window.request_redraw();
+                history.clear_preview();
+                history.panel_mut().replace_entries(remaining);
+                history.panel_mut().mark_error("history_delete_failed");
+                history.request_redraw();
             }
             return;
         }
         if let Some(history) = self.history.as_mut() {
-            history.preview = None;
+            history.clear_preview();
             history
-                .panel
+                .panel_mut()
                 .replace_entries(self.history_index.active_entries().cloned().collect());
-            history.window.request_redraw();
+            history.request_redraw();
         }
         self.refresh_history_preview();
     }
@@ -1452,43 +1395,7 @@ where
         let Some(history) = self.history.as_mut() else {
             return Ok(());
         };
-        let size = history.window.inner_size();
-        let width = size.width.max(1);
-        let height = size.height.max(1);
-        history.width = width;
-        history.height = height;
-        if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
-            history.surface.resize(w, h).map_err(|e| {
-                PinoraError::new(ErrorCode::Internal, format!("history surface resize: {e}"))
-            })?;
-        }
-        let mut buffer = history
-            .surface
-            .buffer_mut()
-            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("history buffer: {e}")))?;
-        let width = width as usize;
-        let height = height as usize;
-        if buffer.len() < width.saturating_mul(height) {
-            return Ok(());
-        }
-        let selected_image_id = history.panel.selected_entry().map(|entry| entry.image_id);
-        let preview = history.preview.as_ref().and_then(|preview| {
-            (Some(preview.entry_image_id) == selected_image_id).then_some(HistoryPreview {
-                pixels_xrgb: &preview.pixels_xrgb,
-                size: preview.size,
-            })
-        });
-        history_browser::paint(
-            &history.panel,
-            preview,
-            &mut buffer[..width * height],
-            width,
-            height,
-        );
-        buffer
-            .present()
-            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("history present: {e}")))?;
-        Ok(())
+        history.paint()
     }
 
     fn hide_control(&mut self) {
