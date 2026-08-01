@@ -7,6 +7,7 @@ mod capture_xcap;
 mod desktop_shell;
 mod export_job;
 mod frame_cache;
+mod history_export;
 mod history_store;
 mod hotkey;
 mod image_sink;

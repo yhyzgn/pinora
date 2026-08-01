@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/038_cross_platform_delivery.md`
-- 任务：`.context/tasks/038_cross_platform_delivery.md`
+- 计划：`.context/plans/037_history_export_integration.md`
+- 任务：`.context/tasks/037_history_export_integration.md`
 
 ## 交付要求
 

@@ -17,6 +17,11 @@ use std::time::{Duration, Instant};
 
 use crate::export_job::{ExportJobCompletion, ExportJobInput, ExportJobService};
 use crate::frame_cache::{FrameCache, rgba_to_xrgb_and_dim};
+use crate::history_export::{
+    HistoryExportCandidate, history_candidate_for_export, load_history_index,
+    record_history_candidate,
+};
+use crate::history_store::{HistoryStore, default_history_path};
 use crate::hotkey::GlobalHotkeyHub;
 use crate::ocr::tesseract_available;
 use crate::ocr_job::{OcrJobCompletion, OcrJobService};
@@ -28,9 +33,9 @@ use crate::tray::{AppTray, TrayAction};
 use pinora_core::{
     ActionId, AnnotateSession, AnnotateTool, AnnotationRevision, AssetGeneration, AssetRef,
     CaptureImage, CaptureProvider, CaptureRequest, Command, CorrelationId, DisplayId,
-    DomainEventKind, ErrorCode, ImageId, ImageSink, JobId, JobKind, JobOwner, JobSpec, OcrResult,
-    OcrTextSelection, OcrWordRef, PinId, PinTransform, PinoraError, PixelPoint, PixelRect,
-    SelectionSession, SessionId, bake_annotations, render_preview_rgba,
+    DomainEventKind, ErrorCode, HistoryIndex, ImageId, ImageSink, JobId, JobKind, JobOwner,
+    JobSpec, OcrResult, OcrTextSelection, OcrWordRef, PinId, PinTransform, PinoraError, PixelPoint,
+    PixelRect, SelectionSession, SessionId, bake_annotations, render_preview_rgba,
 };
 use softbuffer::{Context, Rect as DamageRect, Surface};
 use winit::application::ApplicationHandler;
@@ -48,6 +53,7 @@ use crate::single_instance::SingleInstance;
 const MIN_FRAME_INTERVAL: Duration = Duration::from_micros(16_666);
 const OCR_JOB_TIMEOUT_MS: u64 = 30_000;
 const EXPORT_JOB_TIMEOUT_MS: u64 = 30_000;
+const HISTORY_MAX_BYTES: u64 = u64::MAX;
 
 fn monotonic_ms() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
@@ -138,9 +144,21 @@ where
     };
     let settings = runtime.settings();
     let default_pin_opacity = opacity_from_settings_percent(settings.default_pin_opacity_percent);
+    let history_store = HistoryStore::new(
+        default_history_path(),
+        usize::try_from(settings.history_limit).expect("history limit fits usize"),
+        HISTORY_MAX_BYTES,
+    );
+    let history_index = match load_history_index(&history_store) {
+        Ok(index) => index,
+        Err(error) => {
+            eprintln!("pinora: history index invalid ({error}); using empty in-memory index");
+            history_store.empty_index()
+        }
+    };
     println!(
-        "pinora: settings policy pin-limit={} default-opacity={}%; theme rendering unavailable",
-        settings.pin_limit, settings.default_pin_opacity_percent
+        "pinora: settings policy history-limit={} pin-limit={} default-opacity={}%; theme rendering unavailable",
+        settings.history_limit, settings.pin_limit, settings.default_pin_opacity_percent
     );
 
     let mut app = DesktopApp {
@@ -162,6 +180,8 @@ where
         ocr_jobs: OcrJobService::new(),
         export_jobs: ExportJobService::new(),
         pending_exports: HashMap::new(),
+        history_store,
+        history_index,
         start_capture_wait: None,
         tray,
         default_pin_opacity,
@@ -275,6 +295,7 @@ struct PendingExport {
     owner: JobOwner,
     asset: AssetRef,
     action: PendingExportAction,
+    history: Option<HistoryExportCandidate>,
 }
 
 struct OverlayState {
@@ -375,6 +396,8 @@ struct DesktopApp<L, P, C, S> {
     ocr_jobs: OcrJobService,
     export_jobs: ExportJobService,
     pending_exports: HashMap<JobId, PendingExport>,
+    history_store: HistoryStore,
+    history_index: HistoryIndex,
     /// 等待 frame-cache 首帧的起始时间；超时走 cold path。
     start_capture_wait: Option<Instant>,
     tray: Option<AppTray>,
@@ -1365,6 +1388,9 @@ where
         input: ExportJobInput,
         action: PendingExportAction,
     ) -> Result<JobId, PinoraError> {
+        let history = self.runtime.as_ref().and_then(|runtime| {
+            history_candidate_for_export(runtime.export_dir(), owner, asset, &input)
+        });
         let kind = input.kind();
         let spec = JobSpec::new(
             JobId::new(),
@@ -1381,6 +1407,7 @@ where
                 owner,
                 asset,
                 action,
+                history,
             },
         );
         println!(
@@ -1480,15 +1507,46 @@ where
         for completion in completions {
             match completion {
                 ExportJobCompletion::Completed { job } => {
-                    let pending = self.pending_exports.remove(&job.id);
-                    match pending.map(|pending| pending.action) {
-                        Some(PendingExportAction::SavePng(path)) => {
+                    match self.pending_exports.remove(&job.id) {
+                        Some(PendingExport {
+                            owner,
+                            asset,
+                            action: PendingExportAction::SavePng(path),
+                            history,
+                        }) => {
                             println!("pinora: saved {} -> {}", job.asset.image_id, path.display());
+                            if let Some(candidate) = history
+                                && owner == job.owner
+                                && asset == job.asset
+                                && candidate.owner == job.owner
+                                && candidate.asset == job.asset
+                            {
+                                match record_history_candidate(
+                                    &self.history_store,
+                                    &mut self.history_index,
+                                    candidate,
+                                ) {
+                                    Ok(inserted) => println!(
+                                        "pinora: history indexed active={} tombstoned={}",
+                                        self.history_index.active_count(),
+                                        inserted.evicted.len()
+                                    ),
+                                    Err(_) => eprintln!(
+                                        "pinora: history index write failed after managed PNG export"
+                                    ),
+                                }
+                            }
                         }
-                        Some(PendingExportAction::CopyImage) => {
+                        Some(PendingExport {
+                            action: PendingExportAction::CopyImage,
+                            ..
+                        }) => {
                             println!("pinora: copied image {}", job.asset.image_id);
                         }
-                        Some(PendingExportAction::CopyText) => {
+                        Some(PendingExport {
+                            action: PendingExportAction::CopyText,
+                            ..
+                        }) => {
                             println!("pinora: copied OCR text for {}", job.asset.image_id);
                         }
                         None => println!("pinora: export job {} completed", job.id),
