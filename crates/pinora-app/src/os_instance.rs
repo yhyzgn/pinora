@@ -9,7 +9,9 @@ use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+#[cfg(unix)]
+use std::sync::mpsc::TryRecvError;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -558,11 +560,8 @@ impl SingleInstance for OsSingleInstance {
             return Ok(Vec::new());
         };
         let mut out = Vec::new();
-        loop {
-            match rx.try_recv() {
-                Ok(cmd) => out.push(cmd),
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-            }
+        while let Ok(cmd) = rx.try_recv() {
+            out.push(cmd);
         }
         Ok(out)
     }

@@ -489,7 +489,9 @@ fn copy_text_to_system_clipboard_with_optional_cancellation(
 mod tests {
     use super::*;
     use pinora_core::{CaptureMetadata, DisplayId, ImageId, PixelRect, PixelSize, RgbaBuffer};
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    #[cfg(unix)]
+    use std::time::Duration;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn sample_image() -> CaptureImage {
         let pixels = RgbaBuffer::solid(PixelSize::new(8, 4), [10, 20, 30, 255]);
