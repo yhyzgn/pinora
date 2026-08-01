@@ -4,19 +4,20 @@
 //! 新建窗会被 KWin 摆到屏幕中央。这里通过 KWin Scripting D-Bus
 //! 设置 `frameGeometry`，与 Spectacle 等 KDE 应用同权。
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 use std::fs;
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 use std::process::Command;
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 use std::thread;
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 /// 按窗口标题子串，把匹配到的第一个窗口放到 (x,y,w,h)。
 /// `delay_ms`：等待窗口映射进 KWin 的毫秒数。
+#[cfg(target_os = "linux")]
 pub fn place_window_by_title(
     title_substr: &str,
     x: i32,
@@ -25,15 +26,7 @@ pub fn place_window_by_title(
     height: u32,
     delay_ms: u64,
 ) {
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (title_substr, x, y, width, height, delay_ms);
-        return;
-    }
-
-    #[cfg(target_os = "linux")]
     let title = title_substr.to_string();
-    #[cfg(target_os = "linux")]
     thread::spawn(move || {
         if delay_ms > 0 {
             thread::sleep(Duration::from_millis(delay_ms));
@@ -49,7 +42,21 @@ pub fn place_window_by_title(
     });
 }
 
+/// 非 Linux 平台没有 KWin，不尝试运行 Linux 工具。
+#[cfg(not(target_os = "linux"))]
+pub fn place_window_by_title(
+    title_substr: &str,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    delay_ms: u64,
+) {
+    let _ = (title_substr, x, y, width, height, delay_ms);
+}
+
 /// 同步放置：Enter 无缝转贴图时用（先钉好再关 overlay，避免闪桌面）。
+#[cfg(target_os = "linux")]
 pub fn place_window_by_title_sync(
     title_substr: &str,
     x: i32,
@@ -57,37 +64,39 @@ pub fn place_window_by_title_sync(
     width: u32,
     height: u32,
 ) -> Result<(), String> {
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (title_substr, x, y, width, height);
-        return Err("KWin placement is unavailable on this platform".into());
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        // 短轮询：窗口刚 map 时 KWin 列表可能尚未收录
-        let mut last_err = String::new();
-        for attempt in 0..12 {
-            if attempt > 0 {
-                thread::sleep(Duration::from_millis(16));
-            }
-            match place_once(title_substr, x, y, width, height) {
-                Ok(()) => {
-                    // 紧接再钉一次，压住合成器回弹
-                    let _ = place_once(title_substr, x, y, width, height);
-                    println!(
-                        "pinora: kwin place sync '{title_substr}' → ({x},{y}) {width}x{height}"
-                    );
-                    return Ok(());
-                }
-                Err(e) => last_err = e,
-            }
+    // 短轮询：窗口刚 map 时 KWin 列表可能尚未收录
+    let mut last_err = String::new();
+    for attempt in 0..12 {
+        if attempt > 0 {
+            thread::sleep(Duration::from_millis(16));
         }
-        Err(last_err)
+        match place_once(title_substr, x, y, width, height) {
+            Ok(()) => {
+                // 紧接再钉一次，压住合成器回弹
+                let _ = place_once(title_substr, x, y, width, height);
+                println!("pinora: kwin place sync '{title_substr}' → ({x},{y}) {width}x{height}");
+                return Ok(());
+            }
+            Err(e) => last_err = e,
+        }
     }
+    Err(last_err)
 }
 
-#[cfg(any(target_os = "linux", test))]
+/// 非 Linux 平台没有 KWin 坐标放置能力。
+#[cfg(not(target_os = "linux"))]
+pub fn place_window_by_title_sync(
+    title_substr: &str,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    let _ = (title_substr, x, y, width, height);
+    Err("KWin placement is unavailable on this platform".into())
+}
+
+#[cfg(target_os = "linux")]
 fn place_once(title_substr: &str, x: i32, y: i32, width: u32, height: u32) -> Result<(), String> {
     // 转义进 JS 字符串
     let title_js = escape_js(title_substr);
@@ -164,7 +173,7 @@ for (var i = 0; i < list.length; ++i) {{
     Ok(())
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn now_ms() -> u128 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -173,7 +182,7 @@ fn now_ms() -> u128 {
         .unwrap_or(0)
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn script_path() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_RUNTIME_DIR") {
         return PathBuf::from(xdg).join("pinora/kwin-place.js");
@@ -220,16 +229,19 @@ fn busctl(args: &[&str]) -> Result<String, String> {
 }
 
 /// 当前是否可能在 KWin 会话（有 org.kde.KWin）。
+#[cfg(target_os = "linux")]
 pub fn kwin_available() -> bool {
-    #[cfg(not(target_os = "linux"))]
-    return false;
-
-    #[cfg(target_os = "linux")]
     Command::new("busctl")
         .args(["--user", "status", "org.kde.KWin"])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// 非 Linux 平台没有 KWin。
+#[cfg(not(target_os = "linux"))]
+pub fn kwin_available() -> bool {
+    false
 }
 
 #[cfg(test)]

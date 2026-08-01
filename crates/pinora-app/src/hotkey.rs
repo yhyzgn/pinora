@@ -221,22 +221,15 @@ fn spawn_global_hotkey_thread(
 }
 
 /// 安装/刷新用户级 desktop 入口，便于 KDE 系统设置绑定 `pinora capture`。
+#[cfg(target_os = "linux")]
 pub fn ensure_user_desktop_entry(bin_path: &std::path::Path) -> Result<std::path::PathBuf, String> {
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = bin_path;
-        return Err("desktop entry is only supported on Linux".into());
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let apps = dirs_applications()
-            .ok_or_else(|| "cannot resolve ~/.local/share/applications".to_string())?;
-        std::fs::create_dir_all(&apps).map_err(|e| format!("mkdir applications: {e}"))?;
-        let path = apps.join("pinora.desktop");
-        let exec = bin_path.display().to_string();
-        let content = format!(
-            r#"[Desktop Entry]
+    let apps = dirs_applications()
+        .ok_or_else(|| "cannot resolve ~/.local/share/applications".to_string())?;
+    std::fs::create_dir_all(&apps).map_err(|e| format!("mkdir applications: {e}"))?;
+    let path = apps.join("pinora.desktop");
+    let exec = bin_path.display().to_string();
+    let content = format!(
+        r#"[Desktop Entry]
 Type=Application
 Name=Pinora
 Comment=Screenshot, pin and annotate
@@ -264,14 +257,21 @@ Name=Quit
 Name[zh_CN]=退出
 Exec={exec} quit
 "#
-        );
-        std::fs::write(&path, content).map_err(|e| format!("write desktop: {e}"))?;
-        // 通知桌面缓存（忽略失败）
-        let _ = std::process::Command::new("update-desktop-database")
-            .arg(&apps)
-            .status();
-        Ok(path)
-    }
+    );
+    std::fs::write(&path, content).map_err(|e| format!("write desktop: {e}"))?;
+    // 通知桌面缓存（忽略失败）
+    let _ = std::process::Command::new("update-desktop-database")
+        .arg(&apps)
+        .status();
+    Ok(path)
+}
+
+/// 非 Linux 平台不创建 freedesktop desktop entry。
+#[cfg(not(target_os = "linux"))]
+pub fn ensure_user_desktop_entry(
+    _bin_path: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    Err("desktop entry is only supported on Linux".into())
 }
 
 #[cfg(target_os = "linux")]
