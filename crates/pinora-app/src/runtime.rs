@@ -464,7 +464,9 @@ mod tests {
         assert!(path.is_file());
         let _ = std::fs::remove_file(&path);
 
-        rt.dispatch(Command::copy_image(image_id)).unwrap();
+        if let Err(error) = rt.dispatch(Command::copy_image(image_id)) {
+            assert_eq!(error.code, ErrorCode::ClipboardFailed);
+        }
         assert_eq!(rt.sink().clipboard_image_id(), Some(image_id));
     }
 
@@ -495,8 +497,9 @@ mod tests {
         assert!(path.is_file());
         let _ = std::fs::remove_file(&path);
 
-        rt.dispatch(Command::invoke_action(ActionId::CopyLastCapture))
-            .unwrap();
+        if let Err(error) = rt.dispatch(Command::invoke_action(ActionId::CopyLastCapture)) {
+            assert_eq!(error.code, ErrorCode::ClipboardFailed);
+        }
         assert_eq!(rt.sink().clipboard_image_id(), Some(image_id));
     }
 

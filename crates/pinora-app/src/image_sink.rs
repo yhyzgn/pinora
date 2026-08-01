@@ -45,6 +45,19 @@ impl ImageSink for LocalImageSink {
     }
 
     fn copy_image(&self, image: &CaptureImage) -> Result<(), PinoraError> {
+        self.copy_image_with_writer(image, copy_png_to_system_clipboard)
+    }
+}
+
+impl LocalImageSink {
+    fn copy_image_with_writer<F>(
+        &self,
+        image: &CaptureImage,
+        write_system_clipboard: F,
+    ) -> Result<(), PinoraError>
+    where
+        F: FnOnce(&[u8]) -> Result<&'static str, String>,
+    {
         // 1) 内存副本（测试与降级）
         {
             let mut guard = self
@@ -54,21 +67,27 @@ impl ImageSink for LocalImageSink {
             *guard = Some(image.clone());
         }
 
-        // 2) 系统剪贴板：尽力而为，失败不推翻内存成功
-        match encode_png_bytes(image) {
-            Ok(png) => match copy_png_to_system_clipboard(&png) {
-                Ok(backend) => {
-                    println!("pinora: system clipboard ← image/png via {backend}");
-                }
-                Err(e) => {
-                    eprintln!("pinora: system clipboard skipped: {e}");
-                }
-            },
-            Err(e) => {
-                eprintln!("pinora: png encode for clipboard failed: {e}");
+        // 2) 系统剪贴板：内存成功不等于系统成功；失败保留缓存供调用方重试。
+        let png = encode_png_bytes(image).map_err(|_| {
+            eprintln!("pinora: system clipboard image encoding failed; memory copy retained");
+            PinoraError::new(
+                ErrorCode::ClipboardFailed,
+                "system clipboard image encoding failed",
+            )
+        })?;
+        match write_system_clipboard(&png) {
+            Ok(backend) => {
+                println!("pinora: system clipboard ← image/png via {backend}");
+                Ok(())
+            }
+            Err(_) => {
+                eprintln!("pinora: system clipboard image write failed; memory copy retained");
+                Err(PinoraError::new(
+                    ErrorCode::ClipboardFailed,
+                    "system clipboard image write failed",
+                ))
             }
         }
-        Ok(())
     }
 }
 
@@ -555,9 +574,24 @@ mod tests {
         let sink = LocalImageSink::new();
         let image = sample_image();
         let id = image.id;
-        sink.copy_image(&image).unwrap();
+        if let Err(error) = sink.copy_image(&image) {
+            assert_eq!(error.code, ErrorCode::ClipboardFailed);
+        }
         assert_eq!(sink.clipboard_image_id(), Some(id));
         assert_eq!(sink.clipboard_byte_len(), Some(8 * 4 * 4));
+    }
+
+    #[test]
+    fn failed_system_copy_retains_memory_image_for_retry() {
+        let sink = LocalImageSink::new();
+        let image = sample_image();
+        let error = sink
+            .copy_image_with_writer(&image, |_| Err("injected clipboard failure".into()))
+            .expect_err("system copy should fail");
+
+        assert_eq!(error.code, ErrorCode::ClipboardFailed);
+        assert_eq!(sink.clipboard_image_id(), Some(image.id));
+        assert_eq!(sink.clipboard_byte_len(), Some(image.pixels.byte_len()));
     }
 
     #[test]

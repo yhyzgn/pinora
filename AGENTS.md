@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/039_history_file_cleanup.md`
-- 任务：`.context/tasks/039_history_file_cleanup.md`
+- 计划：`.context/plans/040_clipboard_result_semantics.md`
+- 任务：`.context/tasks/040_clipboard_result_semantics.md`
 
 ## 交付要求
 

@@ -15,6 +15,7 @@ pub enum ErrorCode {
     Cancelled,
     TimedOut,
     ResourceLimitExceeded,
+    ClipboardFailed,
     Internal,
 }
 
@@ -33,6 +34,7 @@ impl ErrorCode {
             Self::Cancelled => "cancelled",
             Self::TimedOut => "timed_out",
             Self::ResourceLimitExceeded => "resource_limit_exceeded",
+            Self::ClipboardFailed => "clipboard_failed",
             Self::Internal => "internal",
         }
     }
@@ -82,5 +84,6 @@ mod tests {
             ErrorCode::ResourceLimitExceeded.as_str(),
             "resource_limit_exceeded"
         );
+        assert_eq!(ErrorCode::ClipboardFailed.as_str(), "clipboard_failed");
     }
 }
