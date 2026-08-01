@@ -18,7 +18,7 @@ UninstPage instfiles
 
 Section "Pinora"
   SetOutPath "$INSTDIR"
-  File "target\package-stage\windows\pinora.exe"
+  File "..\target\package-stage\windows\pinora.exe"
   WriteUninstaller "$INSTDIR\uninstall.exe"
   CreateShortcut "$DESKTOP\Pinora.lnk" "$INSTDIR\pinora.exe"
 SectionEnd
