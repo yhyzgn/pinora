@@ -21,8 +21,9 @@ mod state;
 
 pub use action::{ActionId, KeyBinding};
 pub use annotate::{
-    AnnotateSession, AnnotateTool, Annotation, AnnotationDoc, DEFAULT_STROKE, DEFAULT_WIDTH,
-    DraftShape, MAX_STROKE, MIN_STROKE, STROKE_PALETTE, bake_annotations, render_preview_rgba,
+    AnnotateSession, AnnotateTool, Annotation, AnnotationDoc, AnnotationRevision, DEFAULT_STROKE,
+    DEFAULT_WIDTH, DraftShape, MAX_STROKE, MIN_STROKE, STROKE_PALETTE, bake_annotations,
+    render_preview_rgba,
 };
 pub use asset::{AssetGeneration, AssetRef};
 pub use capture::{CaptureProvider, CaptureRequest, DisplayInfo, resolve_capture_rect};

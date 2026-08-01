@@ -59,10 +59,41 @@ pub enum Annotation {
     },
 }
 
+/// 标注文档的单调版本号。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AnnotationRevision(NonZeroU64);
+
+impl AnnotationRevision {
+    pub const INITIAL: Self = Self(NonZeroU64::MIN);
+
+    pub const fn from_raw(value: u64) -> Option<Self> {
+        match NonZeroU64::new(value) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
+    }
+
+    pub const fn raw(self) -> u64 {
+        self.0.get()
+    }
+
+    /// 版本达到最大值后保持最大值，绝不回绕到较早版本。
+    pub fn advance(self) -> Self {
+        self.0.checked_add(1).map(Self).unwrap_or(self)
+    }
+}
+
+impl Default for AnnotationRevision {
+    fn default() -> Self {
+        Self::INITIAL
+    }
+}
+
 /// 标注文档（图像坐标系）。
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AnnotationDoc {
-    pub items: Vec<Annotation>,
+    items: Vec<Annotation>,
+    revision: AnnotationRevision,
 }
 
 impl AnnotationDoc {
@@ -72,10 +103,13 @@ impl AnnotationDoc {
 
     pub fn push(&mut self, item: Annotation) {
         self.items.push(item);
+        self.revision = self.revision.advance();
     }
 
     pub fn undo(&mut self) -> Option<Annotation> {
-        self.items.pop()
+        let item = self.items.pop()?;
+        self.revision = self.revision.advance();
+        Some(item)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -84,6 +118,14 @@ impl AnnotationDoc {
 
     pub fn len(&self) -> usize {
         self.items.len()
+    }
+
+    pub fn items(&self) -> &[Annotation] {
+        &self.items
+    }
+
+    pub const fn revision(&self) -> AnnotationRevision {
+        self.revision
     }
 }
 
@@ -324,7 +366,7 @@ pub fn bake_annotations(source: &CaptureImage, doc: &AnnotationDoc) -> CaptureIm
     let h = source.pixels.size.height as i32;
     // 马赛克需要源像素；先 clone 一份只读源
     let src_bytes = source.pixels.bytes.clone();
-    for item in &doc.items {
+    for item in doc.items() {
         match item {
             Annotation::Rect {
                 a,
@@ -921,7 +963,7 @@ mod tests {
         assert!(s.is_text_editing());
         s.commit();
         assert_eq!(s.doc.len(), 1);
-        match &s.doc.items[0] {
+        match &s.doc.items()[0] {
             Annotation::Text { content, .. } => assert_eq!(content, "hi"),
             _ => panic!("expected text"),
         }
@@ -929,5 +971,52 @@ mod tests {
         let out = bake_annotations(&src, &s.doc);
         // 有系统字体时应改变像素；无字体时也会画占位线
         assert_ne!(out.pixels.bytes, src.pixels.bytes);
+    }
+
+    #[test]
+    fn revision_advances_only_for_effective_document_mutations() {
+        let mut doc = AnnotationDoc::new();
+        assert_eq!(doc.revision().raw(), 1);
+        assert_eq!(doc.undo(), None);
+        assert_eq!(doc.revision().raw(), 1);
+
+        doc.push(Annotation::Rect {
+            a: PixelPoint::new(1, 1),
+            b: PixelPoint::new(6, 6),
+            color: DEFAULT_STROKE,
+            stroke: DEFAULT_WIDTH,
+        });
+        assert_eq!(doc.revision().raw(), 2);
+        assert!(doc.undo().is_some());
+        assert_eq!(doc.revision().raw(), 3);
+        assert_eq!(doc.undo(), None);
+        assert_eq!(doc.revision().raw(), 3);
+    }
+
+    #[test]
+    fn revision_is_non_zero_and_never_wraps() {
+        assert_eq!(AnnotationRevision::from_raw(0), None);
+        let maximum = AnnotationRevision::from_raw(u64::MAX).expect("maximum revision");
+        assert_eq!(maximum.advance(), maximum);
+    }
+
+    #[test]
+    fn invalid_or_cancelled_drafts_do_not_advance_revision() {
+        let mut session = AnnotateSession::new(40, 30);
+        let initial = session.doc.revision();
+
+        session.begin(PixelPoint::new(3, 3));
+        session.commit();
+        assert_eq!(session.doc.revision(), initial);
+
+        session.tool = AnnotateTool::Text;
+        session.begin(PixelPoint::new(3, 3));
+        session.text_push(" \n\t ");
+        session.commit();
+        assert_eq!(session.doc.revision(), initial);
+
+        session.begin(PixelPoint::new(4, 4));
+        session.cancel_draft();
+        assert_eq!(session.doc.revision(), initial);
     }
 }
