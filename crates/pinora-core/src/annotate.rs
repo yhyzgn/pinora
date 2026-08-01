@@ -93,6 +93,7 @@ impl Default for AnnotationRevision {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AnnotationDoc {
     items: Vec<Annotation>,
+    redo: Vec<Annotation>,
     revision: AnnotationRevision,
 }
 
@@ -102,12 +103,22 @@ impl AnnotationDoc {
     }
 
     pub fn push(&mut self, item: Annotation) {
+        self.redo.clear();
         self.items.push(item);
         self.revision = self.revision.advance();
     }
 
     pub fn undo(&mut self) -> Option<Annotation> {
         let item = self.items.pop()?;
+        self.redo.push(item.clone());
+        self.revision = self.revision.advance();
+        Some(item)
+    }
+
+    /// 恢复最近一次撤销的标注。恢复不经过 `push`，以保留其余 redo 事务。
+    pub fn redo(&mut self) -> Option<Annotation> {
+        let item = self.redo.pop()?;
+        self.items.push(item.clone());
         self.revision = self.revision.advance();
         Some(item)
     }
@@ -122,6 +133,10 @@ impl AnnotationDoc {
 
     pub fn items(&self) -> &[Annotation] {
         &self.items
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
     }
 
     pub const fn revision(&self) -> AnnotationRevision {
@@ -998,6 +1013,67 @@ mod tests {
         assert_eq!(AnnotationRevision::from_raw(0), None);
         let maximum = AnnotationRevision::from_raw(u64::MAX).expect("maximum revision");
         assert_eq!(maximum.advance(), maximum);
+    }
+
+    #[test]
+    fn undo_and_redo_restore_annotations_in_lifo_order() {
+        let first = Annotation::Rect {
+            a: PixelPoint::new(1, 1),
+            b: PixelPoint::new(4, 4),
+            color: DEFAULT_STROKE,
+            stroke: DEFAULT_WIDTH,
+        };
+        let second = Annotation::Rect {
+            a: PixelPoint::new(5, 5),
+            b: PixelPoint::new(9, 9),
+            color: DEFAULT_STROKE,
+            stroke: DEFAULT_WIDTH,
+        };
+        let mut doc = AnnotationDoc::new();
+        doc.push(first.clone());
+        doc.push(second.clone());
+        assert_eq!(doc.revision().raw(), 3);
+
+        assert_eq!(doc.undo(), Some(second.clone()));
+        assert_eq!(doc.undo(), Some(first.clone()));
+        assert!(doc.items().is_empty());
+        assert!(doc.can_redo());
+        assert_eq!(doc.revision().raw(), 5);
+
+        assert_eq!(doc.redo(), Some(first.clone()));
+        assert_eq!(doc.items(), std::slice::from_ref(&first));
+        assert!(doc.can_redo());
+        assert_eq!(doc.redo(), Some(second.clone()));
+        assert_eq!(doc.items(), [first, second]);
+        assert!(!doc.can_redo());
+        assert_eq!(doc.revision().raw(), 7);
+        assert_eq!(doc.redo(), None);
+        assert_eq!(doc.revision().raw(), 7);
+    }
+
+    #[test]
+    fn new_annotation_clears_redo_branch() {
+        let mut doc = AnnotationDoc::new();
+        let original = Annotation::Rect {
+            a: PixelPoint::new(1, 1),
+            b: PixelPoint::new(4, 4),
+            color: DEFAULT_STROKE,
+            stroke: DEFAULT_WIDTH,
+        };
+        doc.push(original);
+        assert!(doc.undo().is_some());
+        assert!(doc.can_redo());
+
+        doc.push(Annotation::Rect {
+            a: PixelPoint::new(6, 6),
+            b: PixelPoint::new(9, 9),
+            color: DEFAULT_STROKE,
+            stroke: DEFAULT_WIDTH,
+        });
+        assert!(!doc.can_redo());
+        let revision = doc.revision();
+        assert_eq!(doc.redo(), None);
+        assert_eq!(doc.revision(), revision);
     }
 
     #[test]

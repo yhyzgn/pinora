@@ -234,6 +234,28 @@ enum OverlayFinish {
     Save,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnnotationHistoryAction {
+    Undo,
+    Redo,
+}
+
+fn annotation_history_action(
+    control_pressed: bool,
+    shift_pressed: bool,
+    character: &str,
+) -> Option<AnnotationHistoryAction> {
+    if !control_pressed {
+        return None;
+    }
+    match character {
+        "z" | "Z" if shift_pressed => Some(AnnotationHistoryAction::Redo),
+        "z" | "Z" => Some(AnnotationHistoryAction::Undo),
+        "y" | "Y" => Some(AnnotationHistoryAction::Redo),
+        _ => None,
+    }
+}
+
 #[derive(Debug)]
 enum PendingExportAction {
     SavePng(PathBuf),
@@ -2179,6 +2201,22 @@ fn handle_overlay_key(
         }
     }
 
+    if ov.phase == OverlayPhase::Ready
+        && let Key::Character(character) = &event.logical_key
+        && let Some(action) =
+            annotation_history_action(modifiers.control_key(), modifiers.shift_key(), character)
+    {
+        let changed = match action {
+            AnnotationHistoryAction::Undo => ov.annotate.doc.undo().is_some(),
+            AnnotationHistoryAction::Redo => ov.annotate.doc.redo().is_some(),
+        };
+        if changed {
+            ov.annotate_dirty = true;
+            ov.needs_redraw = true;
+        }
+        return;
+    }
+
     match &event.logical_key {
         Key::Named(NamedKey::ArrowLeft) => {
             ov.session.nudge(-step, 0);
@@ -2213,15 +2251,6 @@ fn handle_overlay_key(
         }
         Key::Character(c) if (c == "-" || c == "_") && ov.phase == OverlayPhase::Ready => {
             ov.annotate.stroke_down();
-            ov.annotate_dirty = true;
-            ov.needs_redraw = true;
-        }
-        Key::Character(c)
-            if (c == "z" || c == "Z")
-                && modifiers.control_key()
-                && ov.phase == OverlayPhase::Ready =>
-        {
-            ov.annotate.doc.undo();
             ov.annotate_dirty = true;
             ov.needs_redraw = true;
         }
@@ -2723,6 +2752,23 @@ mod overlay_scale_tests {
     }
 
     #[test]
+    fn annotation_history_shortcuts_distinguish_undo_and_redo() {
+        assert_eq!(
+            annotation_history_action(true, false, "z"),
+            Some(AnnotationHistoryAction::Undo)
+        );
+        assert_eq!(
+            annotation_history_action(true, true, "Z"),
+            Some(AnnotationHistoryAction::Redo)
+        );
+        assert_eq!(
+            annotation_history_action(true, false, "y"),
+            Some(AnnotationHistoryAction::Redo)
+        );
+        assert_eq!(annotation_history_action(false, false, "z"), None);
+    }
+
+    #[test]
     fn annotation_revision_changes_overlay_asset_and_rejects_late_result() {
         let identity = OverlayAssetIdentity::new();
         let mut doc = AnnotationDoc::new();
@@ -2761,6 +2807,29 @@ mod overlay_scale_tests {
         let after_undo = identity.current(doc.revision());
         assert_eq!(doc.undo(), None);
         assert_eq!(identity.current(doc.revision()), after_undo);
+    }
+
+    #[test]
+    fn redo_produces_a_fresh_overlay_asset_generation() {
+        let identity = OverlayAssetIdentity::new();
+        let mut doc = AnnotationDoc::new();
+        doc.push(Annotation::Rect {
+            a: PixelPoint::new(1, 1),
+            b: PixelPoint::new(4, 4),
+            color: DEFAULT_STROKE,
+            stroke: DEFAULT_WIDTH,
+        });
+        let committed = identity.current(doc.revision());
+        assert!(doc.undo().is_some());
+        let undone = identity.current(doc.revision());
+        assert!(doc.redo().is_some());
+        let redone = identity.current(doc.revision());
+
+        assert_eq!(committed.image_id, undone.image_id);
+        assert_eq!(undone.image_id, redone.image_id);
+        assert_ne!(committed.generation, undone.generation);
+        assert_ne!(undone.generation, redone.generation);
+        assert_ne!(committed.generation, redone.generation);
     }
 
     #[test]

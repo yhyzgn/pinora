@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/031_overlay_annotation_asset_contract.md`
-- 任务：`.context/tasks/031_overlay_annotation_asset_contract.md`
+- 计划：`.context/plans/032_annotation_redo_transactions.md`
+- 任务：`.context/tasks/032_annotation_redo_transactions.md`
 
 ## 交付要求
 
