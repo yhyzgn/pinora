@@ -43,13 +43,15 @@ EOF
   fi
 
   if command -v rpmbuild >/dev/null 2>&1; then
+    rpm_release="$(printf '%s' "$version" | sed -n 's/^[^-]*-//; s/[^A-Za-z0-9.]/./g; p')"
+    if [[ -z "$rpm_release" ]]; then rpm_release="1"; else rpm_release="1.${rpm_release}"; fi
     rpm_root="$(pwd)/target/package-stage/rpm"
     mkdir -p "$rpm_root"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
     cp "$binary" "$rpm_root/SOURCES/pinora"
     cat > "$rpm_root/SPECS/pinora.spec" <<EOF
 Name: pinora
 Version: ${version%%-*}
-Release: 1
+Release: ${rpm_release}
 Summary: Cross-platform screenshot, annotation and pin workbench
 License: MIT
 BuildArch: x86_64

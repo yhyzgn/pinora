@@ -143,7 +143,8 @@ fn parse_cli_action(args: &[String]) -> CliAction {
             std::process::exit(0);
         }
         "version" | "--version" | "-V" => {
-            println!("pinora {}", env!("CARGO_PKG_VERSION"));
+            let version = option_env!("PINORA_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
+            println!("pinora {version}");
             std::process::exit(0);
         }
         _ => {
