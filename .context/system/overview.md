@@ -53,8 +53,10 @@
 - `pinora-app` 的 GTK 依赖已限制为 Linux target；Windows/macOS 不再在 `cargo check` 阶段探测 GTK/GLib 的 `pkg-config`。
 - `OsSingleInstance` 在 Unix 保留 `instance.lock` + `activate.sock`；非 Unix 使用同目录文件锁和只绑定 `127.0.0.1` 的 loopback TCP，端口写入 `activate.port`。CLI 通过 `forward_ipc_frame` 统一转发。
 - KWin 窗口放置在非 Linux 返回能力不可用；Linux desktop entry 在非 Linux 不创建。KDE/Spectacle 仍只在 Linux/KDE 会话探测，其他平台由 xcap 或 `Unavailable` 选择。
-- `packaging/package-unix.sh` 生成 Linux `.tar.gz`、可用时 `.deb`/`.rpm`；macOS 生成 `.app` `.zip` `.dmg`。`package-windows.ps1` 生成 `.zip`，检测到 NSIS 时额外生成 setup `.exe`。每个平台生成 `SHA256SUMS.txt`。
+- `packaging/package-unix.sh` 生成 Linux raw binary、`.tar.gz`、可用时 `.deb`/`.rpm`；macOS 生成 raw binary、`.app` `.zip` `.dmg`。`package-windows.ps1` 生成 raw binary、`.zip`，检测到 NSIS 时额外生成 setup `.exe`。每个平台生成来源 `SHA256SUMS.txt`，release job 再生成覆盖全部上传资产的合并清单。
 - `.github/workflows/ci.yml`、`package.yml`、`runtime-verify.yml` 已建立三平台原生 runner 矩阵；runtime smoke 只证明包可解包/安装和 `--version` 启动，不等价于 GUI、屏幕捕获、剪贴板、权限或多显示器验证。
+
+2026-08-02 预发布交付证据：`v0.1.0-preview.2` 的 package run `30714649807`、发布 job `91408449669`、runtime-verify run `30715042640` 均成功；Release 资产和合并 SHA256 清单下载后复核通过。该证据只覆盖构建、分发、安装/卸载和版本启动探针，不扩展真实桌面能力声明。
 
 ## 主流程
 

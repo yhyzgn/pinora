@@ -1,6 +1,6 @@
 # 任务 038：跨平台构建与预发布交付
 
-- 状态：进行中
+- 状态：已完成
 - 计划：`.context/plans/038_cross_platform_delivery.md`
 - 规模：大
 - 依赖：`.context/system/overview.md`、`.context/system/conventions.md`、`.context/system/risks.md`
@@ -63,4 +63,9 @@
 
 ## 完成记录
 
-- 待实现。
+- 已完成（2026-08-02）：
+  - 代码与流水线提交已推送至 `origin/main`，最新相关提交为 `8bc4a47`；GitHub CI run `30714522975` 成功。
+  - `v0.1.0-preview.2` package run `30714649807` 成功，发布 job `91408449669` 成功；Release URL：<https://github.com/yhyzgn/pinora/releases/tag/v0.1.0-preview.2>。
+  - runtime-verify run `30715042640` 成功，验证 job 覆盖 `ubuntu-24.04`、`macos-14`、`windows-2022`，报告已回写 Release notes。
+  - Release 下载后的 `SHA256SUMS.txt` 对 10 个分发资产逐项校验通过；当前 Release 为 prerelease，raw binary 与安装包版本均为 `0.1.0-preview.2`。
+  - 未覆盖项已明确记录：没有把无头 runner 结果描述为真实桌面交互或平台能力等价验证；签名/公证、真实权限、多显示器、HiDPI、屏幕捕获、剪贴板、热键和托盘仍需对应桌面环境验收。

@@ -1,6 +1,6 @@
 # 计划 038：跨平台构建、安装包与预发布交付
 
-- 状态：进行中
+- 状态：已完成
 - 负责人：Neo
 - 当前任务：`.context/tasks/038_cross_platform_delivery.md`
 
@@ -91,4 +91,10 @@
 
 ## 完成记录
 
-- 待实现。
+- 已完成（2026-08-02）：
+  - `main` 提交 `64619b4` 的三平台 CI run `30714522975` 成功，Linux、macOS、Windows 的格式、workspace check、严格 Clippy 和 workspace tests 均通过。
+  - 预发布 tag `v0.1.0-preview.2` 已推送，package run `30714649807` 成功；三个原生 runner 均生成 raw binary、平台安装包和来源 `SHA256SUMS.txt`，发布 job `91408449669` 成功。
+  - GitHub Release 已创建为 prerelease：<https://github.com/yhyzgn/pinora/releases/tag/v0.1.0-preview.2>。Release 资产共 11 个，包含 Linux `.deb`/`.rpm`/`.tar.gz`/raw、macOS `.dmg`/`.zip`/raw、Windows NSIS `.exe`/`.zip`/raw 和合并 `SHA256SUMS.txt`。
+  - runtime-verify 自动 run `30714801827` 和修复报告后的手动 run `30715042640` 均成功；三平台包解压/安装、`--version` 和卸载 smoke 通过，报告已回写 Release notes。
+  - 发布流水线已修复为逐平台下载并校验来源清单、生成合并清单、检测重复资产名、支持重复发布时编辑并覆盖资产；runtime report 的 tag 解析、shell quoting 和 marker 替换均已在真实 Actions run 中验证。
+  - 已知边界保持不变：runner smoke 不证明真实 GUI、屏幕捕获、系统剪贴板、全局热键、权限、多显示器或 HiDPI；Linux/KDE 专用能力不向其他平台等价宣称。
