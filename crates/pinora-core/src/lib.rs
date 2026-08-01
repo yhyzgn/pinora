@@ -11,6 +11,7 @@ mod error;
 mod event;
 mod export;
 mod geometry;
+mod history;
 mod ids;
 mod image;
 mod job;
@@ -33,6 +34,11 @@ pub use error::{ErrorCode, PinoraError};
 pub use event::{DomainEvent, DomainEventKind, EventEnvelope};
 pub use export::ImageSink;
 pub use geometry::{PixelPoint, PixelRect, PixelSize};
+pub use history::{
+    ContentDigest, HISTORY_MAX_DISPLAY_BYTES, HISTORY_MAX_ENTRIES, HISTORY_MAX_FILE_NAME_BYTES,
+    HISTORY_SCHEMA_VERSION, HistoryEntry, HistoryEntrySpec, HistoryEntryState, HistoryIndex,
+    HistoryInsert, HistoryOcrState,
+};
 pub use ids::{CorrelationId, EventId, ImageId, JobId, PinId, SessionId};
 pub use image::{CaptureImage, CaptureMetadata, DisplayId, RgbaBuffer};
 pub use job::{JobKind, JobOwner, JobResultRef, JobSpec, JobTerminalState};

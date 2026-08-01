@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/033_versioned_settings_store.md`
-- 任务：`.context/tasks/033_versioned_settings_store.md`
+- 计划：`.context/plans/034_history_index.md`
+- 任务：`.context/tasks/034_history_index.md`
 
 ## 交付要求
 

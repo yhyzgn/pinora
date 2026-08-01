@@ -7,6 +7,7 @@ mod capture_xcap;
 mod desktop_shell;
 mod export_job;
 mod frame_cache;
+mod history_store;
 mod hotkey;
 mod image_sink;
 mod job_supervisor;
@@ -33,6 +34,7 @@ pub use desktop_shell::run_desktop_shell;
 pub use export_job::{
     ExportJobCompletion, ExportJobInput, ExportJobService, ExportRunner, LocalExportRunner,
 };
+pub use history_store::{HistoryLoad, HistoryStore, default_history_path};
 pub use hotkey::{
     FakeHotkeySource, GlobalHotkeyHub, GlobalHotkeyStatus, HotkeySource, ensure_user_desktop_entry,
 };
