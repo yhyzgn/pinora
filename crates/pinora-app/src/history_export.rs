@@ -278,6 +278,33 @@ pub(crate) fn delete_history_entry(
         .map_err(|_| "history tombstone cleanup deferred".to_string())
 }
 
+/// Mark every active history entry as a tombstone before touching any managed file.
+///
+/// The index save is the durable commit point. A failed save restores the in-memory index;
+/// cleanup failures leave tombstones in place so a later retry can finish the operation.
+pub(crate) fn clear_history_entries(
+    store: &HistoryStore,
+    export_dir: &Path,
+    index: &mut HistoryIndex,
+) -> Result<HistoryCleanup, String> {
+    let previous = index.clone();
+    let active_ids: Vec<_> = index.active_entries().map(|entry| entry.image_id).collect();
+    if active_ids.is_empty() {
+        if index.entries().iter().any(|entry| !entry.is_active()) {
+            return cleanup_history_tombstones(store, export_dir, index);
+        }
+        return Ok(HistoryCleanup::default());
+    }
+    for image_id in active_ids {
+        let _ = index.mark_deleted(image_id);
+    }
+    if let Err(error) = store.save(index) {
+        *index = previous;
+        return Err(format!("save history clear tombstones: {error}"));
+    }
+    cleanup_history_tombstones(store, export_dir, index)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -688,6 +715,56 @@ mod tests {
         assert!(index.entries().is_empty());
         assert!(!path.exists());
         assert!(matches!(store.load(), HistoryLoad::Loaded(loaded) if loaded.entries().is_empty()));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn history_clear_marks_all_then_compacts_managed_files() {
+        let root = temp_root("clear");
+        let export_dir = root.join("exports");
+        fs::create_dir_all(&export_dir).expect("create exports");
+        let store = HistoryStore::new(root.join("history.bin"), 10, u64::MAX);
+        let mut index = store.empty_index();
+        for (id, name, bytes) in [
+            (81, "one.png", b"one".as_slice()),
+            (82, "two.png", b"two".as_slice()),
+        ] {
+            fs::write(export_dir.join(name), bytes).expect("write image");
+            index
+                .insert(history_entry(id, name, bytes))
+                .expect("insert history");
+        }
+        store.save(&index).expect("save history");
+
+        let cleanup =
+            clear_history_entries(&store, &export_dir, &mut index).expect("clear history");
+        assert_eq!(cleanup.removed_files, 2);
+        assert_eq!(cleanup.compacted_entries, 2);
+        assert_eq!(index.active_count(), 0);
+        assert!(!export_dir.join("one.png").exists());
+        assert!(!export_dir.join("two.png").exists());
+        assert!(matches!(store.load(), HistoryLoad::Loaded(loaded) if loaded.entries().is_empty()));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn history_clear_save_failure_restores_active_index() {
+        let root = temp_root("clear-rollback");
+        let blocked_parent = root.join("blocked-parent");
+        fs::write(&blocked_parent, b"not a directory").expect("block parent");
+        let export_dir = root.join("exports");
+        fs::create_dir_all(&export_dir).expect("create exports");
+        let store = HistoryStore::new(blocked_parent.join("history.bin"), 10, u64::MAX);
+        let mut index = store.empty_index();
+        index
+            .insert(history_entry(83, "keep.png", b"keep"))
+            .expect("insert history");
+        let before = index.clone();
+
+        let error = clear_history_entries(&store, &export_dir, &mut index)
+            .expect_err("clear save should fail");
+        assert!(error.contains("save history clear tombstones"));
+        assert_eq!(index, before);
         let _ = fs::remove_dir_all(root);
     }
 }

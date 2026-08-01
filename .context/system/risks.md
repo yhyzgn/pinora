@@ -11,10 +11,10 @@
 
 ## R-010：历史索引与文件生命周期尚未闭环（中）
 
-- 证据和影响范围：2026-08-02 新增 `HistoryIndex`/`HistoryStore`，支持摘要去重、条数/字节配额和 tombstone 原子索引；042 增加 H 历史窗口、单条删除、受管 PNG 完整性校验、预览和重新贴图，桌面壳仅在受监督 `SavePng` 接受完成后写入索引，并对直属受管 PNG 执行可重试 tombstone 清理。
+- 证据和影响范围：2026-08-02 新增 `HistoryIndex`/`HistoryStore`，支持摘要去重、条数/字节配额和 tombstone 原子索引；042 增加 H 历史窗口、单条删除、受管 PNG 完整性校验、预览和重新贴图，043 增加元数据搜索与确认清空，桌面壳仅在受监督 `SavePng` 接受完成后写入索引，并对直属受管 PNG 执行可重试 tombstone 清理。
 - 触发条件：将索引存储基础误当作完整历史功能，或在文件删除失败前直接 compact。
 - 失败模式：索引条目与磁盘文件分叉，或用户看见无法复用的“成功”历史条目。
-- 缓解措施和验证：调用方必须先处理 `HistoryInsert.evicted`/删除返回的文件引用，再调用 `compact`；037/039/042 的候选、活动同名保护、PNG 摘要/尺寸校验、删除失败和保存失败回滚测试及 workspace 门禁已通过，后续仍需补充全量清空、搜索、标签、再次编辑和 GUI/桌面探针。
+- 缓解措施和验证：调用方必须先处理 `HistoryInsert.evicted`/删除返回的文件引用，再调用 `compact`；037/039/042/043 的候选、活动同名保护、PNG 摘要/尺寸校验、单条/全量删除失败和保存失败回滚测试及 workspace 门禁已通过，后续仍需补充标签、再次编辑和 GUI/桌面探针。
 - 回滚或隔离动作：保留索引文件但关闭历史入口；按任务回滚 `history_store`，不影响截图、贴图和导出主路径。
 - 负责人和状态：未分配；开放。
 
@@ -87,7 +87,7 @@
 
 ## R-011：跨平台流水线与真实桌面能力分离（高）
 
-- 证据和影响范围：2026-08-02 已加入 Linux/macOS/Windows 原生 runner 的 CI、package、runtime-verify；`v0.1.0-preview.2` 的 package run `30714649807`、发布 job `91408449669`、runtime-verify run `30715042640` 均成功，Release 资产的合并 SHA256 清单已逐项复核。runtime smoke 只运行 `--version` 和安装器，不创建真实 GUI 会话。
+- 证据和影响范围：2026-08-02 已加入 Linux/macOS/Windows 原生 runner 的 CI、package、runtime-verify；`v0.1.0-preview.4` 的 CI run `30718570254`、package run `30718584345`、发布 job `91418674201`、runtime-verify run `30718703854` 均成功，10 个 Release 资产及合并 SHA256 清单已逐项复核。runtime smoke 只运行 `--version` 和安装器，不创建真实 GUI 会话。
 - 触发条件：把 workflow 绿色、包可安装或进程能启动当作屏幕捕获、系统剪贴板、热键、透明置顶、多显示器和权限流程已经生产可用。
 - 失败模式：用户在不同桌面/权限环境中看到 capability unavailable、热键不触发、剪贴板不可用或窗口管理器行为不同。
 - 缓解措施：release notes 和 runtime report 明确列出 smoke 范围；workflow 逐平台校验来源清单并生成合并 SHA256 清单；未通过真实桌面探针的平台能力不宣称等同 Linux/KDE；保留 tar/zip/raw binary 回滚分发物。

@@ -21,8 +21,9 @@ use crate::history_browser::{
     self, HistoryPanel, HistoryPanelAction, HistoryPanelKey, HistoryPreview,
 };
 use crate::history_export::{
-    HistoryExportCandidate, cleanup_history_tombstones, delete_history_entry,
-    history_candidate_for_export, load_history_image, load_history_index, record_history_candidate,
+    HistoryExportCandidate, cleanup_history_tombstones, clear_history_entries,
+    delete_history_entry, history_candidate_for_export, load_history_image, load_history_index,
+    record_history_candidate,
 };
 use crate::history_store::{HistoryStore, default_history_path};
 use crate::hotkey::GlobalHotkeyHub;
@@ -1214,21 +1215,45 @@ where
                     PhysicalKey::Code(KeyCode::ArrowUp) => Some(HistoryPanelKey::Up),
                     PhysicalKey::Code(KeyCode::ArrowDown) => Some(HistoryPanelKey::Down),
                     PhysicalKey::Code(KeyCode::Enter) => Some(HistoryPanelKey::Enter),
-                    PhysicalKey::Code(KeyCode::Delete | KeyCode::Backspace) => {
-                        Some(HistoryPanelKey::Delete)
-                    }
+                    PhysicalKey::Code(KeyCode::Delete) => Some(HistoryPanelKey::Delete),
+                    PhysicalKey::Code(KeyCode::Backspace) => Some(HistoryPanelKey::Backspace),
                     PhysicalKey::Code(KeyCode::Escape) => Some(HistoryPanelKey::Escape),
                     _ => None,
                 };
-                let Some(key) = key else { return };
-                let action = self
-                    .history
-                    .as_mut()
-                    .and_then(|history| history.panel.handle_key(key));
+                let action = if let Some(key) = key {
+                    self.history
+                        .as_mut()
+                        .and_then(|history| history.panel.handle_key(key))
+                } else if !self.modifiers.control_key()
+                    && !self.modifiers.alt_key()
+                    && !self.modifiers.super_key()
+                {
+                    let text = match &event.logical_key {
+                        Key::Character(text) => Some(text.as_str()),
+                        _ => None,
+                    };
+                    let mut changed = false;
+                    if let Some(text) = text
+                        && let Some(history) = self.history.as_mut()
+                    {
+                        for character in text.chars() {
+                            changed |= history.panel.input_char(character);
+                        }
+                    }
+                    if changed {
+                        self.refresh_history_preview();
+                    }
+                    None
+                } else {
+                    None
+                };
                 if let Some(action) = action {
                     self.apply_history_action(event_loop, action);
                 } else {
                     self.refresh_history_preview();
+                }
+                if let Some(history) = self.history.as_ref() {
+                    history.window.request_redraw();
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -1266,6 +1291,47 @@ where
             HistoryPanelAction::Close => self.close_history(),
             HistoryPanelAction::Reopen => self.reopen_history_entry(event_loop),
             HistoryPanelAction::Delete => self.delete_selected_history_entry(),
+            HistoryPanelAction::RequestClear => {
+                if let Some(history) = self.history.as_mut() {
+                    let _ = history.panel.request_clear();
+                    history.window.request_redraw();
+                }
+            }
+            HistoryPanelAction::CancelClear => {
+                if let Some(history) = self.history.as_mut() {
+                    history.panel.cancel_clear();
+                    history.window.request_redraw();
+                }
+            }
+            HistoryPanelAction::ConfirmClear => self.clear_all_history_entries(),
+        }
+    }
+
+    fn clear_all_history_entries(&mut self) {
+        let Some(export_dir) = self.runtime.as_ref().map(|rt| rt.export_dir().clone()) else {
+            return;
+        };
+        let result =
+            clear_history_entries(&self.history_store, &export_dir, &mut self.history_index);
+        let active = self.history_index.active_entries().cloned().collect();
+        if let Some(history) = self.history.as_mut() {
+            history.preview = None;
+            history.panel.replace_entries(active);
+            history.panel.cancel_clear();
+            match result {
+                Err(error) => {
+                    eprintln!("pinora: history clear failed: {error}");
+                    history.panel.mark_error("history_clear_failed");
+                }
+                Ok(cleanup) => {
+                    if cleanup.failed_files > 0 || cleanup.protected_files > 0 {
+                        history.panel.mark_error("history_clear_partial");
+                    } else {
+                        history.panel.clear_error();
+                    }
+                }
+            }
+            history.window.request_redraw();
         }
     }
 

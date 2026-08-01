@@ -10,12 +10,13 @@ use crate::settings_panel::{draw_outline, draw_text, fill};
 pub const PANEL_WIDTH: u32 = 820;
 pub const PANEL_HEIGHT: u32 = 520;
 const LIST_X: i32 = 24;
-const LIST_Y: i32 = 68;
+const LIST_Y: i32 = 96;
 const LIST_W: u32 = 410;
 const ROW_H: u32 = 56;
 const ROW_GAP: i32 = 8;
 const MAX_VISIBLE_ROWS: usize = 6;
-const PREVIEW: PixelRect = PixelRect::new(466, 68, 330, 336);
+const SEARCH: PixelRect = PixelRect::new(24, 54, 410, 30);
+const PREVIEW: PixelRect = PixelRect::new(466, 96, 330, 336);
 const BUTTON_Y: i32 = 442;
 const BUTTON_W: u32 = 144;
 const BUTTON_H: u32 = 42;
@@ -25,6 +26,9 @@ pub enum HistoryPanelAction {
     Select(usize),
     Reopen,
     Delete,
+    RequestClear,
+    ConfirmClear,
+    CancelClear,
     Close,
 }
 
@@ -34,6 +38,7 @@ pub enum HistoryPanelKey {
     Down,
     Enter,
     Delete,
+    Backspace,
     Escape,
 }
 
@@ -46,10 +51,13 @@ pub enum HistoryPanelStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryPanel {
+    all_entries: Vec<HistoryEntry>,
     entries: Vec<HistoryEntry>,
     selected: Option<usize>,
     first_visible: usize,
     status: HistoryPanelStatus,
+    query: String,
+    confirm_clear: bool,
 }
 
 pub struct HistoryPreview<'a> {
@@ -60,10 +68,13 @@ pub struct HistoryPreview<'a> {
 impl HistoryPanel {
     pub fn new(entries: Vec<HistoryEntry>) -> Self {
         let mut panel = Self {
+            all_entries: entries.clone(),
             entries,
             selected: None,
             first_visible: 0,
             status: HistoryPanelStatus::Empty,
+            query: String::new(),
+            confirm_clear: false,
         };
         panel.reset_selection();
         panel
@@ -85,8 +96,17 @@ impl HistoryPanel {
         &self.status
     }
 
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    pub const fn confirming_clear(&self) -> bool {
+        self.confirm_clear
+    }
+
     pub fn replace_entries(&mut self, entries: Vec<HistoryEntry>) {
-        self.entries = entries;
+        self.all_entries = entries;
+        self.apply_filter();
         self.reset_selection();
     }
 
@@ -112,6 +132,13 @@ impl HistoryPanel {
     }
 
     pub fn handle_key(&mut self, key: HistoryPanelKey) -> Option<HistoryPanelAction> {
+        if self.confirm_clear {
+            return match key {
+                HistoryPanelKey::Enter => Some(HistoryPanelAction::ConfirmClear),
+                HistoryPanelKey::Escape => Some(HistoryPanelAction::CancelClear),
+                _ => None,
+            };
+        }
         match key {
             HistoryPanelKey::Up => {
                 if let Some(selected) = self.selected {
@@ -127,8 +154,57 @@ impl HistoryPanel {
             }
             HistoryPanelKey::Enter => self.selected.map(|_| HistoryPanelAction::Reopen),
             HistoryPanelKey::Delete => self.selected.map(|_| HistoryPanelAction::Delete),
+            HistoryPanelKey::Backspace => {
+                if self.query.pop().is_some() {
+                    self.apply_filter();
+                    self.reset_selection();
+                    None
+                } else {
+                    self.selected.map(|_| HistoryPanelAction::Delete)
+                }
+            }
             HistoryPanelKey::Escape => Some(HistoryPanelAction::Close),
         }
+    }
+
+    pub fn input_char(&mut self, character: char) -> bool {
+        if self.confirm_clear || self.query.chars().count() >= 64 {
+            return false;
+        }
+        if character.is_ascii_control() || !character.is_ascii() {
+            return false;
+        }
+        self.query.push(character);
+        self.apply_filter();
+        self.reset_selection();
+        true
+    }
+
+    pub fn clear_search(&mut self) -> bool {
+        if self.query.is_empty() {
+            return false;
+        }
+        self.query.clear();
+        self.apply_filter();
+        self.reset_selection();
+        true
+    }
+
+    pub fn request_clear(&mut self) -> Option<HistoryPanelAction> {
+        if self.all_entries.is_empty() {
+            return None;
+        }
+        self.confirm_clear = true;
+        Some(HistoryPanelAction::RequestClear)
+    }
+
+    pub fn cancel_clear(&mut self) {
+        self.confirm_clear = false;
+    }
+
+    pub fn confirm_clear(&mut self) -> Option<HistoryPanelAction> {
+        self.confirm_clear
+            .then_some(HistoryPanelAction::ConfirmClear)
     }
 
     pub fn hit_test(&self, point: PixelPoint) -> Option<HistoryPanelAction> {
@@ -143,6 +219,13 @@ impl HistoryPanel {
         }
         if delete_rect().contains_point(point) && self.selected.is_some() {
             return Some(HistoryPanelAction::Delete);
+        }
+        if clear_rect().contains_point(point) && !self.all_entries.is_empty() {
+            return Some(if self.confirm_clear {
+                HistoryPanelAction::ConfirmClear
+            } else {
+                HistoryPanelAction::RequestClear
+            });
         }
         if close_rect().contains_point(point) {
             return Some(HistoryPanelAction::Close);
@@ -168,6 +251,27 @@ impl HistoryPanel {
             HistoryPanelStatus::Empty
         } else {
             HistoryPanelStatus::Ready
+        };
+    }
+
+    fn apply_filter(&mut self) {
+        let query = self.query.to_ascii_lowercase();
+        self.entries = if query.is_empty() {
+            self.all_entries.clone()
+        } else {
+            self.all_entries
+                .iter()
+                .filter(|entry| {
+                    entry.file_name.to_ascii_lowercase().contains(&query)
+                        || entry.display.0.to_ascii_lowercase().contains(&query)
+                        || format!(
+                            "{}x{}",
+                            entry.source_rect.size.width, entry.source_rect.size.height
+                        )
+                        .contains(&query)
+                })
+                .cloned()
+                .collect()
         };
     }
 
@@ -198,6 +302,10 @@ pub const fn reopen_rect() -> PixelRect {
 
 pub const fn delete_rect() -> PixelRect {
     PixelRect::new(626, BUTTON_Y, BUTTON_W, BUTTON_H)
+}
+
+pub const fn clear_rect() -> PixelRect {
+    PixelRect::new(186, BUTTON_Y, BUTTON_W, BUTTON_H)
 }
 
 pub const fn close_rect() -> PixelRect {
@@ -232,12 +340,38 @@ pub fn paint(
         PixelRect::new(0, 0, PANEL_WIDTH, PANEL_HEIGHT),
         0x005A718A,
     );
-    let title = match panel.status() {
-        HistoryPanelStatus::Ready => "HISTORY  UP DOWN SELECT  ENTER PIN  DELETE REMOVE",
-        HistoryPanelStatus::Empty => "HISTORY EMPTY  ESC CLOSE",
-        HistoryPanelStatus::Error(_) => "HISTORY FILE INVALID  DELETE OR SELECT ANOTHER",
+    let title = if panel.confirming_clear() {
+        "CLEAR ALL HISTORY?  ENTER CONFIRM  ESC CANCEL"
+    } else {
+        match panel.status() {
+            HistoryPanelStatus::Ready => "HISTORY  ENTER PIN  DELETE REMOVE",
+            HistoryPanelStatus::Empty => "HISTORY EMPTY  ESC CLOSE",
+            HistoryPanelStatus::Error(_) => "HISTORY ACTION FAILED  RETRY OR CLOSE",
+        }
     };
     draw_text(frame, stride, height, 24, 22, title, 0x00D8E6F3);
+
+    fill(frame, stride, height, SEARCH, 0x00202A36);
+    draw_outline(frame, stride, height, SEARCH, 0x004B637A);
+    draw_text(
+        frame,
+        stride,
+        height,
+        SEARCH.origin.x + 10,
+        SEARCH.origin.y + 11,
+        "SEARCH",
+        0x00AFC8DC,
+    );
+    let query_x = SEARCH.origin.x + 78;
+    draw_text(
+        frame,
+        stride,
+        height,
+        query_x,
+        SEARCH.origin.y + 11,
+        panel.query(),
+        0x00F2F7FA,
+    );
 
     if panel.entries().is_empty() {
         draw_outline(frame, stride, height, PREVIEW, 0x004B637A);
@@ -299,9 +433,21 @@ pub fn paint(
 
     fill(frame, stride, height, reopen_rect(), 0x002C6EA3);
     fill(frame, stride, height, delete_rect(), 0x007A3B3B);
+    fill(
+        frame,
+        stride,
+        height,
+        clear_rect(),
+        if panel.confirming_clear() {
+            0x00A65C32
+        } else {
+            0x006A3D32
+        },
+    );
     fill(frame, stride, height, close_rect(), 0x00434D59);
     draw_outline(frame, stride, height, reopen_rect(), 0x0096C8FF);
     draw_outline(frame, stride, height, delete_rect(), 0x00E39A9A);
+    draw_outline(frame, stride, height, clear_rect(), 0x00E3B18A);
     draw_outline(frame, stride, height, close_rect(), 0x007A8998);
     draw_text(
         frame,
@@ -319,6 +465,19 @@ pub fn paint(
         delete_rect().origin.x + 35,
         delete_rect().origin.y + 17,
         "DELETE",
+        0x00FFFFFF,
+    );
+    draw_text(
+        frame,
+        stride,
+        height,
+        clear_rect().origin.x + 23,
+        clear_rect().origin.y + 17,
+        if panel.confirming_clear() {
+            "CONFIRM"
+        } else {
+            "CLEAR ALL"
+        },
         0x00FFFFFF,
     );
     draw_text(
@@ -424,5 +583,36 @@ mod tests {
             panel.hit_test(PixelPoint::new(delete_rect().origin.x + 4, BUTTON_Y + 4)),
             Some(HistoryPanelAction::Delete)
         );
+        assert_eq!(
+            panel.hit_test(PixelPoint::new(clear_rect().origin.x + 4, BUTTON_Y + 4)),
+            Some(HistoryPanelAction::RequestClear)
+        );
+    }
+
+    #[test]
+    fn search_filters_without_losing_entry_identity() {
+        let mut panel = HistoryPanel::new(vec![entry(1), entry(2)]);
+        for character in "2.png".chars() {
+            assert!(panel.input_char(character));
+        }
+        assert_eq!(panel.entries().len(), 1);
+        assert_eq!(
+            panel.selected_entry().map(|entry| entry.image_id.raw()),
+            Some(2)
+        );
+        assert!(panel.clear_search());
+        assert_eq!(panel.entries().len(), 2);
+    }
+
+    #[test]
+    fn clear_requires_confirmation_and_escape_cancels() {
+        let mut panel = HistoryPanel::new(vec![entry(1)]);
+        assert_eq!(
+            panel.request_clear(),
+            Some(HistoryPanelAction::RequestClear)
+        );
+        assert!(panel.confirming_clear());
+        panel.cancel_clear();
+        assert!(!panel.confirming_clear());
     }
 }
