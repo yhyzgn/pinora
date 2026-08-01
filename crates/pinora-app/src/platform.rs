@@ -39,13 +39,13 @@ impl CapabilityProbe for RuntimeCapabilityProbe {
         );
         match crate::image_sink::detect_system_clipboard_backend() {
             Some(b) => notes.push(format!("system clipboard: {b} (image/png)")),
-            None => notes.push(
-                "system clipboard: unavailable (install wl-clipboard or xclip)".into(),
-            ),
+            None => {
+                notes.push("system clipboard: unavailable (install wl-clipboard or xclip)".into())
+            }
         }
 
         CapabilitySnapshot {
-            capture_available: true,
+            capture_available: !matches!(self.capture_backend, CaptureBackendKind::Unavailable),
             global_hotkey_available: true,
             clipboard_image_available: true,
             always_on_top_available: false,
@@ -74,8 +74,7 @@ mod tests {
 
     #[test]
     fn runtime_probe_mentions_backend() {
-        let snap =
-            RuntimeCapabilityProbe::new(CaptureBackendKind::Kde, Some("ok".into())).probe();
+        let snap = RuntimeCapabilityProbe::new(CaptureBackendKind::Kde, Some("ok".into())).probe();
         assert!(snap.capture_available);
         assert!(snap.notes.iter().any(|n| n.contains("kde-spectacle")));
     }

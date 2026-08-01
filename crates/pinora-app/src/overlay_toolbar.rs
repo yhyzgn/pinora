@@ -46,8 +46,7 @@ pub fn layout_toolbar(selection: PixelRect, img_w: u32, img_h: u32) -> Vec<Toolb
     let bar_w = PAD * 2 + n * BTN_W + n.saturating_sub(1) * GAP;
     let bar_h = PAD * 2 + BTN_H;
 
-    let mut x = selection.origin.x
-        + (selection.size.width as i32 - bar_w as i32) / 2;
+    let mut x = selection.origin.x + (selection.size.width as i32 - bar_w as i32) / 2;
     x = x.clamp(0, (img_w as i32 - bar_w as i32).max(0));
 
     // 优先选区下方
@@ -126,13 +125,7 @@ pub fn paint_toolbar(
     let Some(bounds) = toolbar_bounds(buttons) else {
         return;
     };
-    fill_rect(
-        frame,
-        stride,
-        height,
-        bounds,
-        0x00_28_28_30,
-    );
+    fill_rect(frame, stride, height, bounds, 0x00_28_28_30);
     // 边框
     draw_rect_outline(frame, stride, height, bounds, 0x00_80_80_90);
 
@@ -190,13 +183,7 @@ fn fill_rect(frame: &mut [u32], stride: usize, height: usize, rect: PixelRect, c
     }
 }
 
-fn draw_rect_outline(
-    frame: &mut [u32],
-    stride: usize,
-    height: usize,
-    rect: PixelRect,
-    color: u32,
-) {
+fn draw_rect_outline(frame: &mut [u32], stride: usize, height: usize, rect: PixelRect, color: u32) {
     let x0 = rect.origin.x.max(0) as usize;
     let y0 = rect.origin.y.max(0) as usize;
     let x1 = (rect.right().saturating_sub(1) as usize).min(stride.saturating_sub(1));

@@ -1,10 +1,11 @@
 //! 标注：矩形/箭头/画笔/椭圆/马赛克/文本；颜色与线宽；栅格化到 RGBA。
 
+use std::num::NonZeroU64;
 use std::sync::OnceLock;
 
 use crate::geometry::PixelPoint;
-use crate::image::{CaptureImage, RgbaBuffer};
 use crate::ids::ImageId;
+use crate::image::{CaptureImage, RgbaBuffer};
 
 /// 标注工具。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -478,17 +479,15 @@ fn draw_line(
     buf: &mut [u8],
     w: i32,
     h: i32,
-    x0: i32,
-    y0: i32,
-    x1: i32,
-    y1: i32,
+    from: PixelPoint,
+    to: PixelPoint,
     color: [u8; 4],
     stroke: u32,
 ) {
-    let x0 = x0 as f64;
-    let y0 = y0 as f64;
-    let x1 = x1 as f64;
-    let y1 = y1 as f64;
+    let x0 = from.x as f64;
+    let y0 = from.y as f64;
+    let x1 = to.x as f64;
+    let y1 = to.y as f64;
     let radius = (stroke as f64 * 0.5).max(0.75);
     let aa = 1.0;
     let pad = (radius + aa + 1.0).ceil() as i32;
@@ -543,10 +542,42 @@ fn draw_rect_outline(
     let y0 = a.y.min(b.y);
     let x1 = a.x.max(b.x);
     let y1 = a.y.max(b.y);
-    draw_line(buf, w, h, x0, y0, x1, y0, color, stroke);
-    draw_line(buf, w, h, x1, y0, x1, y1, color, stroke);
-    draw_line(buf, w, h, x1, y1, x0, y1, color, stroke);
-    draw_line(buf, w, h, x0, y1, x0, y0, color, stroke);
+    draw_line(
+        buf,
+        w,
+        h,
+        PixelPoint::new(x0, y0),
+        PixelPoint::new(x1, y0),
+        color,
+        stroke,
+    );
+    draw_line(
+        buf,
+        w,
+        h,
+        PixelPoint::new(x1, y0),
+        PixelPoint::new(x1, y1),
+        color,
+        stroke,
+    );
+    draw_line(
+        buf,
+        w,
+        h,
+        PixelPoint::new(x1, y1),
+        PixelPoint::new(x0, y1),
+        color,
+        stroke,
+    );
+    draw_line(
+        buf,
+        w,
+        h,
+        PixelPoint::new(x0, y1),
+        PixelPoint::new(x0, y0),
+        color,
+        stroke,
+    );
 }
 
 fn draw_polyline(
@@ -563,17 +594,7 @@ fn draw_polyline(
     let r = (stroke as f64 * 0.5).max(0.75);
     stamp_disc(buf, w, h, points[0].x as f64, points[0].y as f64, r, color);
     for win in points.windows(2) {
-        draw_line(
-            buf,
-            w,
-            h,
-            win[0].x,
-            win[0].y,
-            win[1].x,
-            win[1].y,
-            color,
-            stroke,
-        );
+        draw_line(buf, w, h, win[0], win[1], color, stroke);
         stamp_disc(buf, w, h, win[1].x as f64, win[1].y as f64, r, color);
     }
 }
@@ -587,7 +608,7 @@ fn draw_arrow(
     color: [u8; 4],
     stroke: u32,
 ) {
-    draw_line(buf, w, h, from.x, from.y, to.x, to.y, color, stroke);
+    draw_line(buf, w, h, from, to, color, stroke);
     let dx = (to.x - from.x) as f64;
     let dy = (to.y - from.y) as f64;
     let len = (dx * dx + dy * dy).sqrt();
@@ -606,8 +627,8 @@ fn draw_arrow(
     let ly = (by + py * wing).round() as i32;
     let rx = (bx - px * wing).round() as i32;
     let ry = (by - py * wing).round() as i32;
-    draw_line(buf, w, h, to.x, to.y, lx, ly, color, stroke);
-    draw_line(buf, w, h, to.x, to.y, rx, ry, color, stroke);
+    draw_line(buf, w, h, to, PixelPoint::new(lx, ly), color, stroke);
+    draw_line(buf, w, h, to, PixelPoint::new(rx, ry), color, stroke);
     let r = (stroke as f64 * 0.5).max(0.75);
     stamp_disc(buf, w, h, to.x as f64, to.y as f64, r, color);
 }
@@ -699,12 +720,12 @@ fn draw_mosaic(
                     }
                 }
             }
-            if n > 0 {
+            if let Some(sample_count) = NonZeroU64::new(n) {
                 let avg = [
-                    (sum[0] / n) as u8,
-                    (sum[1] / n) as u8,
-                    (sum[2] / n) as u8,
-                    (sum[3] / n) as u8,
+                    (sum[0] / sample_count) as u8,
+                    (sum[1] / sample_count) as u8,
+                    (sum[2] / sample_count) as u8,
+                    (sum[3] / sample_count) as u8,
                 ];
                 for y in by..=ey {
                     for x in bx..=ex {
@@ -749,7 +770,8 @@ fn load_font() -> Option<&'static FontCache> {
         for path in font_candidates() {
             if let Ok(bytes) = std::fs::read(path) {
                 // TTC 可能失败；仅接受可解析字体
-                if let Ok(font) = fontdue::Font::from_bytes(bytes.as_slice(), fontdue::FontSettings::default())
+                if let Ok(font) =
+                    fontdue::Font::from_bytes(bytes.as_slice(), fontdue::FontSettings::default())
                 {
                     return Some(FontCache { font });
                 }
@@ -775,10 +797,11 @@ fn draw_text(
             buf,
             w,
             h,
-            origin.x,
-            origin.y,
-            origin.x + (content.chars().count() as i32 * 8).max(8),
-            origin.y,
+            origin,
+            PixelPoint::new(
+                origin.x + (content.chars().count() as i32 * 8).max(8),
+                origin.y,
+            ),
             color,
             2,
         );

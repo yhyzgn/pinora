@@ -47,10 +47,7 @@ pub struct RgbaBuffer {
 
 impl RgbaBuffer {
     pub fn new(size: PixelSize, bytes: Vec<u8>) -> Result<Self, &'static str> {
-        let expected = size
-            .area()
-            .checked_mul(4)
-            .ok_or("buffer size overflow")?;
+        let expected = size.area().checked_mul(4).ok_or("buffer size overflow")?;
         if bytes.len() as u64 != expected {
             return Err("rgba byte length does not match size");
         }
@@ -154,13 +151,8 @@ mod tests {
     fn capture_image_requires_matching_rect() {
         let pixels = RgbaBuffer::solid(PixelSize::new(10, 10), [255, 0, 0, 255]);
         let meta = CaptureMetadata::new(DisplayId::new("display-0"), 1.0, 0);
-        let err = CaptureImage::new(
-            ImageId::new(),
-            pixels,
-            PixelRect::new(0, 0, 5, 5),
-            meta,
-        )
-        .unwrap_err();
+        let err = CaptureImage::new(ImageId::new(), pixels, PixelRect::new(0, 0, 5, 5), meta)
+            .unwrap_err();
         assert!(err.contains("source_rect"));
     }
 
@@ -185,9 +177,7 @@ mod tests {
             CaptureMetadata::new(DisplayId::new("d0"), 1.0, 0),
         )
         .unwrap();
-        let cropped = image
-            .crop_local(PixelRect::new(1, 0, 1, 1))
-            .unwrap();
+        let cropped = image.crop_local(PixelRect::new(1, 0, 1, 1)).unwrap();
         assert_eq!(cropped.size(), PixelSize::new(1, 1));
         assert_eq!(cropped.pixels.bytes[0], 2);
         assert_eq!(cropped.source_rect, PixelRect::new(101, 200, 1, 1));

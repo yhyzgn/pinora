@@ -10,9 +10,15 @@ use crate::pin::PinTransform;
 /// 用户或系统意图。命令可以失败；成功后应产生对应领域事件。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
-    Bootstrap { correlation_id: CorrelationId },
-    Activate { correlation_id: CorrelationId },
-    Shutdown { correlation_id: CorrelationId },
+    Bootstrap {
+        correlation_id: CorrelationId,
+    },
+    Activate {
+        correlation_id: CorrelationId,
+    },
+    Shutdown {
+        correlation_id: CorrelationId,
+    },
     Capture {
         correlation_id: CorrelationId,
         request: CaptureRequest,

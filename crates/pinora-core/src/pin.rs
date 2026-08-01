@@ -90,8 +90,8 @@ impl Pin {
 mod tests {
     use super::*;
     use crate::geometry::{PixelRect, PixelSize};
-    use crate::image::{CaptureMetadata, DisplayId, RgbaBuffer};
     use crate::ids::ImageId;
+    use crate::image::{CaptureMetadata, DisplayId, RgbaBuffer};
 
     fn sample_image() -> CaptureImage {
         let pixels = RgbaBuffer::solid(PixelSize::new(20, 10), [0, 0, 0, 255]);

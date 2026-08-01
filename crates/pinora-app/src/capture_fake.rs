@@ -3,8 +3,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use pinora_core::{
-    resolve_capture_rect, CaptureImage, CaptureMetadata, CaptureProvider, CaptureRequest,
-    DisplayId, DisplayInfo, ImageId, PixelRect, PinoraError, RgbaBuffer,
+    CaptureImage, CaptureMetadata, CaptureProvider, CaptureRequest, DisplayId, DisplayInfo,
+    ImageId, PinoraError, PixelRect, RgbaBuffer, resolve_capture_rect,
 };
 
 /// 提供单个 1920×1080 虚拟显示器，区域捕获返回纯色 RGBA。

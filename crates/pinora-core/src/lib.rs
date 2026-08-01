@@ -4,6 +4,7 @@
 
 mod action;
 mod annotate;
+mod asset;
 mod capture;
 mod command;
 mod error;
@@ -12,6 +13,7 @@ mod export;
 mod geometry;
 mod ids;
 mod image;
+mod job;
 mod ocr;
 mod pin;
 mod selection;
@@ -19,22 +21,23 @@ mod state;
 
 pub use action::{ActionId, KeyBinding};
 pub use annotate::{
-    bake_annotations, render_preview_rgba, AnnotateSession, AnnotateTool, Annotation,
-    AnnotationDoc, DraftShape, DEFAULT_STROKE, DEFAULT_WIDTH, MAX_STROKE, MIN_STROKE,
-    STROKE_PALETTE,
+    AnnotateSession, AnnotateTool, Annotation, AnnotationDoc, DEFAULT_STROKE, DEFAULT_WIDTH,
+    DraftShape, MAX_STROKE, MIN_STROKE, STROKE_PALETTE, bake_annotations, render_preview_rgba,
 };
-pub use capture::{resolve_capture_rect, CaptureProvider, CaptureRequest, DisplayInfo};
+pub use asset::{AssetGeneration, AssetRef};
+pub use capture::{CaptureProvider, CaptureRequest, DisplayInfo, resolve_capture_rect};
 pub use command::Command;
 pub use error::{ErrorCode, PinoraError};
 pub use event::{DomainEvent, DomainEventKind, EventEnvelope};
 pub use export::ImageSink;
 pub use geometry::{PixelPoint, PixelRect, PixelSize};
-pub use ids::{CorrelationId, EventId, ImageId, PinId};
+pub use ids::{CorrelationId, EventId, ImageId, JobId, PinId, SessionId};
 pub use image::{CaptureImage, CaptureMetadata, DisplayId, RgbaBuffer};
-pub use ocr::{join_lines_text, union_bboxes, OcrLine, OcrResult, OcrWord};
+pub use job::{JobKind, JobOwner, JobResultRef, JobSpec, JobTerminalState};
+pub use ocr::{OcrLine, OcrResult, OcrWord, join_lines_text, union_bboxes};
 pub use pin::{Pin, PinMode, PinTransform};
 pub use selection::{
-    clamp_to_image, normalize_rect, validate_min_size, SelectionOutcome, SelectionSession,
-    MIN_SELECTION_EDGE,
+    MIN_SELECTION_EDGE, SelectionOutcome, SelectionSession, clamp_to_image, normalize_rect,
+    validate_min_size,
 };
 pub use state::{AppPhase, AppState, CapabilitySnapshot};

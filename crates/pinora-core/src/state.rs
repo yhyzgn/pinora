@@ -115,10 +115,7 @@ impl AppState {
             ));
         }
         let image = self.image(image_id).cloned().ok_or_else(|| {
-            PinoraError::new(
-                ErrorCode::NotFound,
-                format!("image not found: {image_id}"),
-            )
+            PinoraError::new(ErrorCode::NotFound, format!("image not found: {image_id}"))
         })?;
         let pin = Pin::from_capture(&image, position);
         let id = pin.id;
@@ -148,9 +145,9 @@ impl AppState {
         id: PinId,
         transform: PinTransform,
     ) -> Result<(), PinoraError> {
-        let pin = self.pin_mut(id).ok_or_else(|| {
-            PinoraError::new(ErrorCode::NotFound, format!("pin not found: {id}"))
-        })?;
+        let pin = self
+            .pin_mut(id)
+            .ok_or_else(|| PinoraError::new(ErrorCode::NotFound, format!("pin not found: {id}")))?;
         if pin.locked {
             return Err(PinoraError::new(
                 ErrorCode::CommandRejected,

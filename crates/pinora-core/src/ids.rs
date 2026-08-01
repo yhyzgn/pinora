@@ -17,10 +17,20 @@ pub struct ImageId(u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PinId(u64);
 
+/// 捕获、编辑或临时交互会话标识。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SessionId(u64);
+
+/// 受监督后台任务标识。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct JobId(u64);
+
 static NEXT_CORRELATION: AtomicU64 = AtomicU64::new(1);
 static NEXT_EVENT: AtomicU64 = AtomicU64::new(1);
 static NEXT_IMAGE: AtomicU64 = AtomicU64::new(1);
 static NEXT_PIN: AtomicU64 = AtomicU64::new(1);
+static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
+static NEXT_JOB: AtomicU64 = AtomicU64::new(1);
 
 macro_rules! id_impl {
     ($name:ident, $counter:ident, $prefix:literal) => {
@@ -56,6 +66,8 @@ id_impl!(CorrelationId, NEXT_CORRELATION, "corr");
 id_impl!(EventId, NEXT_EVENT, "evt");
 id_impl!(ImageId, NEXT_IMAGE, "img");
 id_impl!(PinId, NEXT_PIN, "pin");
+id_impl!(SessionId, NEXT_SESSION, "session");
+id_impl!(JobId, NEXT_JOB, "job");
 
 #[cfg(test)]
 mod tests {
@@ -80,5 +92,15 @@ mod tests {
         let p1 = PinId::new();
         let p2 = PinId::new();
         assert_ne!(p1, p2);
+
+        let s1 = SessionId::new();
+        let s2 = SessionId::new();
+        assert_ne!(s1, s2);
+        assert!(s2.raw() > s1.raw());
+
+        let j1 = JobId::new();
+        let j2 = JobId::new();
+        assert_ne!(j1, j2);
+        assert!(j2.raw() > j1.raw());
     }
 }

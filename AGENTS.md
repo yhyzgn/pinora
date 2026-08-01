@@ -65,9 +65,27 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/015_overlay_toolbar.md`
-- 任务：`.context/tasks/015_overlay_toolbar.md`
+- 计划：`.context/plans/029_worker_shutdown_convergence.md`
+- 任务：`.context/tasks/029_worker_shutdown_convergence.md`
 
 ## 交付要求
 
 每个任务必须包含范围、非目标、预期文件、验收标准、验证、风险与回滚、完成记录。报告必须区分已验证事实、推断和未知项。
+
+
+<claude-mem-context>
+# Memory Context
+
+# claude-mem status
+
+This project has no memory yet. The current session will seed it; subsequent sessions will receive auto-injected context for relevant past work.
+
+Memory injection starts on your second session in a project.
+
+`/learn-codebase` is available if the user wants to front-load the entire repo into memory in a single pass (~5 minutes on a typical repo, optional). Otherwise memory builds passively as work happens.
+
+Live activity: http://localhost:37777
+How it works: `/how-it-works`
+
+This message disappears once the first observation lands.
+</claude-mem-context>

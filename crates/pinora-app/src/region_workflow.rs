@@ -22,7 +22,10 @@ pub fn capture_region_interactive(
 ) -> Result<Option<RegionCaptureResult>, PinoraError> {
     let displays = capture.displays()?;
     let display = select_primary(&displays).ok_or_else(|| {
-        PinoraError::new(ErrorCode::NotFound, "no display available for region capture")
+        PinoraError::new(
+            ErrorCode::NotFound,
+            "no display available for region capture",
+        )
     })?;
 
     println!(

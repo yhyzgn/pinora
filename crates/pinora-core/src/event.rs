@@ -12,31 +12,13 @@ pub enum DomainEventKind {
     AppActivated,
     AppShuttingDown,
     AppStopped,
-    CaptureCompleted {
-        image_id: ImageId,
-        size: PixelSize,
-    },
-    PinCreated {
-        pin_id: PinId,
-        image_id: ImageId,
-    },
-    PinClosed {
-        pin_id: PinId,
-    },
-    PinUpdated {
-        pin_id: PinId,
-    },
-    ImageSaved {
-        image_id: ImageId,
-        path: PathBuf,
-    },
-    ImageCopied {
-        image_id: ImageId,
-    },
-    CommandFailed {
-        code: ErrorCode,
-        message: String,
-    },
+    CaptureCompleted { image_id: ImageId, size: PixelSize },
+    PinCreated { pin_id: PinId, image_id: ImageId },
+    PinClosed { pin_id: PinId },
+    PinUpdated { pin_id: PinId },
+    ImageSaved { image_id: ImageId, path: PathBuf },
+    ImageCopied { image_id: ImageId },
+    CommandFailed { code: ErrorCode, message: String },
 }
 
 /// 领域事件载荷（不含像素、OCR 全文或凭据）。

@@ -28,9 +28,7 @@ pub fn place_window_by_title(
         if let Err(e) = place_once(&title, x, y, width, height) {
             eprintln!("pinora: kwin place failed: {e}");
         } else {
-            println!(
-                "pinora: kwin place '{title}' → ({x},{y}) {width}x{height}"
-            );
+            println!("pinora: kwin place '{title}' → ({x},{y}) {width}x{height}");
         }
         // 再钉一次，防止 configure 竞态
         thread::sleep(Duration::from_millis(80));
@@ -56,9 +54,7 @@ pub fn place_window_by_title_sync(
             Ok(()) => {
                 // 紧接再钉一次，压住合成器回弹
                 let _ = place_once(title_substr, x, y, width, height);
-                println!(
-                    "pinora: kwin place sync '{title_substr}' → ({x},{y}) {width}x{height}"
-                );
+                println!("pinora: kwin place sync '{title_substr}' → ({x},{y}) {width}x{height}");
                 return Ok(());
             }
             Err(e) => last_err = e,
@@ -128,13 +124,7 @@ for (var i = 0; i < list.length; ++i) {{
     // 输出形如: i 3
     let script_id = parse_script_id(&out).unwrap_or(0);
     let obj = format!("/Scripting/Script{script_id}");
-    busctl(&[
-        "call",
-        "org.kde.KWin",
-        &obj,
-        "org.kde.kwin.Script",
-        "run",
-    ])?;
+    busctl(&["call", "org.kde.KWin", &obj, "org.kde.kwin.Script", "run"])?;
 
     let _ = busctl(&[
         "call",
@@ -168,8 +158,7 @@ fn escape_js(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('\'', "\\'")
-        .replace('\n', " ")
-        .replace('\r', " ")
+        .replace(['\n', '\r'], " ")
 }
 
 fn parse_script_id(busctl_out: &str) -> Option<u32> {

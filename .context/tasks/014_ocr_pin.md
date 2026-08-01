@@ -20,6 +20,12 @@
 
 - 拖选编辑器、模型下载、设置 UI、OCR 全局热键
 
+## 预期文件
+
+- `crates/pinora-core/src/ocr.rs`。
+- `crates/pinora-app/src/ocr.rs`、贴图交互和文本剪贴板适配。
+- 对应 `.context` 计划、任务和系统说明。
+
 ## 验收标准
 
 - 有 tesseract 时：`O` 得到非空文本并可复制（样例图）
@@ -31,6 +37,11 @@
 - `cargo test --workspace`
 - 单元：TSV 解析、全文拼接
 - 可选：安装 tesseract 后手动贴图按 O
+
+## 风险与回滚
+
+- Tesseract CLI、语言模型和系统剪贴板都属于本机外部依赖；失败必须降级并记录。
+- 回滚时移除贴图 OCR 入口并保留纯 OCR 数据模型与 TSV 测试，避免影响截图/贴图主路径。
 
 ## 完成记录
 

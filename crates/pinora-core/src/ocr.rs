@@ -42,7 +42,11 @@ pub struct OcrResult {
 }
 
 impl OcrResult {
-    pub fn from_lines(lines: Vec<OcrLine>, languages: Vec<String>, engine: impl Into<String>) -> Self {
+    pub fn from_lines(
+        lines: Vec<OcrLine>,
+        languages: Vec<String>,
+        engine: impl Into<String>,
+    ) -> Self {
         let full_text = join_lines_text(&lines);
         Self {
             lines,
@@ -130,10 +134,7 @@ mod tests {
 
     #[test]
     fn union_bboxes_works() {
-        let u = union_bboxes([
-            PixelRect::new(1, 2, 3, 4),
-            PixelRect::new(5, 1, 2, 2),
-        ]);
+        let u = union_bboxes([PixelRect::new(1, 2, 3, 4), PixelRect::new(5, 1, 2, 2)]);
         assert_eq!(u.origin.x, 1);
         assert_eq!(u.origin.y, 1);
         assert_eq!(u.right(), 7);

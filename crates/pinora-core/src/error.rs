@@ -12,6 +12,9 @@ pub enum ErrorCode {
     PermissionDenied,
     RetryablePlatform,
     CommandRejected,
+    Cancelled,
+    TimedOut,
+    ResourceLimitExceeded,
     Internal,
 }
 
@@ -27,6 +30,9 @@ impl ErrorCode {
             Self::PermissionDenied => "permission_denied",
             Self::RetryablePlatform => "retryable_platform",
             Self::CommandRejected => "command_rejected",
+            Self::Cancelled => "cancelled",
+            Self::TimedOut => "timed_out",
+            Self::ResourceLimitExceeded => "resource_limit_exceeded",
             Self::Internal => "internal",
         }
     }
@@ -70,5 +76,11 @@ mod tests {
     fn error_codes_have_stable_strings() {
         assert_eq!(ErrorCode::AlreadyRunning.as_str(), "already_running");
         assert_eq!(ErrorCode::PermissionDenied.as_str(), "permission_denied");
+        assert_eq!(ErrorCode::Cancelled.as_str(), "cancelled");
+        assert_eq!(ErrorCode::TimedOut.as_str(), "timed_out");
+        assert_eq!(
+            ErrorCode::ResourceLimitExceeded.as_str(),
+            "resource_limit_exceeded"
+        );
     }
 }

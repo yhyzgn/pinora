@@ -6,25 +6,31 @@
 
 use std::collections::HashMap;
 use std::num::NonZeroU32;
+use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{
+    OnceLock,
+    mpsc::{self, Receiver, TryRecvError},
+};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use pinora_core::{
-    bake_annotations, render_preview_rgba, ActionId, AnnotateSession, AnnotateTool, CaptureImage,
-    CaptureProvider, CaptureRequest, Command, DisplayId, DomainEventKind, ErrorCode, ImageSink,
-    OcrResult, PinId, PinTransform, PinoraError, PixelPoint, PixelRect, SelectionSession,
-};
-use crate::frame_cache::{rgba_to_xrgb_and_dim, FrameCache};
+use crate::export_job::{ExportJobCompletion, ExportJobInput, ExportJobService};
+use crate::frame_cache::{FrameCache, rgba_to_xrgb_and_dim};
 use crate::hotkey::GlobalHotkeyHub;
-use crate::image_sink::copy_text_to_system_clipboard;
-use crate::ocr::{recognize_image, tesseract_available};
+use crate::ocr::tesseract_available;
+use crate::ocr_job::{OcrJobCompletion, OcrJobService};
 use crate::overlay_toolbar::{
-    hit_test as toolbar_hit, layout_toolbar, paint_toolbar, toolbar_bounds, ToolbarAction,
-    ToolbarButton,
+    ToolbarAction, ToolbarButton, hit_test as toolbar_hit, layout_toolbar, paint_toolbar,
+    toolbar_bounds,
 };
 use crate::tray::{AppTray, TrayAction};
+use pinora_core::{
+    ActionId, AnnotateSession, AnnotateTool, AssetRef, CaptureImage, CaptureProvider,
+    CaptureRequest, Command, CorrelationId, DisplayId, DomainEventKind, ErrorCode, ImageSink,
+    JobId, JobKind, JobOwner, JobSpec, OcrResult, PinId, PinTransform, PinoraError, PixelPoint,
+    PixelRect, SelectionSession, SessionId, bake_annotations, render_preview_rgba,
+};
 use softbuffer::{Context, Rect as DamageRect, Surface};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -39,20 +45,38 @@ use crate::runtime::AppRuntime;
 use crate::single_instance::SingleInstance;
 
 const MIN_FRAME_INTERVAL: Duration = Duration::from_micros(16_666);
+const OCR_JOB_TIMEOUT_MS: u64 = 30_000;
+const EXPORT_JOB_TIMEOUT_MS: u64 = 30_000;
+
+fn monotonic_ms() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START
+        .get_or_init(Instant::now)
+        .elapsed()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
+}
+
+fn pending_asset_for_owner(
+    pending_assets: &HashMap<JobId, (JobOwner, AssetRef)>,
+    job_id: JobId,
+    owner: JobOwner,
+) -> Option<AssetRef> {
+    pending_assets
+        .get(&job_id)
+        .and_then(|(pending_owner, asset)| (*pending_owner == owner).then_some(*asset))
+}
 
 /// 运行统一桌面 shell（阻塞直到退出）。
-pub fn run_desktop_shell<L, P, C, S>(
-    runtime: AppRuntime<L, P, C, S>,
-) -> Result<(), PinoraError>
+pub fn run_desktop_shell<L, P, C, S>(runtime: AppRuntime<L, P, C, S>) -> Result<(), PinoraError>
 where
     L: SingleInstance + 'static,
     P: CapabilityProbe + 'static,
     C: CaptureProvider + Clone + Send + 'static,
     S: ImageSink + 'static,
 {
-    let event_loop = EventLoop::new().map_err(|e| {
-        PinoraError::new(ErrorCode::Internal, format!("desktop event loop: {e}"))
-    })?;
+    let event_loop = EventLoop::new()
+        .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("desktop event loop: {e}")))?;
 
     let hotkeys = GlobalHotkeyHub::start();
     for note in &hotkeys.status().notes {
@@ -96,6 +120,9 @@ where
         pending_messages: Vec::new(),
         hotkeys,
         frame_cache: Some(frame_cache),
+        ocr_jobs: OcrJobService::new(),
+        export_jobs: ExportJobService::new(),
+        pending_exports: HashMap::new(),
         start_capture_wait: None,
         tray,
     };
@@ -104,6 +131,19 @@ where
         .run_app(&mut app)
         .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("desktop loop: {e}")))?;
 
+    let ocr_shutdown = app.ocr_jobs.cancel_all_and_wait(Duration::from_secs(2));
+    println!(
+        "pinora: OCR shutdown cancelled={} joined={} panicked={} unfinished={}",
+        ocr_shutdown.cancelled, ocr_shutdown.joined, ocr_shutdown.panicked, ocr_shutdown.unfinished
+    );
+    let export_shutdown = app.export_jobs.cancel_all_and_wait(Duration::from_secs(2));
+    println!(
+        "pinora: export shutdown cancelled={} joined={} panicked={} unfinished={}",
+        export_shutdown.cancelled,
+        export_shutdown.joined,
+        export_shutdown.panicked,
+        export_shutdown.unfinished
+    );
     if let Some(err) = app.error {
         return Err(err);
     }
@@ -161,10 +201,24 @@ enum OverlayFinish {
     Save,
 }
 
+#[derive(Debug)]
+enum PendingExportAction {
+    SavePng(PathBuf),
+    CopyImage,
+    CopyText,
+}
+
+#[derive(Debug)]
+struct PendingExport {
+    owner: JobOwner,
+    asset: AssetRef,
+    action: PendingExportAction,
+}
+
 struct OverlayState {
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
-        /// 选区外：真实桌面暗化（与截图 1:1 像素）。
+    /// 选区外：真实桌面暗化（与截图 1:1 像素）。
     dimmed: Vec<u32>,
     /// 选区内：真实桌面原图。
     base: Vec<u32>,
@@ -213,11 +267,14 @@ struct OverlayState {
     display_id: DisplayId,
     display_origin: PixelPoint,
     full_image: CaptureImage,
+    session_id: SessionId,
+    ocr_asset: Option<AssetRef>,
 }
 
 struct PinWin {
     pin_id: PinId,
     image: CaptureImage,
+    asset: AssetRef,
     pixels_xrgb: Vec<u32>,
     scale: f64,
     opacity: f64,
@@ -229,7 +286,6 @@ struct PinWin {
     /// 是否绘制 OCR 词框。
     ocr_show_boxes: bool,
 }
-
 
 struct DesktopApp<L, P, C, S> {
     runtime: Option<AppRuntime<L, P, C, S>>,
@@ -247,6 +303,9 @@ struct DesktopApp<L, P, C, S> {
     pending_messages: Vec<String>,
     hotkeys: GlobalHotkeyHub,
     frame_cache: Option<FrameCache>,
+    ocr_jobs: OcrJobService,
+    export_jobs: ExportJobService,
+    pending_exports: HashMap<JobId, PendingExport>,
     /// 等待 frame-cache 首帧的起始时间；超时走 cold path。
     start_capture_wait: Option<Instant>,
     tray: Option<AppTray>,
@@ -289,6 +348,8 @@ where
 
         // 单实例 socket 转发 + 全局热键
         self.poll_external_actions(event_loop);
+        self.poll_ocr_jobs();
+        self.poll_export_jobs();
 
         for msg in self.pending_messages.drain(..) {
             println!("{msg}");
@@ -315,22 +376,21 @@ where
         }
 
         // Overlay 帧合并
-        if let Some(ov) = self.overlay.as_mut() {
-            if ov.needs_redraw {
-                let elapsed = ov.last_present.elapsed();
-                if elapsed >= MIN_FRAME_INTERVAL {
-                    ov.needs_redraw = false;
-                    ov.window.request_redraw();
-                    event_loop.set_control_flow(ControlFlow::Wait);
-                } else {
-                    event_loop.set_control_flow(ControlFlow::WaitUntil(
-                        Instant::now() + (MIN_FRAME_INTERVAL - elapsed),
-                    ));
-                }
-                return;
+        if let Some(ov) = self.overlay.as_mut()
+            && ov.needs_redraw
+        {
+            let elapsed = ov.last_present.elapsed();
+            if elapsed >= MIN_FRAME_INTERVAL {
+                ov.needs_redraw = false;
+                ov.window.request_redraw();
+                event_loop.set_control_flow(ControlFlow::Wait);
+            } else {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(
+                    Instant::now() + (MIN_FRAME_INTERVAL - elapsed),
+                ));
             }
+            return;
         }
-
 
         // 启动/再截：优先等 frame-cache 出帧再弹 overlay（瞬时）
         if matches!(self.mode, Mode::StartCapture)
@@ -372,17 +432,17 @@ where
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        if let Some(control) = self.control.as_ref() {
-            if control.window.id() == window_id {
-                self.handle_control_event(event_loop, event);
-                return;
-            }
+        if let Some(control) = self.control.as_ref()
+            && control.window.id() == window_id
+        {
+            self.handle_control_event(event_loop, event);
+            return;
         }
-        if let Some(ov) = self.overlay.as_ref() {
-            if ov.window.id() == window_id {
-                self.handle_overlay_event(event_loop, event);
-                return;
-            }
+        if let Some(ov) = self.overlay.as_ref()
+            && ov.window.id() == window_id
+        {
+            self.handle_overlay_event(event_loop, event);
+            return;
         }
         self.handle_pin_event(event_loop, window_id, event);
     }
@@ -461,21 +521,21 @@ where
                     return;
                 }
                 Command::Activate { .. } => {
-                    if let Some(rt) = self.runtime.as_mut() {
-                        if let Ok(_) = rt.dispatch(command) {
-                            self.pending_messages.push(format!(
-                                "pinora: activated (count={})",
-                                rt.state().activation_count
-                            ));
-                        }
+                    if let Some(rt) = self.runtime.as_mut()
+                        && rt.dispatch(command).is_ok()
+                    {
+                        self.pending_messages.push(format!(
+                            "pinora: activated (count={})",
+                            rt.state().activation_count
+                        ));
                     }
                     need_capture = true;
                 }
                 other => {
-                    if let Some(rt) = self.runtime.as_mut() {
-                        if let Err(e) = rt.dispatch(other) {
-                            eprintln!("pinora: forwarded command failed: {e}");
-                        }
+                    if let Some(rt) = self.runtime.as_mut()
+                        && let Err(e) = rt.dispatch(other)
+                    {
+                        eprintln!("pinora: forwarded command failed: {e}");
                     }
                 }
             }
@@ -494,11 +554,7 @@ where
             self.start_capture_wait = None;
             return;
         }
-        let cache_ready = self
-            .frame_cache
-            .as_ref()
-            .and_then(|c| c.peek())
-            .is_some();
+        let cache_ready = self.frame_cache.as_ref().and_then(|c| c.peek()).is_some();
         if !cache_ready {
             if let Some(cache) = &self.frame_cache {
                 cache.resume();
@@ -530,34 +586,31 @@ where
 
         // 1) 缓存命中 → 立刻开 overlay（目标 < 16ms）
         // 允许最多 2s 龄的帧；后台约每 0.5s 刷新一轮
-        if let Some(cache) = &self.frame_cache {
-            if let Some(frame) = cache
+        if let Some(cache) = &self.frame_cache
+            && let Some(frame) = cache
                 .take_if_fresh(Duration::from_secs(2))
                 .or_else(|| cache.take_any())
-            {
-                let age_ms = frame.age().as_secs_f64() * 1000.0;
-                println!(
-                    "pinora: overlay INSTANT from cache (age {:.0}ms, {}x{})",
-                    age_ms,
-                    frame.image.pixels.size.width,
-                    frame.image.pixels.size.height
-                );
-                let prep = PreparedPreview {
-                    image: frame.image,
-                    base: frame.base,
-                    dimmed: frame.dimmed,
-                };
-                let img_w = prep.image.pixels.size.width.max(1);
-                let img_h = prep.image.pixels.size.height.max(1);
-                return self.open_overlay_with_preview(
-                    event_loop,
-                    prep,
-                    frame.display_id,
-                    frame.display_origin,
-                    img_w,
-                    img_h,
-                );
-            }
+        {
+            let age_ms = frame.age().as_secs_f64() * 1000.0;
+            println!(
+                "pinora: overlay INSTANT from cache (age {:.0}ms, {}x{})",
+                age_ms, frame.image.pixels.size.width, frame.image.pixels.size.height
+            );
+            let prep = PreparedPreview {
+                image: frame.image,
+                base: frame.base,
+                dimmed: frame.dimmed,
+            };
+            let img_w = prep.image.pixels.size.width.max(1);
+            let img_h = prep.image.pixels.size.height.max(1);
+            return self.open_overlay_with_preview(
+                event_loop,
+                prep,
+                frame.display_id,
+                frame.display_origin,
+                img_w,
+                img_h,
+            );
         }
 
         // 2) 缓存未就绪（刚启动）：同步等待路径
@@ -621,7 +674,7 @@ where
         self.ensure_context(event_loop);
         if let Some(control) = self.control.as_ref() {
             control.window.set_visible(true);
-            let _ = control.window.focus_window();
+            control.window.focus_window();
             return Ok(());
         }
         let attrs = Window::default_attributes()
@@ -631,11 +684,11 @@ where
             .with_resizable(false)
             .with_window_level(WindowLevel::AlwaysOnTop)
             .with_visible(true);
-        let window = event_loop.create_window(attrs).map_err(|e| {
-            PinoraError::new(ErrorCode::Internal, format!("control window: {e}"))
-        })?;
+        let window = event_loop
+            .create_window(attrs)
+            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("control window: {e}")))?;
         let window = Rc::new(window);
-        let _ = window.focus_window();
+        window.focus_window();
         self.control = Some(ControlState { window });
         println!("pinora: idle — focus control window, then F2/Ctrl+N to capture");
         Ok(())
@@ -665,7 +718,7 @@ where
                 } else if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
                     // Esc 在控制窗：若有贴图则聚焦贴图，否则退出
                     if let Some(pin) = self.pins.values().next() {
-                        let _ = pin.window.focus_window();
+                        pin.window.focus_window();
                     } else {
                         self.quit = true;
                         event_loop.exit();
@@ -679,6 +732,9 @@ where
     /// 任意模式触发再截：立刻关 overlay/loading，开新一轮 grab。
     fn request_new_capture(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(ov) = self.overlay.take() {
+            self.ocr_jobs.close_owner(JobOwner::Session(ov.session_id));
+            self.export_jobs
+                .close_owner(JobOwner::Session(ov.session_id));
             ov.window.set_visible(false);
         }
         let _ = self.loading.take();
@@ -697,14 +753,11 @@ where
         self.resume_frame_cache();
         println!("pinora: capture cancelled (F2/Ctrl+N 再截，Ctrl+Q 退出)");
         if let Some(pin) = self.pins.values().next() {
-            let _ = pin.window.focus_window();
+            pin.window.focus_window();
         }
     }
 
-    fn poll_loading_to_overlay(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-    ) -> Result<(), PinoraError> {
+    fn poll_loading_to_overlay(&mut self, event_loop: &ActiveEventLoop) -> Result<(), PinoraError> {
         let Some(loading) = self.loading.as_ref() else {
             return Ok(());
         };
@@ -773,11 +826,10 @@ where
             .create_window(attrs)
             .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("overlay window: {e}")))?;
         let window = Rc::new(window);
-        let _ = window.focus_window();
+        window.focus_window();
 
-        let mut surface = Surface::new(context, window.clone()).map_err(|e| {
-            PinoraError::new(ErrorCode::Internal, format!("overlay surface: {e}"))
-        })?;
+        let mut surface = Surface::new(context, window.clone())
+            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("overlay surface: {e}")))?;
 
         // 1:1 原图像素显示（不降采样，避免全屏发糊）。
         // softbuffer 固定为截图尺寸；禁止跟窗口 resize 走（否则会整屏 scale 卡死）。
@@ -846,6 +898,8 @@ where
             display_id,
             display_origin,
             full_image: prep.image,
+            session_id: SessionId::new(),
+            ocr_asset: None,
         });
         self.mode = Mode::Idle;
         window.request_redraw();
@@ -854,17 +908,17 @@ where
 
     fn handle_overlay_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
         // 先处理会拿走整个 overlay 的全局键，避免与 ov 可变借用冲突
-        if let WindowEvent::KeyboardInput { event: ref key, .. } = event {
-            if key.state.is_pressed() {
-                if self.is_quit_key(key) {
-                    self.quit = true;
-                    event_loop.exit();
-                    return;
-                }
-                if self.is_new_capture_key(key) {
-                    self.request_new_capture(event_loop);
-                    return;
-                }
+        if let WindowEvent::KeyboardInput { event: ref key, .. } = event
+            && key.state.is_pressed()
+        {
+            if self.is_quit_key(key) {
+                self.quit = true;
+                event_loop.exit();
+                return;
+            }
+            if self.is_new_capture_key(key) {
+                self.request_new_capture(event_loop);
+                return;
             }
         }
 
@@ -877,26 +931,26 @@ where
             WindowEvent::KeyboardInput { event: key, .. } if key.state.is_pressed() => {
                 if matches!(key.logical_key, Key::Named(NamedKey::Escape)) {
                     // 有草稿先取消草稿，否则关 overlay
-                    if let Some(ov) = self.overlay.as_mut() {
-                        if ov.annotate.draft.is_some() {
-                            ov.annotate.cancel_draft();
-                            ov.annotate_dragging = false;
-                            ov.needs_redraw = true;
-                            return;
-                        }
+                    if let Some(ov) = self.overlay.as_mut()
+                        && ov.annotate.draft.is_some()
+                    {
+                        ov.annotate.cancel_draft();
+                        ov.annotate_dragging = false;
+                        ov.needs_redraw = true;
+                        return;
                     }
                     self.cancel_overlay();
                     return;
                 }
                 if matches!(key.logical_key, Key::Named(NamedKey::Enter)) {
                     // 文本草稿：先提交文字；Ctrl+Enter 同样。裸 Enter 贴图。
-                    if let Some(ov) = self.overlay.as_mut() {
-                        if ov.annotate.is_text_editing() {
-                            ov.annotate.commit();
-                            ov.needs_redraw = true;
-                            println!("pinora: text committed on overlay");
-                            return;
-                        }
+                    if let Some(ov) = self.overlay.as_mut()
+                        && ov.annotate.is_text_editing()
+                    {
+                        ov.annotate.commit();
+                        ov.needs_redraw = true;
+                        println!("pinora: text committed on overlay");
+                        return;
                     }
                     if let Err(e) = self.finish_overlay_action(event_loop, OverlayFinish::Pin) {
                         eprintln!("pinora: pin failed: {e}");
@@ -904,12 +958,12 @@ where
                     return;
                 }
                 if matches!(key.logical_key, Key::Named(NamedKey::Space)) {
-                    if let Some(ov) = self.overlay.as_mut() {
-                        if ov.annotate.is_text_editing() {
-                            ov.annotate.text_push(" ");
-                            ov.needs_redraw = true;
-                            return;
-                        }
+                    if let Some(ov) = self.overlay.as_mut()
+                        && ov.annotate.is_text_editing()
+                    {
+                        ov.annotate.text_push(" ");
+                        ov.needs_redraw = true;
+                        return;
                     }
                     if let Err(e) = self.finish_overlay_action(event_loop, OverlayFinish::Pin) {
                         eprintln!("pinora: pin failed: {e}");
@@ -928,14 +982,13 @@ where
             WindowEvent::ModifiersChanged(m) => {
                 self.modifiers = m.state();
             }
-            WindowEvent::Ime(Ime::Commit(text)) => {
+            WindowEvent::Ime(Ime::Commit(text))
                 if ov.phase == OverlayPhase::Ready
                     && ov.annotate.is_text_editing()
-                    && !text.is_empty()
-                {
-                    ov.annotate.text_push(&text);
-                    ov.needs_redraw = true;
-                }
+                    && !text.is_empty() =>
+            {
+                ov.annotate.text_push(&text);
+                ov.needs_redraw = true;
             }
             WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {
                 let modifiers = self.modifiers;
@@ -962,12 +1015,7 @@ where
                     return;
                 };
                 ov.last_cursor = window_to_image(
-                    position.x,
-                    position.y,
-                    ov.win_w,
-                    ov.win_h,
-                    ov.buf_w,
-                    ov.buf_h,
+                    position.x, position.y, ov.win_w, ov.win_h, ov.buf_w, ov.buf_h,
                 );
                 if ov.dragging {
                     let p = ov.last_cursor;
@@ -994,18 +1042,20 @@ where
                         // 拖选节流：小抖动不重绘，降低 4K 调试下事件风暴
                         let dx = (p.x - ov.last_draw_cursor.x).abs();
                         let dy = (p.y - ov.last_draw_cursor.y).abs();
-                        if dx >= 2 || dy >= 2 || ov.last_present.elapsed() >= Duration::from_millis(32)
+                        if dx >= 2
+                            || dy >= 2
+                            || ov.last_present.elapsed() >= Duration::from_millis(32)
                         {
                             ov.last_draw_cursor = p;
                             ov.needs_redraw = true;
                         }
                     }
-                } else if ov.annotate_dragging {
-                    if let Some(local) = overlay_annotate_local(ov, ov.last_cursor) {
-                        ov.annotate.drag(local);
-                        ov.annotate_dirty = true;
-                        ov.needs_redraw = true;
-                    }
+                } else if ov.annotate_dragging
+                    && let Some(local) = overlay_annotate_local(ov, ov.last_cursor)
+                {
+                    ov.annotate.drag(local);
+                    ov.annotate_dirty = true;
+                    ov.needs_redraw = true;
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -1026,8 +1076,6 @@ where
             _ => {}
         }
     }
-
-
 
     fn handle_overlay_left(&mut self, event_loop: &ActiveEventLoop, state: ElementState) {
         match state {
@@ -1061,35 +1109,33 @@ where
                 }
 
                 // 2) 选区内：双击复制 / 标注
-                if ov.phase == OverlayPhase::Ready {
-                    if let Ok(sel) = ov.session.try_confirm() {
-                        if sel.contains_point(p) {
-                            let now = Instant::now();
-                            let is_double = ov
-                                .last_click_at
-                                .map(|t| now.duration_since(t) < Duration::from_millis(400))
-                                .unwrap_or(false)
-                                && (p.x - ov.last_click_pos.x).abs() < 12
-                                && (p.y - ov.last_click_pos.y).abs() < 12;
-                            ov.last_click_at = Some(now);
-                            ov.last_click_pos = p;
-                            if is_double {
-                                if let Err(e) =
-                                    self.finish_overlay_action(event_loop, OverlayFinish::Copy)
-                                {
-                                    eprintln!("pinora: double-click copy failed: {e}");
-                                }
-                                return;
-                            }
-                            if let Some(local) = overlay_annotate_local(ov, p) {
-                                ov.annotate.begin(local);
-                                ov.annotate_dragging = ov.annotate.tool != AnnotateTool::Text;
-                                ov.annotate_dirty = true;
-                                ov.needs_redraw = true;
-                            }
-                            return;
+                if ov.phase == OverlayPhase::Ready
+                    && let Ok(sel) = ov.session.try_confirm()
+                    && sel.contains_point(p)
+                {
+                    let now = Instant::now();
+                    let is_double = ov
+                        .last_click_at
+                        .map(|t| now.duration_since(t) < Duration::from_millis(400))
+                        .unwrap_or(false)
+                        && (p.x - ov.last_click_pos.x).abs() < 12
+                        && (p.y - ov.last_click_pos.y).abs() < 12;
+                    ov.last_click_at = Some(now);
+                    ov.last_click_pos = p;
+                    if is_double {
+                        if let Err(e) = self.finish_overlay_action(event_loop, OverlayFinish::Copy)
+                        {
+                            eprintln!("pinora: double-click copy failed: {e}");
                         }
+                        return;
                     }
+                    if let Some(local) = overlay_annotate_local(ov, p) {
+                        ov.annotate.begin(local);
+                        ov.annotate_dragging = ov.annotate.tool != AnnotateTool::Text;
+                        ov.annotate_dirty = true;
+                        ov.needs_redraw = true;
+                    }
+                    return;
                 }
 
                 // 3) 选区外：准备拖新选区（Ready 下需移动阈值才真正重选）
@@ -1146,15 +1192,13 @@ where
                     if let Ok(sel) = ov.session.try_confirm() {
                         ov.phase = OverlayPhase::Ready;
                         ov.toolbar = layout_toolbar(sel, ov.buf_w, ov.buf_h);
-                        let src_sel =
-                            buf_rect_to_src(sel, ov.buf_w, ov.buf_h, ov.src_w, ov.src_h);
+                        let src_sel = buf_rect_to_src(sel, ov.buf_w, ov.buf_h, ov.src_w, ov.src_h);
                         ov.active_src_rect = Some(src_sel);
                         let tool = ov.annotate.tool;
                         let color = ov.annotate.color;
                         let stroke = ov.annotate.stroke;
                         // 标注坐标系 = 原图选区像素
-                        ov.annotate =
-                            AnnotateSession::new(src_sel.size.width, src_sel.size.height);
+                        ov.annotate = AnnotateSession::new(src_sel.size.width, src_sel.size.height);
                         ov.annotate.tool = tool;
                         ov.annotate.color = color;
                         ov.annotate.stroke = stroke;
@@ -1217,6 +1261,181 @@ where
         }
     }
 
+    fn submit_ocr_job(&mut self, owner: JobOwner, image: CaptureImage, asset: AssetRef) {
+        let size = image.size();
+        let spec = JobSpec::new(
+            JobId::new(),
+            CorrelationId::new(),
+            asset,
+            owner,
+            JobKind::Ocr,
+            monotonic_ms().saturating_add(OCR_JOB_TIMEOUT_MS),
+        );
+        match self.ocr_jobs.start(spec, image) {
+            Ok(ticket) => println!(
+                "pinora: OCR job {} started owner={owner:?} {}x{}",
+                ticket.id, size.width, size.height
+            ),
+            Err(error) => eprintln!("pinora: OCR submit failed: {error}"),
+        }
+    }
+
+    fn submit_export_job(
+        &mut self,
+        owner: JobOwner,
+        asset: AssetRef,
+        input: ExportJobInput,
+        action: PendingExportAction,
+    ) -> Result<JobId, PinoraError> {
+        let kind = input.kind();
+        let spec = JobSpec::new(
+            JobId::new(),
+            CorrelationId::new(),
+            asset,
+            owner,
+            kind,
+            monotonic_ms().saturating_add(EXPORT_JOB_TIMEOUT_MS),
+        );
+        let ticket = self.export_jobs.start(spec, input)?;
+        self.pending_exports.insert(
+            ticket.id,
+            PendingExport {
+                owner,
+                asset,
+                action,
+            },
+        );
+        println!(
+            "pinora: export job {} started owner={owner:?} kind={kind:?}",
+            ticket.id
+        );
+        Ok(ticket.id)
+    }
+
+    fn poll_ocr_jobs(&mut self) {
+        let pin_assets: HashMap<PinId, AssetRef> = self
+            .pins
+            .values()
+            .map(|pin| (pin.pin_id, pin.asset))
+            .collect();
+        let overlay_asset = self
+            .overlay
+            .as_ref()
+            .and_then(|ov| ov.ocr_asset.map(|asset| (ov.session_id, asset)));
+        let completions = self.ocr_jobs.poll(monotonic_ms(), |owner| match owner {
+            JobOwner::Pin(pin_id) => pin_assets.get(&pin_id).copied(),
+            JobOwner::Session(session_id) => overlay_asset
+                .filter(|(id, _)| *id == session_id)
+                .map(|(_, asset)| asset),
+        });
+
+        for completion in completions {
+            match completion {
+                OcrJobCompletion::Completed { job, result } => {
+                    println!(
+                        "pinora: OCR ok owner={:?} — {} words",
+                        job.owner,
+                        result.word_count()
+                    );
+                    if !result.full_text.trim().is_empty() {
+                        let text = result.full_text.clone();
+                        if let Err(error) = self.submit_export_job(
+                            job.owner,
+                            job.asset,
+                            ExportJobInput::CopyText { text },
+                            PendingExportAction::CopyText,
+                        ) {
+                            eprintln!("pinora: text clipboard submit failed: {error}");
+                        }
+                    }
+                    if let JobOwner::Pin(pin_id) = job.owner
+                        && let Some(pin) = self.pins.values_mut().find(|pin| pin.pin_id == pin_id)
+                        && pin.asset == job.asset
+                    {
+                        pin.ocr = Some(result);
+                        pin.ocr_show_boxes = true;
+                        pin.window.request_redraw();
+                    }
+                }
+                OcrJobCompletion::Failed {
+                    job_id,
+                    owner,
+                    error,
+                } => eprintln!("pinora: OCR job {job_id} failed owner={owner:?}: {error}"),
+                OcrJobCompletion::Discarded { job_id, terminal } => {
+                    println!("pinora: OCR job {job_id} discarded ({terminal:?})");
+                }
+            }
+        }
+    }
+
+    fn poll_export_jobs(&mut self) {
+        let pin_assets: HashMap<PinId, AssetRef> = self
+            .pins
+            .values()
+            .map(|pin| (pin.pin_id, pin.asset))
+            .collect();
+        let overlay_asset = self
+            .overlay
+            .as_ref()
+            .and_then(|ov| ov.ocr_asset.map(|asset| (ov.session_id, asset)));
+        let pending_assets: HashMap<JobId, (JobOwner, AssetRef)> = self
+            .pending_exports
+            .iter()
+            .map(|(job_id, pending)| (*job_id, (pending.owner, pending.asset)))
+            .collect();
+
+        let completions = self
+            .export_jobs
+            .poll(monotonic_ms(), |job_id, owner| match owner {
+                JobOwner::Pin(pin_id) => pin_assets
+                    .get(&pin_id)
+                    .copied()
+                    .or_else(|| pending_asset_for_owner(&pending_assets, job_id, owner)),
+                JobOwner::Session(session_id) => overlay_asset
+                    .filter(|(id, _)| *id == session_id)
+                    .map(|(_, asset)| asset)
+                    .or_else(|| pending_asset_for_owner(&pending_assets, job_id, owner)),
+            });
+        for completion in completions {
+            match completion {
+                ExportJobCompletion::Completed { job } => {
+                    let pending = self.pending_exports.remove(&job.id);
+                    match pending.map(|pending| pending.action) {
+                        Some(PendingExportAction::SavePng(path)) => {
+                            println!("pinora: saved {} -> {}", job.asset.image_id, path.display());
+                        }
+                        Some(PendingExportAction::CopyImage) => {
+                            println!("pinora: copied image {}", job.asset.image_id);
+                        }
+                        Some(PendingExportAction::CopyText) => {
+                            println!("pinora: copied OCR text for {}", job.asset.image_id);
+                        }
+                        None => println!("pinora: export job {} completed", job.id),
+                    }
+                }
+                ExportJobCompletion::Failed {
+                    job_id,
+                    owner,
+                    error,
+                } => {
+                    self.pending_exports.remove(&job_id);
+                    eprintln!("pinora: export job {job_id} failed owner={owner:?}: {error}");
+                }
+                ExportJobCompletion::Discarded {
+                    job_id,
+                    owner,
+                    terminal,
+                } => {
+                    self.pending_exports.remove(&job_id);
+                    println!(
+                        "pinora: export job {job_id} discarded owner={owner:?} ({terminal:?})"
+                    );
+                }
+            }
+        }
+    }
+
     fn overlay_ocr(&mut self) {
         let image = match self.crop_overlay_image(true) {
             Ok(img) => img,
@@ -1225,38 +1444,21 @@ where
                 return;
             }
         };
-        let w = image.pixels.size.width;
-        let h = image.pixels.size.height;
-        println!("pinora: OCR on selection {w}x{h}…（后台识别，不阻塞界面）");
-        // 主线程不跑 tesseract，避免点一下卡死数秒
-        thread::spawn(move || match recognize_image(&image) {
-            Ok(result) => {
-                let preview: String = result.full_text.chars().take(240).collect();
-                eprintln!(
-                    "pinora: OCR ok — {} words\n---\n{}\n---",
-                    result.word_count(),
-                    if preview.is_empty() {
-                        "(empty)"
-                    } else {
-                        &preview
-                    }
-                );
-                if !result.full_text.trim().is_empty() {
-                    match copy_text_to_system_clipboard(&result.full_text) {
-                        Ok(b) => eprintln!("pinora: system clipboard ← text via {b}"),
-                        Err(e) => eprintln!("pinora: text clipboard: {e}"),
-                    }
-                }
-            }
-            Err(e) => eprintln!("pinora: OCR failed: {e}"),
-        });
+        let Some(ov) = self.overlay.as_mut() else {
+            return;
+        };
+        let owner = JobOwner::Session(ov.session_id);
+        let asset = AssetRef::initial(image.id);
+        ov.ocr_asset = Some(asset);
+        self.submit_ocr_job(owner, image, asset);
     }
 
     /// 从当前 overlay 选区裁剪**原图像素**，可选烧录标注。
     fn crop_overlay_image(&self, bake: bool) -> Result<CaptureImage, PinoraError> {
-        let ov = self.overlay.as_ref().ok_or_else(|| {
-            PinoraError::new(ErrorCode::Internal, "overlay missing")
-        })?;
+        let ov = self
+            .overlay
+            .as_ref()
+            .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "overlay missing"))?;
         let src_rect = if let Some(r) = ov.active_src_rect {
             r
         } else {
@@ -1287,9 +1489,10 @@ where
         event_loop: &ActiveEventLoop,
         action: OverlayFinish,
     ) -> Result<(), PinoraError> {
-        let ov = self.overlay.as_ref().ok_or_else(|| {
-            PinoraError::new(ErrorCode::Internal, "overlay missing")
-        })?;
+        let ov = self
+            .overlay
+            .as_ref()
+            .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "overlay missing"))?;
         let src_rect = if let Some(r) = ov.active_src_rect {
             r
         } else {
@@ -1302,6 +1505,7 @@ where
             }
         };
         let display_id = ov.display_id.clone();
+        let session_owner = JobOwner::Session(ov.session_id);
         let global = PixelRect::new(
             ov.display_origin.x.saturating_add(src_rect.origin.x),
             ov.display_origin.y.saturating_add(src_rect.origin.y),
@@ -1313,6 +1517,11 @@ where
         let position = PixelPoint::new(global.origin.x, global.origin.y);
 
         if let Some(ov) = self.overlay.take() {
+            self.ocr_jobs.close_owner(JobOwner::Session(ov.session_id));
+            if action == OverlayFinish::Pin {
+                self.export_jobs
+                    .close_owner(JobOwner::Session(ov.session_id));
+            }
             ov.window.set_visible(false);
             drop(ov);
         }
@@ -1325,31 +1534,36 @@ where
 
         match action {
             OverlayFinish::Copy => {
-                // 复制走 sink；不强制先建 pin 窗
+                let asset = AssetRef::initial(image.id);
                 if let Some(rt) = self.runtime.as_mut() {
-                    let _ = rt.dispatch(Command::create_pin(image.clone(), position));
-                    let _ = rt.dispatch(Command::invoke_action(ActionId::CopyLastCapture));
-                    // 状态里的 pin 不显示窗口即可；关闭占位避免堆积
-                    // create_pin 会记一条，用户无窗可接受；后续可改纯 sink
+                    rt.dispatch(Command::create_pin(image.clone(), position))?;
                 }
-                println!(
-                    "pinora: copied {}x{} (双击/工具栏复制)",
-                    image.pixels.size.width, image.pixels.size.height
-                );
+                self.submit_export_job(
+                    session_owner,
+                    asset,
+                    ExportJobInput::CopyImage { image },
+                    PendingExportAction::CopyImage,
+                )?;
             }
             OverlayFinish::Save => {
+                let asset = AssetRef::initial(image.id);
+                let path = self
+                    .runtime
+                    .as_ref()
+                    .map(|rt| rt.export_dir().join(format!("{}.png", image.id)))
+                    .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "runtime missing"))?;
                 if let Some(rt) = self.runtime.as_mut() {
-                    let _ = rt.dispatch(Command::create_pin(image.clone(), position));
-                    if let Ok(save) = rt.dispatch(Command::invoke_action(ActionId::SaveLastCapture))
-                    {
-                        for event in &save.events {
-                            if let DomainEventKind::ImageSaved { image_id, path } = &event.event.kind
-                            {
-                                println!("pinora: saved {image_id} -> {}", path.display());
-                            }
-                        }
-                    }
+                    rt.dispatch(Command::create_pin(image.clone(), position))?;
                 }
+                self.submit_export_job(
+                    session_owner,
+                    asset,
+                    ExportJobInput::SavePng {
+                        image,
+                        path: path.clone(),
+                    },
+                    PendingExportAction::SavePng(path),
+                )?;
             }
             OverlayFinish::Pin => {
                 // 贴图：先出窗再异步保存/复制，避免主路径串行卡顿
@@ -1365,9 +1579,10 @@ where
         image: CaptureImage,
         position: PixelPoint,
     ) -> Result<(), PinoraError> {
-        let rt = self.runtime.as_mut().ok_or_else(|| {
-            PinoraError::new(ErrorCode::Internal, "runtime missing")
-        })?;
+        let rt = self
+            .runtime
+            .as_mut()
+            .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "runtime missing"))?;
         let pin = rt.dispatch(Command::create_pin(image.clone(), position))?;
         let pin_id = pin
             .events
@@ -1377,6 +1592,8 @@ where
                 _ => None,
             })
             .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "missing PinCreated"))?;
+        let asset = AssetRef::initial(image.id);
+        let export_image = image.clone();
 
         println!(
             "pinora: pin {pin_id} ({}x{}) — L锁定 [ ]透明度 O识别 T词框 滚轮 Esc{}",
@@ -1394,21 +1611,41 @@ where
         self.mode = Mode::Idle;
         self.resume_frame_cache();
 
-        if let Some(rt) = self.runtime.as_mut() {
-            if let Ok(save) = rt.dispatch(Command::invoke_action(ActionId::SaveLastCapture)) {
-                for event in &save.events {
-                    if let DomainEventKind::ImageSaved { image_id, path } = &event.event.kind {
-                        println!("pinora: saved {image_id} -> {}", path.display());
-                    }
-                }
-            }
-            let _ = rt.dispatch(Command::invoke_action(ActionId::CopyLastCapture));
+        let owner = JobOwner::Pin(pin_id);
+        if let Some(path) = self
+            .runtime
+            .as_ref()
+            .map(|rt| rt.export_dir().join(format!("{}.png", export_image.id)))
+            && let Err(error) = self.submit_export_job(
+                owner,
+                asset,
+                ExportJobInput::SavePng {
+                    image: export_image.clone(),
+                    path: path.clone(),
+                },
+                PendingExportAction::SavePng(path),
+            )
+        {
+            eprintln!("pinora: save submit failed: {error}");
+        }
+        if let Err(error) = self.submit_export_job(
+            owner,
+            asset,
+            ExportJobInput::CopyImage {
+                image: export_image,
+            },
+            PendingExportAction::CopyImage,
+        ) {
+            eprintln!("pinora: image clipboard submit failed: {error}");
         }
         Ok(())
     }
 
     fn cancel_overlay(&mut self) {
         if let Some(ov) = self.overlay.take() {
+            self.ocr_jobs.close_owner(JobOwner::Session(ov.session_id));
+            self.export_jobs
+                .close_owner(JobOwner::Session(ov.session_id));
             ov.window.set_visible(false);
         }
         // Esc 只取消选区，绝不自动再截；再截仅 F2 / Ctrl+N
@@ -1416,7 +1653,7 @@ where
         self.resume_frame_cache();
         println!("pinora: selection cancelled (F2/Ctrl+N 再截，Ctrl+Q 退出)");
         if let Some(pin) = self.pins.values().next() {
-            let _ = pin.window.focus_window();
+            pin.window.focus_window();
         }
     }
 
@@ -1452,11 +1689,10 @@ where
             .create_window(attrs)
             .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("pin window: {e}")))?;
         let window = Rc::new(window);
-        let _ = window.set_outer_position(PhysicalPosition::new(position.x, position.y));
+        window.set_outer_position(PhysicalPosition::new(position.x, position.y));
 
-        let mut surface = Surface::new(context, window.clone()).map_err(|e| {
-            PinoraError::new(ErrorCode::Internal, format!("pin surface: {e}"))
-        })?;
+        let mut surface = Surface::new(context, window.clone())
+            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("pin surface: {e}")))?;
         if let (Some(nw), Some(nh)) = (NonZeroU32::new(w), NonZeroU32::new(h)) {
             surface.resize(nw, nh).map_err(|e| {
                 PinoraError::new(ErrorCode::Internal, format!("pin surface resize: {e}"))
@@ -1464,11 +1700,13 @@ where
         }
 
         let id = window.id();
+        let asset = AssetRef::initial(image.id);
         self.pins.insert(
             id,
             PinWin {
                 pin_id,
                 image,
+                asset,
                 pixels_xrgb,
                 scale,
                 opacity: 1.0,
@@ -1496,12 +1734,12 @@ where
             crate::kwin_place::place_window_by_title(&title, position.x, position.y, w, h, 50);
             crate::kwin_place::place_window_by_title(&title, position.x, position.y, w, h, 150);
         } else {
-            let _ = window.set_outer_position(PhysicalPosition::new(position.x, position.y));
+            window.set_outer_position(PhysicalPosition::new(position.x, position.y));
         }
 
         // 钉位后再置顶，准备在 overlay 撤掉后露出来
         window.set_window_level(WindowLevel::AlwaysOnTop);
-        let _ = window.focus_window();
+        window.focus_window();
         window.request_redraw();
 
         println!(
@@ -1564,17 +1802,16 @@ where
                         self.run_pin_ocr(window_id);
                         return;
                     }
-                    if c == "t" || c == "T" {
-                        if let Some(pin) = self.pins.get_mut(&window_id) {
-                            pin.ocr_show_boxes = !pin.ocr_show_boxes;
-                            println!(
-                                "pinora: pin {} OCR boxes {}",
-                                pin.pin_id,
-                                if pin.ocr_show_boxes { "ON" } else { "OFF" }
-                            );
-                            pin.window.request_redraw();
-                        }
-                        return;
+                    if (c == "t" || c == "T")
+                        && let Some(pin) = self.pins.get_mut(&window_id)
+                    {
+                        pin.ocr_show_boxes = !pin.ocr_show_boxes;
+                        println!(
+                            "pinora: pin {} OCR boxes {}",
+                            pin.pin_id,
+                            if pin.ocr_show_boxes { "ON" } else { "OFF" }
+                        );
+                        pin.window.request_redraw();
                     }
                 }
             }
@@ -1617,7 +1854,7 @@ where
                 };
                 if let Ok(outer) = pin.window.outer_position() {
                     // 简单跟随：将窗口左上角移到近似位置
-                    let _ = pin.window.set_outer_position(PhysicalPosition::new(
+                    pin.window.set_outer_position(PhysicalPosition::new(
                         outer.x + position.x as i32 / 8,
                         outer.y + position.y as i32 / 8,
                     ));
@@ -1676,46 +1913,9 @@ where
             return;
         };
         let pin_id = pin.pin_id;
-        println!("pinora: pin {pin_id} OCR…");
         let image = pin.image.clone();
-        match recognize_image(&image) {
-            Ok(result) => {
-                let preview: String = result
-                    .full_text
-                    .chars()
-                    .take(200)
-                    .collect();
-                println!(
-                    "pinora: pin {pin_id} OCR ok — {} words, {} lines, langs={:?}\n---\n{}\n---",
-                    result.word_count(),
-                    result.lines.len(),
-                    result.languages,
-                    if preview.is_empty() {
-                        "(empty)"
-                    } else {
-                        &preview
-                    }
-                );
-                if !result.full_text.trim().is_empty() {
-                    match copy_text_to_system_clipboard(&result.full_text) {
-                        Ok(backend) => {
-                            println!("pinora: system clipboard ← text via {backend}");
-                        }
-                        Err(e) => {
-                            eprintln!("pinora: text clipboard skipped: {e}");
-                        }
-                    }
-                }
-                if let Some(pin) = self.pins.get_mut(&window_id) {
-                    pin.ocr = Some(result);
-                    pin.ocr_show_boxes = true;
-                    pin.window.request_redraw();
-                }
-            }
-            Err(e) => {
-                eprintln!("pinora: pin {pin_id} OCR failed: {e}");
-            }
-        }
+        let asset = pin.asset;
+        self.submit_ocr_job(JobOwner::Pin(pin_id), image, asset);
     }
 
     fn nudge_pin_opacity(&mut self, window_id: WindowId, delta: f64) {
@@ -1749,16 +1949,18 @@ where
         }
         .clamped();
         let locked = pin.locked;
-        if let Some(rt) = self.runtime.as_mut() {
-            if let Some(p) = rt.state_mut().pin_mut(pin_id) {
-                p.transform = transform;
-                p.locked = locked;
-            }
+        if let Some(rt) = self.runtime.as_mut()
+            && let Some(p) = rt.state_mut().pin_mut(pin_id)
+        {
+            p.transform = transform;
+            p.locked = locked;
         }
     }
 
     fn close_pin(&mut self, window_id: WindowId) {
         if let Some(pin) = self.pins.remove(&window_id) {
+            self.ocr_jobs.close_owner(JobOwner::Pin(pin.pin_id));
+            self.export_jobs.close_owner(JobOwner::Pin(pin.pin_id));
             println!("pinora: pin {} closed", pin.pin_id);
             if let Some(rt) = self.runtime.as_mut() {
                 let _ = rt.dispatch(Command::close_pin(pin.pin_id));
@@ -1780,19 +1982,20 @@ where
         let bw = size.width.max(1);
         let bh = size.height.max(1);
         // 先对齐 surface 与窗口尺寸，避免 buffer 长度不一致导致退出
-        if let (Some(nw), Some(nh)) = (NonZeroU32::new(bw), NonZeroU32::new(bh)) {
-            if let Err(e) = pin.surface.resize(nw, nh) {
-                return Err(PinoraError::new(
-                    ErrorCode::Internal,
-                    format!("pin surface resize: {e}"),
-                ));
-            }
+        if let (Some(nw), Some(nh)) = (NonZeroU32::new(bw), NonZeroU32::new(bh))
+            && let Err(e) = pin.surface.resize(nw, nh)
+        {
+            return Err(PinoraError::new(
+                ErrorCode::Internal,
+                format!("pin surface resize: {e}"),
+            ));
         }
         let bw = bw as usize;
         let bh = bh as usize;
-        let mut buffer = pin.surface.buffer_mut().map_err(|e| {
-            PinoraError::new(ErrorCode::Internal, format!("pin buffer: {e}"))
-        })?;
+        let mut buffer = pin
+            .surface
+            .buffer_mut()
+            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("pin buffer: {e}")))?;
         if buffer.len() < bw * bh {
             // 尺寸尚未就绪时跳过本帧，不崩溃退出
             eprintln!(
@@ -1810,7 +2013,12 @@ where
         let ocr_boxes: Vec<PixelRect> = if show_ocr {
             pin.ocr
                 .as_ref()
-                .map(|r| r.lines.iter().flat_map(|l| l.words.iter().map(|w| w.bbox)).collect())
+                .map(|r| {
+                    r.lines
+                        .iter()
+                        .flat_map(|l| l.words.iter().map(|w| w.bbox))
+                        .collect()
+                })
                 .unwrap_or_default()
         } else {
             Vec::new()
@@ -1837,10 +2045,8 @@ where
                     &mut buffer[..bw * bh],
                     bw,
                     bh,
-                    x0,
-                    y0,
-                    x1.max(x0 + 1),
-                    y1.max(y0 + 1),
+                    PixelPoint::new(x0, y0),
+                    PixelPoint::new(x1.max(x0 + 1), y1.max(y0 + 1)),
                     0x00_22_EE_66,
                 );
             }
@@ -1859,10 +2065,7 @@ where
 
     fn is_quit_key(&self, event: &winit::event::KeyEvent) -> bool {
         self.modifiers.control_key()
-            && matches!(
-                event.physical_key,
-                PhysicalKey::Code(KeyCode::KeyQ)
-            )
+            && matches!(event.physical_key, PhysicalKey::Code(KeyCode::KeyQ))
     }
 
     fn is_new_capture_key(&self, event: &winit::event::KeyEvent) -> bool {
@@ -1919,34 +2122,34 @@ fn handle_overlay_key(
             ov.session.nudge(0, step);
             refresh_overlay_ready(ov);
         }
-        Key::Character(c) if (c == "c" || c == "C") && !modifiers.control_key() => {
-            if ov.phase == OverlayPhase::Ready {
-                ov.annotate.cycle_color();
-                ov.annotate_dirty = true;
-                ov.needs_redraw = true;
-                println!("pinora: stroke color rgba{:?}", ov.annotate.color);
-            }
+        Key::Character(c)
+            if (c == "c" || c == "C")
+                && !modifiers.control_key()
+                && ov.phase == OverlayPhase::Ready =>
+        {
+            ov.annotate.cycle_color();
+            ov.annotate_dirty = true;
+            ov.needs_redraw = true;
+            println!("pinora: stroke color rgba{:?}", ov.annotate.color);
         }
-        Key::Character(c) if c == "+" || c == "=" => {
-            if ov.phase == OverlayPhase::Ready {
-                ov.annotate.stroke_up();
-                ov.annotate_dirty = true;
-                ov.needs_redraw = true;
-            }
+        Key::Character(c) if (c == "+" || c == "=") && ov.phase == OverlayPhase::Ready => {
+            ov.annotate.stroke_up();
+            ov.annotate_dirty = true;
+            ov.needs_redraw = true;
         }
-        Key::Character(c) if c == "-" || c == "_" => {
-            if ov.phase == OverlayPhase::Ready {
-                ov.annotate.stroke_down();
-                ov.annotate_dirty = true;
-                ov.needs_redraw = true;
-            }
+        Key::Character(c) if (c == "-" || c == "_") && ov.phase == OverlayPhase::Ready => {
+            ov.annotate.stroke_down();
+            ov.annotate_dirty = true;
+            ov.needs_redraw = true;
         }
-        Key::Character(c) if (c == "z" || c == "Z") && modifiers.control_key() => {
-            if ov.phase == OverlayPhase::Ready {
-                ov.annotate.doc.undo();
-                ov.annotate_dirty = true;
-                ov.needs_redraw = true;
-            }
+        Key::Character(c)
+            if (c == "z" || c == "Z")
+                && modifiers.control_key()
+                && ov.phase == OverlayPhase::Ready =>
+        {
+            ov.annotate.doc.undo();
+            ov.annotate_dirty = true;
+            ov.needs_redraw = true;
         }
         Key::Character(c) if c == "1" || c == "r" || c == "R" => {
             ov.annotate.tool = AnnotateTool::Rect;
@@ -1977,20 +2180,20 @@ fn handle_overlay_key(
 }
 
 fn refresh_overlay_ready(ov: &mut OverlayState) {
-    if let Ok(sel) = ov.session.try_confirm() {
-        if ov.phase == OverlayPhase::Ready {
-            ov.toolbar = layout_toolbar(sel, ov.buf_w, ov.buf_h);
-            if ov.annotate.image_w != sel.size.width || ov.annotate.image_h != sel.size.height {
-                let tool = ov.annotate.tool;
-                let color = ov.annotate.color;
-                let stroke = ov.annotate.stroke;
-                ov.annotate = AnnotateSession::new(sel.size.width, sel.size.height);
-                ov.annotate.tool = tool;
-                ov.annotate.color = color;
-                ov.annotate.stroke = stroke;
-                ov.annotate_cache = None;
-                ov.annotate_dirty = true;
-            }
+    if let Ok(sel) = ov.session.try_confirm()
+        && ov.phase == OverlayPhase::Ready
+    {
+        ov.toolbar = layout_toolbar(sel, ov.buf_w, ov.buf_h);
+        if ov.annotate.image_w != sel.size.width || ov.annotate.image_h != sel.size.height {
+            let tool = ov.annotate.tool;
+            let color = ov.annotate.color;
+            let stroke = ov.annotate.stroke;
+            ov.annotate = AnnotateSession::new(sel.size.width, sel.size.height);
+            ov.annotate.tool = tool;
+            ov.annotate.color = color;
+            ov.annotate.stroke = stroke;
+            ov.annotate_cache = None;
+            ov.annotate_dirty = true;
         }
     }
     ov.needs_redraw = true;
@@ -2021,13 +2224,7 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
         if let Some(tb) = ov.last_toolbar_bounds.or(new_tb) {
             blit_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, tb);
             if ov.phase == OverlayPhase::Ready && !ov.toolbar.is_empty() {
-                paint_toolbar(
-                    &mut ov.frame,
-                    img_w,
-                    img_h,
-                    &ov.toolbar,
-                    ov.annotate.tool,
-                );
+                paint_toolbar(&mut ov.frame, img_w, img_h, &ov.toolbar, ov.annotate.tool);
             }
             damage.push(tb);
         }
@@ -2045,7 +2242,7 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
 
         if let Some(rect) = new_rect {
             let use_annotate = ov.phase == OverlayPhase::Ready
-                && (ov.annotate.doc.len() > 0 || ov.annotate.draft.is_some())
+                && (!ov.annotate.doc.is_empty() || ov.annotate.draft.is_some())
                 && ov.active_src_rect.is_some_and(|r| {
                     ov.annotate.image_w == r.size.width && ov.annotate.image_h == r.size.height
                 });
@@ -2068,22 +2265,12 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
             } else {
                 blit_rect(&mut ov.frame, &ov.base, img_w, img_h, rect);
             }
-            let x0 = rect.origin.x.max(0) as usize;
-            let y0 = rect.origin.y.max(0) as usize;
-            let x1 = (rect.right() as usize).min(img_w);
-            let y1 = (rect.bottom() as usize).min(img_h);
-            draw_rect_border(&mut ov.frame, img_w, img_h, x0, y0, x1, y1, 0x00_FF_CC_33);
+            draw_rect_border(&mut ov.frame, img_w, img_h, rect, 0x00_FF_CC_33);
             damage.push(expand_rect(rect, 3, ov.buf_w, ov.buf_h));
         }
 
         if ov.phase == OverlayPhase::Ready && !ov.toolbar.is_empty() {
-            paint_toolbar(
-                &mut ov.frame,
-                img_w,
-                img_h,
-                &ov.toolbar,
-                ov.annotate.tool,
-            );
+            paint_toolbar(&mut ov.frame, img_w, img_h, &ov.toolbar, ov.annotate.tool);
             if let Some(tb) = new_tb {
                 damage.push(tb);
             }
@@ -2102,9 +2289,10 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
         let _ = ov.surface.resize(w, h);
     }
 
-    let mut buffer = ov.surface.buffer_mut().map_err(|e| {
-        PinoraError::new(ErrorCode::Internal, format!("overlay buffer: {e}"))
-    })?;
+    let mut buffer = ov
+        .surface
+        .buffer_mut()
+        .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("overlay buffer: {e}")))?;
     let needed = img_w * img_h;
     if buffer.len() < needed {
         return Err(PinoraError::new(
@@ -2161,9 +2349,9 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
                 PinoraError::new(ErrorCode::Internal, format!("overlay present: {e}"))
             })?;
         } else {
-            buffer
-                .present_with_damage(&sb_damage)
-                .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("overlay damage: {e}")))?;
+            buffer.present_with_damage(&sb_damage).map_err(|e| {
+                PinoraError::new(ErrorCode::Internal, format!("overlay damage: {e}"))
+            })?;
         }
     }
     ov.last_present = Instant::now();
@@ -2210,13 +2398,7 @@ fn ensure_annotate_cache(ov: &mut OverlayState, disp_rect: PixelRect) {
     ov.annotate_cache_wh = wh;
 }
 
-fn buf_rect_to_src(
-    disp: PixelRect,
-    buf_w: u32,
-    buf_h: u32,
-    src_w: u32,
-    src_h: u32,
-) -> PixelRect {
+fn buf_rect_to_src(disp: PixelRect, buf_w: u32, buf_h: u32, src_w: u32, src_h: u32) -> PixelRect {
     let buf_w = buf_w.max(1) as i64;
     let buf_h = buf_h.max(1) as i64;
     let src_w = src_w.max(1) as i64;
@@ -2225,12 +2407,7 @@ fn buf_rect_to_src(
     let y0 = (i64::from(disp.origin.y) * src_h / buf_h).clamp(0, src_h - 1);
     let x1 = ((i64::from(disp.right()) * src_w + buf_w - 1) / buf_w).clamp(x0 + 1, src_w);
     let y1 = ((i64::from(disp.bottom()) * src_h + buf_h - 1) / buf_h).clamp(y0 + 1, src_h);
-    PixelRect::new(
-        x0 as i32,
-        y0 as i32,
-        (x1 - x0) as u32,
-        (y1 - y0) as u32,
-    )
+    PixelRect::new(x0 as i32, y0 as i32, (x1 - x0) as u32, (y1 - y0) as u32)
 }
 
 /// 缓冲坐标光标 → 原图选区内标注坐标。
@@ -2280,39 +2457,6 @@ fn blit_xrgb_block(
         let dst = dy * stride + x0;
         let src_i = row * sw;
         frame[dst..dst + copy_w].copy_from_slice(&src[src_i..src_i + copy_w]);
-    }
-}
-
-#[cfg(test)]
-mod overlay_scale_tests {
-    use super::*;
-
-    #[test]
-    fn buf_to_src_identity_when_1to1() {
-        let r = buf_rect_to_src(
-            PixelRect::new(10, 20, 100, 50),
-            3840,
-            2160,
-            3840,
-            2160,
-        );
-        assert_eq!(r.origin.x, 10);
-        assert_eq!(r.origin.y, 20);
-        assert_eq!(r.size.width, 100);
-        assert_eq!(r.size.height, 50);
-    }
-
-    #[test]
-    fn buf_to_src_maps_half_buffer() {
-        let r = buf_rect_to_src(
-            PixelRect::new(0, 0, 1920, 1080),
-            1920,
-            1080,
-            3840,
-            2160,
-        );
-        assert_eq!(r.size.width, 3840);
-        assert_eq!(r.size.height, 2160);
     }
 }
 
@@ -2376,16 +2520,11 @@ fn scale_nearest(src: &[u32], sw: usize, sh: usize, dst: &mut [u32], dw: usize, 
     }
 }
 
-fn draw_rect_border(
-    buf: &mut [u32],
-    stride: usize,
-    height: usize,
-    x0: usize,
-    y0: usize,
-    x1: usize,
-    y1: usize,
-    color: u32,
-) {
+fn draw_rect_border(buf: &mut [u32], stride: usize, height: usize, rect: PixelRect, color: u32) {
+    let x0 = rect.origin.x.max(0) as usize;
+    let y0 = rect.origin.y.max(0) as usize;
+    let x1 = (rect.right() as usize).min(stride);
+    let y1 = (rect.bottom() as usize).min(height);
     if x1 <= x0 || y1 <= y0 {
         return;
     }
@@ -2420,19 +2559,17 @@ fn draw_rect_outline_xrgb(
     buf: &mut [u32],
     stride: usize,
     height: usize,
-    x0: i32,
-    y0: i32,
-    x1: i32,
-    y1: i32,
+    from: PixelPoint,
+    to: PixelPoint,
     color: u32,
 ) {
     if stride == 0 || height == 0 {
         return;
     }
-    let x0 = x0.clamp(0, stride as i32 - 1) as usize;
-    let x1 = x1.clamp(0, stride as i32 - 1) as usize;
-    let y0 = y0.clamp(0, height as i32 - 1) as usize;
-    let y1 = y1.clamp(0, height as i32 - 1) as usize;
+    let x0 = from.x.clamp(0, stride as i32 - 1) as usize;
+    let x1 = to.x.clamp(0, stride as i32 - 1) as usize;
+    let y0 = from.y.clamp(0, height as i32 - 1) as usize;
+    let y1 = to.y.clamp(0, height as i32 - 1) as usize;
     if x1 < x0 || y1 < y0 {
         return;
     }
@@ -2457,5 +2594,44 @@ fn draw_border(buf: &mut [u32], w: usize, h: usize, color: u32) {
     for y in 0..h {
         buf[y * w] = color;
         buf[y * w + w - 1] = color;
+    }
+}
+
+#[cfg(test)]
+mod overlay_scale_tests {
+    use super::*;
+
+    #[test]
+    fn buf_to_src_identity_when_1to1() {
+        let r = buf_rect_to_src(PixelRect::new(10, 20, 100, 50), 3840, 2160, 3840, 2160);
+        assert_eq!(r.origin.x, 10);
+        assert_eq!(r.origin.y, 20);
+        assert_eq!(r.size.width, 100);
+        assert_eq!(r.size.height, 50);
+    }
+
+    #[test]
+    fn buf_to_src_maps_half_buffer() {
+        let r = buf_rect_to_src(PixelRect::new(0, 0, 1920, 1080), 1920, 1080, 3840, 2160);
+        assert_eq!(r.size.width, 3840);
+        assert_eq!(r.size.height, 2160);
+    }
+
+    #[test]
+    fn pending_export_asset_requires_matching_owner() {
+        let job_id = JobId::from_raw(7);
+        let owner = JobOwner::Session(SessionId::from_raw(8));
+        let asset = AssetRef::initial(pinora_core::ImageId::from_raw(9));
+        let mut pending = HashMap::new();
+        pending.insert(job_id, (owner, asset));
+
+        assert_eq!(
+            pending_asset_for_owner(&pending, job_id, owner),
+            Some(asset)
+        );
+        assert_eq!(
+            pending_asset_for_owner(&pending, job_id, JobOwner::Session(SessionId::from_raw(10))),
+            None
+        );
     }
 }

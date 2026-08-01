@@ -21,9 +21,10 @@ pub enum SingleInstanceError {
 impl From<SingleInstanceError> for PinoraError {
     fn from(value: SingleInstanceError) -> Self {
         match value {
-            SingleInstanceError::Poisoned => {
-                PinoraError::new(pinora_core::ErrorCode::Internal, "single-instance lock poisoned")
-            }
+            SingleInstanceError::Poisoned => PinoraError::new(
+                pinora_core::ErrorCode::Internal,
+                "single-instance lock poisoned",
+            ),
             SingleInstanceError::ForwardFailed(msg) => {
                 PinoraError::new(pinora_core::ErrorCode::SingleInstanceBusy, msg)
             }

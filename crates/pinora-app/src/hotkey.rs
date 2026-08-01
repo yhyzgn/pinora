@@ -9,9 +9,9 @@
 //! `org.freedesktop.portal.GlobalShortcuts` 或 KDE System Settings 绑定到
 //! `pinora capture`；本模块在能注册 OS 热键时自动启用。
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -276,10 +276,7 @@ mod tests {
 
     #[test]
     fn desktop_entry_contains_capture_action() {
-        let tmp = std::env::temp_dir().join(format!(
-            "pinora-desktop-test-{}",
-            std::process::id()
-        ));
+        let tmp = std::env::temp_dir().join(format!("pinora-desktop-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         // 临时劫持 HOME

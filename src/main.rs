@@ -6,8 +6,8 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
 use pinora_app::{
-    ensure_user_desktop_entry, run_desktop_shell, AppRuntime, BootstrapOutcome, LocalImageSink,
-    OsSingleInstance, RuntimeCapabilityProbe, SelectedCaptureProvider,
+    AppRuntime, BootstrapOutcome, LocalImageSink, OsSingleInstance, RuntimeCapabilityProbe,
+    SelectedCaptureProvider, ensure_user_desktop_entry, run_desktop_shell,
 };
 use pinora_core::{PixelPoint, PixelRect};
 
@@ -50,9 +50,7 @@ fn main() {
     println!(
         "pinora: capture backend = {}{}",
         backend.as_str(),
-        note.as_ref()
-            .map(|n| format!(" ({n})"))
-            .unwrap_or_default()
+        note.as_ref().map(|n| format!(" ({n})")).unwrap_or_default()
     );
 
     let export_dir = lock.dir().join("export");

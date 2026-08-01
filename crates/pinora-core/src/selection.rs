@@ -71,9 +71,9 @@ impl SelectionSession {
 
     /// 尝试确认；过小则失败。
     pub fn try_confirm(&self) -> Result<PixelRect, PinoraError> {
-        let rect = self.preview_rect().ok_or_else(|| {
-            PinoraError::new(ErrorCode::CommandRejected, "no selection started")
-        })?;
+        let rect = self
+            .preview_rect()
+            .ok_or_else(|| PinoraError::new(ErrorCode::CommandRejected, "no selection started"))?;
         validate_min_size(rect, self.min_edge)?;
         if let Some(bounds) = self.bounds {
             rect.clamp_to(bounds).ok_or_else(|| {
@@ -116,7 +116,10 @@ impl SelectionSession {
         };
         let max_x = b.right().saturating_sub(1);
         let max_y = b.bottom().saturating_sub(1);
-        PixelPoint::new(point.x.clamp(b.origin.x, max_x), point.y.clamp(b.origin.y, max_y))
+        PixelPoint::new(
+            point.x.clamp(b.origin.x, max_x),
+            point.y.clamp(b.origin.y, max_y),
+        )
     }
 }
 

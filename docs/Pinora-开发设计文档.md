@@ -1,16 +1,79 @@
-# Pinora 增强开发设计文档
+# Pinora 生产级重构开发设计文档
 
 > 跨平台高性能截图、标注、贴图与本地 OCR 工具
 
 | 项目 | 内容 |
 | --- | --- |
-| 文档版本 | v0.2 设计基线 |
-| 日期 | 2026-07-30 |
-| 状态 | 目标设计，待按阶段评审与实现 |
+| 文档版本 | v1.0 生产重构基线 |
+| 日期 | 2026-08-01 |
+| 状态 | 目标设计；不等同于当前实现或平台支持声明 |
 | 产品代号 | Pinora（Pin + Liora，可后续更名） |
-| 当前代码状态 | Rust 2024 单二进制雏形，`src/main.rs` 尚未实现本文功能 |
+| 当前代码状态 | Rust 2024 workspace；`pinora-core` 与 `pinora-app` 已有 Linux/KDE 实验实现，尚未达到可发布架构 |
 
-> **阅读说明**：本文描述产品目标和推荐实现，不代表功能已经存在。仓库当前只有无依赖的 `pinora` crate；任何依赖版本、平台 API 和性能数字都必须在对应开发任务中通过代码、官方文档和隔离测试重新确认。
+> **阅读说明**：本文是后续重构的目标设计，而非功能清单式承诺。任何模块、平台能力或性能目标，只有在对应任务完成代码、测试和授权的隔离探针后，才能写入已实现状态。UI 框架、平台 SDK 和 OCR 引擎均未在本文锁定；不得将草案直接复制为公共 API。
+
+---
+
+## 0. 接管结论与设计使用方式
+
+### 0.1 三类信息边界
+
+| 标记 | 含义 | 可用于什么决策 | 不可用于什么决策 |
+| --- | --- | --- | --- |
+| **已验证现状** | 已由源码、测试或命令输出证实 | 定义迁移输入、回归场景和风险 | 宣称未测平台或 GUI 行为正确 |
+| **目标设计** | 本文要求后续实现达到的边界和行为 | 拆分任务、评审接口、设计测试 | 直接说明功能已交付 |
+| **待验证决策** | 需要官方资料、原型或平台探针确认的选择 | 建立研究或 spike 任务 | 锁定依赖、版本、许可证或平台支持 |
+
+### 0.2 已验证现状与处置
+
+| 区域 | 已验证现状 | 处置 | 迁移前置条件 |
+| --- | --- | --- | --- |
+| 领域对象 | `pinora-core` 的像素几何、图像缓冲、选区约束和贴图状态有离线单元测试 | 保留并补强 | 保持 core 不依赖 UI、平台或外部进程 |
+| 桌面编排 | `desktop_shell.rs` 集中窗口事件、截图、Overlay、标注、贴图、OCR、托盘和 IPC | 重做编排边界 | 新路径覆盖对应用户场景后才能删除旧路径 |
+| 截图 | 当前优先 KDE `spectacle`，回退 xcap，再回退 fake | 重做平台捕获端口 | fake 仅限测试，运行时不能报告为成功截图 |
+| OCR/剪贴板 | 通过外部命令和临时文件工作，缺少任务取消、generation 与退出绑定 | 重做任务监督和适配器 | 结果必须绑定资产版本和窗口/会话生命周期 |
+| 平台支持 | Unix socket、KDE 命令和 Linux 剪贴板命令直接进入应用层 | 拆出平台适配器 | 未通过 target 编译和桌面探针的平台不对外声明支持 |
+| 静态质量 | 2026-08-01 已通过 fmt、严格 Clippy、workspace check 和 75 个可执行单元测试 | 持续保持 | 不能替代 GUI、权限、多屏或跨平台验证 |
+
+### 0.3 重构不可违反的产品契约
+
+1. **真实能力语义**：截图、剪贴板、热键和置顶只有收到对应平台适配器的成功结果后，才能发布成功事件；内存副本、模拟实现和降级提示不能伪装为系统操作成功。
+2. **资产不可变与版本化**：原始截图是不可变 `CaptureAsset`；标注、OCR 与导出只引用资产 ID、版本和坐标空间，不能通过共享可变像素缓冲相互污染。
+3. **任务可取消且有归属**：所有耗时任务必须有 `JobId`、取消令牌、超时、输出上限、资产 generation 和拥有者；过期结果只能记录诊断，不能更新已关闭的窗口。
+4. **平台边界单向**：领域层和应用工作流只依赖端口；平台 SDK、CLI、窗口句柄和环境变量不得泄漏到核心状态或公共命令。
+5. **失败可恢复且可诊断**：错误必须携带稳定错误码、可否重试、用户可见下一步和脱敏诊断上下文；原始图像在可恢复错误后仍由会话持有。
+6. **默认本地和最小数据暴露**：不上传图像、OCR 文本或剪贴板内容；日志和诊断包只记录脱敏元数据，导出诊断包需用户动作确认。
+
+### 0.4 当前实现到目标架构的迁移图
+
+```mermaid
+flowchart LR
+    LegacyShell["遗留 desktop_shell\n窗口 + 业务 + 平台 + 任务"] --> Freeze["冻结可观察行为\n建立回归场景"]
+    LegacyCapture["KDE/xcap/fake 选择器"] --> CapturePort["CapturePort\n真实能力与失败语义"]
+    LegacyProcess["OCR/剪贴板外部命令"] --> JobSupervisor["JobSupervisor\n取消、超时、generation"]
+    LegacyCore["pinora-core\n几何、图像、选区、状态"] --> Core["保留并增强\n纯领域不变量"]
+    Freeze --> AppWorkflow["Application Workflows\n会话、命令、事件、策略"]
+    CapturePort --> AppWorkflow
+    JobSupervisor --> AppWorkflow
+    Core --> AppWorkflow
+    AppWorkflow --> UiAdapter["UI Adapter\nOverlay、贴图、设置"]
+    AppWorkflow --> PlatformAdapters["Platform Adapters\n按平台实现"]
+
+    classDef legacy fill:#ffe8e5,stroke:#b64231
+    classDef target fill:#e7f4ea,stroke:#287a42
+    class LegacyShell,LegacyCapture,LegacyProcess legacy
+    class Freeze,CapturePort,JobSupervisor,Core,AppWorkflow,UiAdapter,PlatformAdapters target
+```
+
+### 0.5 技术决策状态
+
+| 决策 | 状态 | 当前原则 | 完成条件 |
+| --- | --- | --- | --- |
+| UI 框架 | 待验证 | 先定义 UI Adapter 和离线状态机；不预设 GPUI/Liora | 通过官方文档、最小窗口 spike、许可证和可访问性评审 |
+| 截图后端 | 待验证 | 每个发布平台使用正式系统 API/受支持 Portal；fake 仅测试 | target 编译、授权探针和多屏/HiDPI 场景通过 |
+| OCR 引擎与模型分发 | 待验证 | 本地优先、按需加载、可取消、无隐式下载 | 许可证、包体、离线模型、取消和准确率场景完成验证 |
+| 配置与历史存储 | 目标已定、实现待做 | 版本化本地文件、原子写、白名单清理 | 损坏恢复、迁移、并发写入和回滚测试通过 |
+| 发布平台 | 待验证 | 仅声明已通过核心流程探针的平台 | 每个平台有 CI target、隔离桌面探针和人工验收证据 |
 
 ---
 
@@ -43,7 +106,7 @@ Pinora 是面向研发、设计和产品人员的桌面截图工作台，核心�
 ### 1.3 设计原则
 
 1. **快捷路径优先**：常用操作默认一步完成，高级选项不阻塞主流程。
-2. **数据与视图分离**：截图、标注、OCR 结果和贴图变换是可测试的数据模型；GPUI/Liora 只负责呈现和交互。
+2. **数据与视图分离**：截图、标注、OCR 结果和贴图变换是可测试的数据模型；任何 UI 框架只通过 UI Adapter 呈现和交互。
 3. **平台差异隔离**：业务层只依赖能力接口，不直接依赖 Windows、macOS、X11 或 Wayland 类型。
 4. **失败可恢复**：权限拒绝、OCR 失败、剪贴板失败都给出原因和下一步，不丢失原始图像。
 5. **本地优先**：截图和 OCR 默认只在本机处理；任何上传能力必须显式启用并单独隔离。
@@ -62,103 +125,109 @@ Pinora 是面向研发、设计和产品人员的桌面截图工作台，核心�
 
 ### 2.1 模块清单
 
-| 模块 | 主要职责 | P0/P1/P2 | 主要输入 | 主要输出 |
+| 目标模块 | 主要职责 | P0/P1/P2 | 状态归属与关键约束 | 主要输入/输出 |
 | --- | --- | --- | --- | --- |
-| 应用外壳 `pinora-app` | 生命周期、单实例、命令分发、事件总线 | P0 | 系统启动、用户命令 | 应用状态、领域事件 |
-| 截图 `pinora-capture` | 显示器枚举、Overlay、全屏/区域/窗口捕获 | P0 | 热键、托盘命令、选区 | `CaptureImage` |
-| 贴图 `pinora-pin` | 贴图窗口、变换、置顶、锁定、多实例 | P0 | `CaptureImage`、用户手势 | `PinState`、窗口事件 |
-| 标注 `pinora-annotate` | 矢量图形、工具状态、撤销重做、渲染 | P0 | 鼠标/键盘、图像坐标 | `AnnotationDoc` |
-| OCR `pinora-ocr` | 模型生命周期、识别、文字层、选字 | P1 | RGBA 图像、语言设置 | `OcrResult`、选中文本 |
-| 热键 `pinora-hotkey` | 注册、冲突检查、平台后端、降级 | P0 | 热键配置 | `HotkeyEvent` |
-| 托盘与设置 `pinora-shell` | 菜单、设置、主题、开机自启入口 | P0/P1 | 用户配置、应用状态 | `Command`、配置变更 |
-| 剪贴板与导出 `pinora-export` | 图像/文本复制、PNG/JPEG/WebP 保存 | P0 | 图像、标注、OCR | 文件或剪贴板内容 |
-| 历史 `pinora-history` | 最近截图索引、预览、复用、清理 | P1 | 完成的截图/贴图 | 历史条目 |
-| 平台适配 `pinora-platform` | 窗口、权限、剪贴板、启动项、App ID | P0 | 能力调用 | 平台能力结果 |
-| 诊断 `pinora-diagnostics` | 结构化日志、能力检测、错误报告 | P0/P1 | 领域事件、平台错误 | 日志、诊断报告 |
+| `pinora-core` | 坐标、不可变图像资产、标注文档、贴图领域状态、稳定错误码 | P0 | 只存领域不变量；禁止窗口、SDK 与进程句柄 | 命令值、状态快照、领域事件 |
+| `pinora-application` | 用例编排、会话状态机、授权策略、事件发布、关闭顺序 | P0 | 拥有 `AppState` 和关联 ID；不绘制、不调用 CLI | `Command`/`Query` -> `Outcome`/事件 |
+| `pinora-capture` | 显示器快照、捕获会话、选区确认、截屏后策略 | P0 | 快照在会话创建时固定；只接受真实捕获成功 | 用户意图 -> `CaptureAsset` 或受控失败 |
+| `pinora-annotate` | 矢量标注、编辑事务、撤销重做、确定性合成 | P0 | 标注坐标绑定资产版本；源图不被原地修改 | 输入手势 -> `AnnotationDoc` revision |
+| `pinora-pin` | 贴图实体、变换策略、窗口生命周期映射 | P0 | `PinId` 与 UI 窗口句柄分离；锁定是领域策略 | `PinCommand` -> `PinState`/窗口请求 |
+| `pinora-ocr` | 识别请求、文字层、阅读顺序与文本选择 | P1 | 只接收资产快照；结果携带 generation 与引擎元数据 | `OcrRequest` -> `OcrResult` 或失败 |
+| `pinora-export` | 图像合成、文件编码、系统剪贴板、命名与原子保存 | P0 | 成功事件必须来自实际目标确认 | 导出请求 -> 文件路径/系统剪贴板结果 |
+| `pinora-jobs` | 耗时任务排队、并发限制、取消、超时、退出回收 | P0 | 外部进程和后台工作均由此监管 | `JobRequest` -> `JobOutcome` |
+| `pinora-settings-history` | 版本化设置、历史索引、原子持久化和白名单清理 | P1 | 配置与用户导出路径分离；只管理自有目录 | 设置变更/资产引用 -> 本地记录 |
+| `pinora-ui` | Overlay、工具栏、贴图、托盘、设置和可访问性呈现 | P0 | 仅通过命令/订阅交互；不直接改领域状态 | 输入事件 <-> ViewModel/Command |
+| `pinora-platform-api` 与适配器 | 截屏、窗口、热键、剪贴板、单实例、权限、启动项 | P0 | 端口声明能力与失败原因；按平台隔离 | 端口调用 -> `CapabilityResult` |
+| `pinora-diagnostics` | 结构化日志、能力快照、脱敏诊断包、运行探针 | P0/P1 | 不记录像素、OCR 全文、剪贴板内容或敏感路径 | 诊断事件 -> 可导出报告 |
 
 ### 2.2 功能模块总览结构图
 
 ```mermaid
 flowchart TB
-    User[用户] --> Hotkey[全局热键]
-    User --> Tray[系统托盘]
-    User --> Overlay[截图 Overlay]
-    User --> PinView[贴图窗口]
-    User --> Settings[设置窗口]
+    User["用户"] --> Ui["UI Adapter\nOverlay / 贴图 / 托盘 / 设置"]
+    System["操作系统事件\n热键 / 窗口 / IPC"] --> PlatformAdapters
 
-    subgraph UI[UI 交互层：GPUI + Liora]
-        Overlay
-        PinView
-        Settings
-        Tray
+    subgraph Application["应用编排层：pinora-application"]
+        Router["Command Router"]
+        Session["Capture / Edit / Pin Session"]
+        Store["AppState + Asset Registry"]
+        Policy["Capability / Error / Post-action Policy"]
+        Events["Event Publisher"]
     end
 
-    subgraph App[应用编排层]
-        Router[命令路由器]
-        Bus[领域事件总线]
-        Lifecycle[应用生命周期与单实例]
-        Store[内存状态仓库]
+    subgraph Domain["领域与工作模块"]
+        Capture["Capture Workflow"]
+        Annotate["Annotation Workflow"]
+        Pin["Pin Workflow"]
+        Ocr["OCR Workflow"]
+        Export["Export Workflow"]
+        Jobs["Job Supervisor"]
+        Persist["Settings / History"]
+        Diagnostics["Diagnostics"]
     end
 
-    subgraph Services[业务服务层]
-        Capture[截图服务]
-        Annotate[标注引擎]
-        Pin[贴图管理器]
-        Ocr[OCR 服务]
-        HotkeyMgr[热键管理器]
-        Export[剪贴板与导出]
-        History[历史服务]
-        Config[配置服务]
-        Diagnostics[诊断服务]
+    subgraph Ports["平台端口与适配器"]
+        PlatformAdapters["Platform Adapters"]
+        Screen["CapturePort"]
+        Window["WindowPort"]
+        Clipboard["ClipboardPort"]
+        Hotkey["HotkeyPort"]
+        Instance["SingleInstancePort"]
+        Process["ProcessPort"]
+        Storage["StoragePort"]
     end
 
-    subgraph Platform[平台适配层]
-        Window[窗口与置顶]
-        Screen[屏幕捕获与权限]
-        Clipboard[系统剪贴板]
-        Portal[Wayland/X11/系统 Portal]
-        Startup[开机自启与 App ID]
-    end
-
-    Hotkey --> HotkeyMgr
-    UI --> Router
-    Router --> Lifecycle
-    Router --> Bus
-    Bus --> Store
-    Bus --> Capture
-    Bus --> Annotate
-    Bus --> Pin
-    Bus --> Ocr
-    Bus --> Export
-    Bus --> History
-    Bus --> Config
-    Bus --> Diagnostics
+    Ui --> Router
+    Router --> Session
+    Session --> Policy
+    Session --> Capture
+    Session --> Annotate
+    Session --> Pin
+    Session --> Ocr
+    Session --> Export
+    Session --> Store
     Capture --> Screen
-    Capture --> Portal
     Pin --> Window
-    Ocr --> Diagnostics
+    Ocr --> Jobs
     Export --> Clipboard
-    HotkeyMgr --> Portal
-    Config --> Startup
-    Diagnostics --> Portal
+    Export --> Jobs
+    Jobs --> Process
+    Persist --> Storage
+    Policy --> Hotkey
+    Policy --> Instance
+    Events --> Ui
+    Capture --> Events
+    Annotate --> Events
+    Pin --> Events
+    Ocr --> Events
+    Export --> Events
+    Diagnostics --> Events
+    PlatformAdapters --> Screen
+    PlatformAdapters --> Window
+    PlatformAdapters --> Clipboard
+    PlatformAdapters --> Hotkey
+    PlatformAdapters --> Instance
+    PlatformAdapters --> Process
+    PlatformAdapters --> Storage
 
     classDef ui fill:#e8f1ff,stroke:#3167b1
     classDef app fill:#eaf7ed,stroke:#328048
-    classDef service fill:#fff4df,stroke:#b37711
-    classDef platform fill:#f5eafa,stroke:#8240a8
-    class Overlay,PinView,Settings,Tray ui
-    class Router,Bus,Lifecycle,Store app
-    class Capture,Annotate,Pin,Ocr,HotkeyMgr,Export,History,Config,Diagnostics service
-    class Window,Screen,Clipboard,Portal,Startup platform
+    classDef domain fill:#fff4df,stroke:#b37711
+    classDef port fill:#f5eafa,stroke:#8240a8
+    class Ui ui
+    class Router,Session,Store,Policy,Events app
+    class Capture,Annotate,Pin,Ocr,Export,Jobs,Persist,Diagnostics domain
+    class PlatformAdapters,Screen,Window,Clipboard,Hotkey,Instance,Process,Storage port
 ```
 
 ### 2.3 模块依赖规则
 
-- `pinora-app` 是唯一编排入口，负责组装依赖和分发命令；不承载绘制、OCR 算法或平台细节。
-- `pinora-core`（领域模型）只依赖标准库或纯数据类型，不依赖 GPUI、平台 SDK 或具体 OCR 引擎。
-- UI 只能通过 `Command`、`Query` 和 `DomainEvent` 与服务交互，禁止直接修改服务内部状态。
-- 平台适配器实现能力 trait；服务层通过 trait 注入，测试时使用内存/假实现。
-- `history` 只保存索引和可配置的本地文件引用，不反向依赖 UI 或窗口句柄。
+- `src/main.rs` 是薄入口：创建依赖图、启动宿主运行时、把进程级退出信号交给 `pinora-application`；不得持有窗口、捕获或 OCR 业务逻辑。
+- `pinora-core` 只依赖标准库和纯数据类型，不依赖 UI 框架、平台 SDK、CLI、线程池或具体 OCR 引擎。
+- UI 只能提交 `Command`、订阅 `Event`、读取不可变 `ViewModel`；禁止直接修改 `AppState`、`Pin`、标注或平台句柄。
+- 平台适配器实现能力端口；每次调用返回实际结果、能力原因和可否重试。测试可用 fake，但 fake 类型必须显式注入且不得成为生产自动回退。
+- `JobSupervisor` 是外部进程和耗时任务的唯一所有者；UI、贴图和 OCR 模块不得自行 `spawn` 后丢失句柄。
+- 历史只保存应用管理目录中的索引与文件引用，不反向依赖 UI 或窗口句柄，也不接管用户主动导出的文件。
 
 ---
 
@@ -168,50 +237,52 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    subgraph Presentation[表现层]
-        GPUI[GPUI Application]
-        Liora[Liora 组件、主题、图标]
-        OverlayUI[Overlay / 标注工具条 / 贴图视图]
-        SettingsUI[设置 / 历史 / 托盘菜单]
+    subgraph Presentation["表现层：具体框架待验证"]
+        Host["UI Host Runtime"]
+        OverlayUI["Overlay / 标注工具条 / 贴图视图"]
+        SettingsUI["设置 / 历史 / 托盘菜单"]
+        Accessibility["键盘、读屏、焦点与可访问性语义"]
     end
 
-    subgraph Application[应用层]
-        Commands[Command API]
-        Queries[Query API]
-        Events[Domain Event Bus]
-        Workflow[截图、OCR、导出工作流]
+    subgraph Application["应用层"]
+        Commands["Command API"]
+        Queries["Query / ViewModel API"]
+        Events["Event Publisher"]
+        Workflow["截图、编辑、OCR、导出工作流"]
+        Shutdown["关闭编排与资源回收"]
     end
 
-    subgraph Domain[领域层]
-        ImageModel[Image / PixelRegion]
-        AnnotationModel[AnnotationDoc / Shape]
-        PinModel[Pin / PinTransform]
-        OcrModel[OcrResult / TextBlock]
-        ConfigModel[Settings / KeyBinding]
-        Policy[权限、降级、错误策略]
+    subgraph Domain["领域层"]
+        ImageModel["CaptureAsset / CoordinateSpace"]
+        AnnotationModel["AnnotationDoc / Revision"]
+        PinModel["Pin / PinTransform"]
+        OcrModel["OcrResult / TextBlock"]
+        JobModel["JobId / Generation / Cancellation"]
+        Policy["能力、降级、错误与后续动作策略"]
     end
 
-    subgraph Infrastructure[基础设施抽象]
-        CapturePort[CaptureProvider]
-        WindowPort[WindowProvider]
-        HotkeyPort[HotkeyProvider]
-        ClipboardPort[ClipboardProvider]
-        OcrPort[OcrEngine]
-        StoragePort[HistoryStorage / ConfigStorage]
+    subgraph Infrastructure["基础设施端口"]
+        CapturePort["CapturePort"]
+        WindowPort["WindowPort"]
+        HotkeyPort["HotkeyPort"]
+        ClipboardPort["ClipboardPort"]
+        ProcessPort["ProcessPort / JobSupervisor"]
+        StoragePort["SettingsStorage / HistoryStorage"]
+        InstancePort["SingleInstancePort"]
     end
 
-    subgraph Adapters[平台与第三方适配器]
-        Xcap[xcap 或平台截图实现]
-        Ashpd[ashpd / XDG Portal]
-        NativeWindow[Windows / macOS / X11 / Wayland 窗口]
-        NativeClipboard[系统剪贴板]
-        OcrRuntime[ONNX / Tesseract 等本地引擎]
-        FileStore[本地文件系统]
+    subgraph Adapters["平台与第三方适配器：逐平台验证"]
+        NativeCapture["系统截图 API / 受支持 Portal"]
+        NativeWindow["平台窗口与置顶实现"]
+        NativeClipboard["系统剪贴板"]
+        LocalOcr["本地 OCR 引擎"]
+        FileStore["本地文件系统"]
+        NativeInstance["平台单实例与 IPC"]
     end
 
-    GPUI --> Liora
-    GPUI --> OverlayUI
-    GPUI --> SettingsUI
+    Host --> OverlayUI
+    Host --> SettingsUI
+    Host --> Accessibility
     OverlayUI --> Commands
     SettingsUI --> Commands
     SettingsUI --> Queries
@@ -223,49 +294,60 @@ flowchart TB
     Workflow --> WindowPort
     Workflow --> HotkeyPort
     Workflow --> ClipboardPort
-    Workflow --> OcrPort
+    Workflow --> ProcessPort
     Workflow --> StoragePort
-    CapturePort --> Xcap
-    CapturePort --> Ashpd
+    Workflow --> InstancePort
+    Shutdown --> ProcessPort
+    Shutdown --> WindowPort
+    CapturePort --> NativeCapture
     WindowPort --> NativeWindow
-    HotkeyPort --> Ashpd
     ClipboardPort --> NativeClipboard
-    OcrPort --> OcrRuntime
+    ProcessPort --> LocalOcr
     StoragePort --> FileStore
+    InstancePort --> NativeInstance
 ```
 
 ### 3.2 运行时组件关系
 
 ```mermaid
 graph LR
-    Main["src/main.rs"] --> Runtime[AppRuntime]
-    Runtime --> Dispatcher[CommandDispatcher]
-    Runtime --> EventLoop[GPUI Event Loop]
-    Runtime --> Shutdown[GracefulShutdown]
-    Dispatcher --> State[AppState]
-    Dispatcher --> Services[ServiceRegistry]
-    Services --> CaptureSvc[CaptureService]
-    Services --> PinSvc[PinService]
-    Services --> OcrSvc[OcrService]
-    Services --> ExportSvc[ExportService]
-    Services --> ConfigSvc[ConfigService]
-    EventLoop --> Views[Overlay / Pin / Settings Views]
-    Views --> Dispatcher
-    State --> Views
-    Shutdown --> Services
+    Main["src/main.rs\n薄入口"] --> Host["App Host"]
+    Host --> App["Application Runtime"]
+    Host --> Ui["UI Adapter"]
+    App --> Dispatcher["Command Dispatcher"]
+    App --> State["AppState / Asset Registry"]
+    App --> Registry["Port Registry"]
+    App --> Supervisor["JobSupervisor"]
+    Dispatcher --> CaptureSvc["CaptureSession"]
+    Dispatcher --> AnnotateSvc["AnnotationSession"]
+    Dispatcher --> PinSvc["PinManager"]
+    Dispatcher --> OcrSvc["OcrWorkflow"]
+    Dispatcher --> ExportSvc["ExportWorkflow"]
+    Ui --> Dispatcher
+    State --> Ui
+    Registry --> Platform["Platform Adapters"]
+    CaptureSvc --> Platform
+    PinSvc --> Platform
+    ExportSvc --> Platform
+    OcrSvc --> Supervisor
+    Supervisor --> Platform
+    Host --> Shutdown["Graceful Shutdown"]
+    Shutdown --> Supervisor
+    Shutdown --> Platform
 ```
 
 ### 3.3 领域核心数据模型
 
 ```mermaid
 classDiagram
-    class CaptureImage {
-        +ImageId id
+    class CaptureAsset {
+        +AssetId id
+        +u64 generation
         +RgbaBuffer pixels
-        +PixelRect source_rect
-        +DisplayId display
-        +DpiScale scale
-        +CaptureMetadata metadata
+        +CoordinateSpace coordinate_space
+        +CaptureProvenance provenance
+        +ContentHash content_hash
+        +AssetStatus status
     }
     class AnnotationDoc {
         +Vec~Annotation~ items
@@ -282,7 +364,8 @@ classDiagram
     }
     class Pin {
         +PinId id
-        +ImageId image
+        +AssetId asset_id
+        +u64 asset_generation
         +PinTransform transform
         +PinMode mode
         +bool locked
@@ -292,6 +375,8 @@ classDiagram
     }
     class OcrResult {
         +OcrId id
+        +AssetId asset_id
+        +u64 asset_generation
         +Vec~TextBlock~ blocks
         +String full_text
         +Language language
@@ -304,17 +389,29 @@ classDiagram
         +Vec~TextLine~ lines
     }
     class AppState {
-        +CaptureSession capture
-        +Vec~Pin~ pins
+        +Map~AssetId,CaptureAsset~ assets
+        +Map~PinId,Pin~ pins
+        +Map~JobId,JobState~ jobs
         +Settings settings
         +CapabilitySnapshot capabilities
     }
-    CaptureImage "1" --> "0..*" Pin : source
+    class JobState {
+        +JobId id
+        +JobKind kind
+        +OwnerRef owner
+        +u64 asset_generation
+        +JobStatus status
+        +Deadline deadline
+        +CancellationToken cancellation
+    }
+    CaptureAsset "1" --> "0..*" Pin : source
     Pin "1" --> "1" AnnotationDoc : owns
     Pin "1" --> "0..1" OcrResult : produces
     AnnotationDoc "1" --> "0..*" Annotation : contains
     OcrResult "1" --> "0..*" TextBlock : contains
     AppState "1" --> "0..*" Pin : manages
+    AppState "1" --> "0..*" CaptureAsset : owns
+    AppState "1" --> "0..*" JobState : supervises
 ```
 
 ### 3.4 命令与事件约定
@@ -331,6 +428,53 @@ classDiagram
 
 事件至少包含 `event_id`、`occurred_at`、`correlation_id` 和实体 ID；日志不得写入截图像素、OCR 全文或凭据。
 
+### 3.5 任务监督、并发与退出边界
+
+截图编码、OCR、文件保存、系统剪贴板写入和平台调用不得由 UI 回调自行启动。应用层创建 `JobRequest`，其中必须包含 `JobId`、关联 `correlation_id`、资产 ID 与 generation、拥有者（会话或 `PinId`）、超时、取消令牌、输入/输出大小上限和幂等键。
+
+- `JobSupervisor` 按任务类型设置独立并发上限。一个 OCR 引擎实例或平台捕获会话不可被并行任务重入时，必须串行化而不是依赖隐式全局锁。
+- 工作线程只产生不可变 `JobOutcome`；只有应用事件循环能在 owner 仍有效、generation 相同、任务未被取消时提交结果。
+- 超时首先请求协作式取消；适配器在宽限期后终止自己拥有的子进程或平台请求。任何强制终止都必须有错误码和脱敏诊断记录。
+- 退出顺序固定为“停止接收命令 -> 标记会话关闭 -> 取消任务 -> 在截止时间内等待 -> 关闭窗口/适配器 -> 持久化最小状态 -> 释放单实例”。不得让后台任务在进程退出后继续持有临时文件或窗口引用。
+
+```mermaid
+stateDiagram-v2
+    [*] --> Queued: SubmitJob
+    Queued --> Running: CapacityGranted
+    Queued --> Cancelled: CancelBeforeStart / OwnerClosed
+    Running --> Completing: WorkerOutcome
+    Running --> Cancelling: CancelRequested / DeadlineExceeded / OwnerClosed
+    Cancelling --> Cancelled: CooperativeStop
+    Cancelling --> Terminated: GracePeriodExceeded
+    Completing --> Accepted: OwnerAlive && GenerationMatches
+    Completing --> Stale: OwnerClosed || GenerationChanged || Cancelled
+    Accepted --> [*]: PublishDomainEvent
+    Stale --> [*]: RecordDiagnosticOnly
+    Cancelled --> [*]
+    Terminated --> [*]: PublishControlledFailure
+```
+
+### 3.6 能力探测与降级语义
+
+`CapabilitySnapshot` 不是简单的布尔集合。每项能力必须记录平台、后端标识、权限状态、可用范围、最后探测时间、错误码、修复建议和是否允许启动降级。业务工作流只依据这个快照和端口结果决策，不能读取环境变量绕开能力层。
+
+```mermaid
+flowchart TD
+    Start["应用启动或显式刷新"] --> Probe["CapabilityProbe 探测端口"]
+    Probe --> Result{"端口结果"}
+    Result -->|可用| Available["Available\n记录后端和范围"]
+    Result -->|需授权| NeedsPermission["NeedsPermission\n显示系统授权入口"]
+    Result -->|暂时失败| Retryable["Retryable\n记录退避与重试条件"]
+    Result -->|不支持| Unsupported["Unavailable\n显示替代操作"]
+    Available --> Snapshot["更新 CapabilitySnapshot"]
+    NeedsPermission --> Snapshot
+    Retryable --> Snapshot
+    Unsupported --> Snapshot
+    Snapshot --> Policy["Application Policy 选择主路径"]
+    Policy -->|真实能力满足| Execute["执行用户命令"]
+    Policy -->|无真实能力| Explain["拒绝成功事件\n展示可恢复说明"]
+```
+
 ---
 
 ## 4. 功能详细规格
@@ -344,14 +488,15 @@ classDiagram
 **详细功能**：
 
 1. 初始化日志、配置目录、平台能力探测和 UI 运行时。
-2. 创建单实例锁；已有实例时将启动参数转换为激活命令并退出第二进程。
+2. 通过 `SingleInstancePort` 创建单实例；已有实例时将启动参数转换为有版本的激活命令，只有首实例确认接收后第二进程才退出。
 3. 恢复上次主题、热键、保存路径和启动选项；配置损坏时回退默认值并提示。
-4. 启动托盘和热键监听，再按需创建设置窗口，不在启动阶段加载 OCR 模型。
-5. 收到退出命令后停止接收新命令，保存配置和历史索引，关闭贴图窗口，释放平台句柄。
+4. 启动托盘和热键监听，再按需创建设置窗口，不在启动阶段加载 OCR 模型；每个受限能力在菜单中显示可用、待授权或不可用状态。
+5. 收到退出命令后按 3.5 的关闭顺序拒绝新命令、取消受监督任务、保存配置和历史索引、关闭贴图窗口并释放平台句柄。
 
 **边界与失败**：
 
 - 单实例锁不可创建：显示明确的文件路径和权限错误，不覆盖其他实例。
+- 转发协议版本或命令无效：首实例拒绝该请求并记录错误码；第二进程保留错误退出码，不把“无法转发”写成激活成功。
 - 配置版本过旧：执行可回滚迁移；迁移失败时保留原文件并使用默认配置。
 - 平台能力探测失败：应用仍可启动，托盘中显示受限能力。
 
@@ -369,7 +514,9 @@ classDiagram
 - **窗口截图（P1）**：候选窗口高亮、标题识别、点击确认；无法获取窗口列表时退回区域截图。
 - **延迟截图**：1/3/5 秒倒计时；倒计时期间允许取消，隐藏 Pinora 自身窗口和托盘菜单。
 - **坐标转换**：内部统一使用物理像素；UI 使用逻辑像素，转换集中在 `CoordinateSpace`。
-- **捕获后动作**：进入标注、直接贴图、复制到剪贴板或保存，由配置决定。
+- **会话快照**：开始时固定显示器拓扑、坐标变换、能力版本和会话 ID；禁止消费无来源、无 generation 或可能包含自身窗口的任意旧帧。
+- **自隐藏与恢复**：需要隐藏 Pinora 自身窗口时，先请求窗口适配器确认隐藏完成，再开始捕获；取消或失败必须恢复原可见性与焦点策略。
+- **捕获后动作**：只有 `CapturePort` 返回真实 `CaptureAsset` 后才进入标注、直接贴图、复制或保存；不可用时保留会话说明而不是生成 fake 图像。
 
 **边界与失败**：
 
@@ -377,6 +524,7 @@ classDiagram
 - 选区小于最小尺寸（默认 2×2 物理像素）：显示尺寸提示，禁止确认。
 - 权限拒绝：不重试死循环，显示系统设置路径和“复制诊断信息”操作。
 - 多显示器热插拔：刷新显示器快照；已开始的会话使用开始时坐标并在失效时安全取消。
+- 捕获后端不可用、像素大小不符或来源拓扑已失效：发布受控失败，不创建 `CaptureAsset`，更不以模拟像素替代成功结果。
 
 **验收**：P0 必须在单屏和双屏完成区域截图；HiDPI 下像素尺寸与保存图像一致；取消和权限拒绝均不丢失既有贴图。
 
@@ -400,7 +548,7 @@ sequenceDiagram
         O-->>W: SelectionChanged(rect)
         U->>O: Enter 确认
         W->>P: capture(rect, display, scale)
-        P-->>W: CaptureImage 或 CaptureError
+        P-->>W: CaptureAsset 或 CaptureFailure
         W->>B: CaptureCompleted(image)
         B-->>W: 进入标注/贴图/导出策略
     else 权限被拒或平台不可用
@@ -441,6 +589,8 @@ stateDiagram-v2
 - 多贴图同时存在；提供全部显示、全部隐藏、全部关闭、按最近使用排序。
 - 贴图重新进入标注模式时保留同一个 `PinId` 和版本历史；保存/复制使用当前合成结果。
 - 支持贴图标题、来源时间、OCR 状态和锁定状态的无障碍描述。
+- 每个窗口只保存 `PinId` 与当前渲染快照；窗口句柄由 UI/平台适配器持有，领域状态不保留句柄或回调。
+- 关闭贴图会先使其 owner 失效，再取消其 OCR、导出和动画任务；延迟到达的结果按 generation 丢弃，不能重新创建已关闭窗口。
 
 **边界与失败**：
 
@@ -492,6 +642,7 @@ stateDiagram-v2
 - 取色器支持贴图内取色；屏幕取色需要平台截图权限，取色结果可复制为 HEX/RGB。
 - 撤销/重做按事务记录，一次拖拽或一次文字提交作为一个事务；清空标注可整体撤销。
 - 标注数据和渲染缓存分离，导出前生成确定性合成图。
+- 每次提交产生单调递增 revision；撤销/重做、渲染缓存和 OCR 请求必须显式引用该 revision，避免编辑期间的陈旧合成结果覆盖新文档。
 
 **边界与失败**：
 
@@ -534,6 +685,7 @@ flowchart LR
 - 首次使用时按需加载本地 OCR 引擎和中文/英文模型；启动不阻塞。
 - 支持对原始截图、当前贴图合成图或用户框选区域识别。
 - 识别任务带 `OcrJobId`，支持取消、超时、进度和并发上限；同一图像可按内容哈希复用缓存。
+- 任务提交时冻结资产 ID、资产 generation、标注 revision、语言和引擎配置摘要；命中缓存也必须匹配这些输入，不能只按 `PinId` 复用。
 - 输出文字块、行、词/字符边界框、置信度、语言和引擎版本；坐标统一为图像物理像素。
 - 文字层支持显示/隐藏、透明度、字号适配和按置信度过滤；默认不覆盖原始图像。
 - 鼠标拖选支持跨块、跨行选择；自动按阅读顺序拼接，保留换行策略。
@@ -544,7 +696,7 @@ flowchart LR
 
 - 没有模型或模型校验失败：显示下载/配置说明，不自动联网下载。
 - 置信度低于阈值的文本以低置信状态显示，不静默删除。
-- OCR 任务超过超时：取消后台任务，保留已有结果。
+- OCR 任务超过超时：由 `JobSupervisor` 请求取消并在宽限期后回收其拥有的进程；保留最后一个匹配版本的结果，绝不使用外部不受控的全局 kill 命令。
 - 图像被关闭时取消关联任务，禁止结果写入已销毁 `PinId`。
 
 **验收**：中英文样例可识别；文字层坐标在缩放后命中正确；拖选跨行复制顺序稳定；OCR 失败不阻塞关闭和保存。
@@ -663,6 +815,8 @@ flowchart TD
 - 命名模板支持日期、时间、序号、显示器和来源，例如 `Pinora_{yyyyMMdd}_{HHmmss}_{counter}`。
 - 文件已存在时提供递增、覆盖（需显式设置）或取消；目录不可写时提供选择目录。
 - 导出任务后台执行，界面显示进度和可取消状态；完成后可打开文件位置。
+- 系统剪贴板成功与内存缓存是两个不同结果：系统写入失败时返回 `ClipboardFailed`，可保留内存预览供重试，但禁止发布“已复制到系统”的成功事件。
+- 文件保存采用同目录临时文件、编码完成后原子替换，并在成功后校验目标存在性与可读性；取消或失败清理仅属于当前任务的临时文件。
 
 **验收**：PNG 导出像素与预览一致；文件名在跨平台路径规则下合法；导出失败保留内存图像。
 
@@ -692,6 +846,7 @@ flowchart LR
 - 支持预览、再次贴图、再次编辑、复制文本、删除单条、清空全部。
 - 使用内容哈希去重；原图丢失时条目显示失效状态，不阻塞其他条目。
 - 清理任务只删除 Pinora 管理目录中的文件，禁止误删用户任意选择的外部文件。
+- 删除、配额清理与恢复使用 tombstone 和事务日志：索引先标记、文件操作成功后再提交；中断后可恢复或安全重试，避免索引与文件分叉。
 
 ### 4.10 诊断、权限和隐私（P0）
 
@@ -700,6 +855,7 @@ flowchart LR
 - 日志采用结构化字段：时间、级别、模块、事件 ID、错误码；默认不记录像素、OCR 全文和剪贴板内容。
 - “导出诊断包”只包含版本、平台能力、最近错误码和脱敏配置，不包含截图和个人路径，除非用户明确选择。
 - 所有平台权限通过正规系统 API；不通过后台截屏、键盘监听或绕过 Portal 的方式实现功能。
+- 每个操作的错误反馈至少包含稳定错误码、是否可重试、下一步建议、关联 ID 和脱敏后端摘要；详情页可复制诊断，但默认不自动上报。
 
 ---
 
@@ -716,6 +872,7 @@ sequenceDiagram
     participant Cap as CapabilityProbe
     participant Tray as TrayProvider
     participant HK as HotkeyManager
+    participant Jobs as JobSupervisor
     OS->>App: 启动进程
     App->>Lock: acquire()
     alt 已有实例
@@ -728,6 +885,7 @@ sequenceDiagram
         App->>Cap: probe_platform_capabilities()
         App->>Tray: create_menu()
         App->>HK: register(config.hotkeys)
+        App->>Jobs: start_with_limits()
         App-->>OS: 进入事件循环
     end
 ```
@@ -810,18 +968,21 @@ flowchart TD
 
 ---
 
-## 7. 平台能力与降级矩阵
+## 7. 平台能力、验证和降级矩阵
 
-| 能力 | Windows | macOS | Linux X11 | Linux Wayland | 降级策略 |
+下表是**目标验证矩阵**，不是当前支持声明。当前仅有 Linux/KDE 实验路径；Windows target 检查目前仍受 GTK/pkg-config 依赖阻塞，macOS/X11/通用 Wayland 都没有完整核心流程证据。
+
+| 能力 | Windows 目标 | macOS 目标 | Linux X11 目标 | Linux Wayland 目标 | 当前验证状态 | 无真实能力时的行为 |
 | --- | --- | --- | --- | --- | --- |
-| 全局热键 | 原生后端 | 原生后端 | X11 后端 | XDG GlobalShortcuts Portal | 系统快捷方式引导 + 托盘菜单 |
-| 区域截图 | 屏幕捕获 API | 屏幕录制权限 | xcap/X11 | xcap + Screenshot/ScreenCast Portal | 手动选择文件或系统截图工具 |
-| 窗口截图 | 可选 P1 | 可选 P1 | 窗口枚举 | 视合成器和 Portal 能力 | 退回区域截图 |
-| 置顶/透明 | 通常可用 | 通常可用 | 窗口管理器相关 | 合成器相关 | 显示平台受限标识 |
-| 剪贴板图像 | 原生/抽象层 | 原生/抽象层 | X11/桌面环境 | 桌面环境实现 | 保存到 PNG |
-| 开机自启 | 启动项 | Login Item | `.desktop` | `.desktop` | 提供手动安装说明 |
+| 单实例与激活 | 原生 IPC 适配器 | 原生 IPC 适配器 | 桌面会话适配器 | 桌面会话适配器 | Unix 实验实现已存在；其余未验证 | 不宣称激活成功，显示可诊断启动错误 |
+| 全局热键 | 系统热键端口 | 系统热键端口 | X11 端口 | 受支持全局快捷方式机制 | 当前 Linux 实验热键；逐平台未验证 | 保留托盘/设置手动入口并显示能力状态 |
+| 区域/全屏截图 | 正式屏幕捕获 API | 正式屏幕录制授权 API | 经验证捕获端口 | 经验证 Portal/合成器能力 | KDE `spectacle`/xcap/fake 实验路径 | 不创建 fake 资产；显示授权、不可用或替代操作 |
+| 窗口截图 | P1，独立能力探针 | P1，独立能力探针 | P1，窗口管理器探针 | P1，仅在合成器正式支持时 | 未验证 | 隐藏或禁用入口，退回区域截图 |
+| 置顶、透明与点击穿透 | WindowPort 能力探针 | WindowPort 能力探针 | 窗口管理器能力探针 | 合成器能力探针 | 当前行为未经跨环境验证 | 保留贴图、明确显示受限；不伪造置顶/透明成功 |
+| 图像/文本剪贴板 | 原生剪贴板端口 | 原生剪贴板端口 | 桌面环境端口 | 桌面环境端口 | Linux CLI 实验实现；系统写入需复验 | 返回失败、保留内存预览和文件导出，不发系统复制成功事件 |
+| 开机自启 | 平台启动项适配器 | 登录项适配器 | `.desktop` 适配器 | `.desktop` 适配器 | 未验证 | 提供文档化手动说明，不写入不兼容配置 |
 
-平台适配层必须在启动时生成 `CapabilitySnapshot`，业务逻辑不得依赖环境变量直接分支。Wayland 的授权和合成器差异必须以用户可理解的状态呈现。
+每个发布平台必须先完成：目标编译、能力快照探针、授权的核心流程探针、失败/权限拒绝场景、关闭回收场景和人工可访问性验收。平台适配层必须在启动时生成 `CapabilitySnapshot`，业务逻辑不得依赖环境变量直接分支。
 
 ---
 
@@ -872,10 +1033,27 @@ erDiagram
 
 ### 8.2 数据生命周期
 
-- 原始截图在内存中由 `CaptureImage` 持有；贴图关闭后按历史策略保留或释放。
-- 标注保存为结构化数据或导出合成图；不得只保存不可逆的预览而无法再次编辑。
-- OCR 结果与图像内容哈希关联；原图变化后旧结果标记失效，不复用错误坐标。
-- 历史文件放在应用管理目录，清理使用白名单路径；用户主动导出的文件不由自动清理管理。
+- 原始截图以不可变 `CaptureAsset` 持有，包含来源、内容哈希、坐标空间和 generation；贴图关闭后按历史策略保留引用或释放，不允许 UI 直接修改像素。
+- 标注以结构化 `AnnotationDoc` 和 revision 保存；导出合成图是可再生派生物，不能替代可编辑的源资产与标注事务。
+- OCR 结果关联资产 ID、generation、标注 revision、引擎摘要和输入内容哈希；任一输入不匹配时标记失效，不复用错误坐标。
+- 历史文件仅放在应用管理目录，清理使用白名单和 tombstone；用户主动导出的文件永不由自动清理接管。
+- 配置保存、历史索引写入和导出落盘均使用临时文件、校验和原子替换。启动恢复会扫描未提交临时文件，按所属事务删除或恢复，不读取半写入文件。
+
+```mermaid
+stateDiagram-v2
+    [*] --> InMemory: CaptureSucceeded
+    InMemory --> SessionOwned: AttachCaptureSession
+    SessionOwned --> Pinned: CreatePin
+    SessionOwned --> Exported: ExportCompleted
+    Pinned --> Historical: PersistHistoryReference
+    Exported --> Historical: PersistHistoryReference
+    SessionOwned --> Released: CancelWithoutHistory
+    Pinned --> Released: LastPinClosed && NoHistory
+    Historical --> Tombstoned: UserDelete / RetentionPolicy
+    Tombstoned --> Released: FileAndIndexCommit
+    Historical --> InMemory: ReopenForEdit
+    Released --> [*]
+```
 
 ---
 
@@ -894,7 +1072,7 @@ erDiagram
 ### 9.1 测试分层
 
 1. **纯领域单元测试**：坐标转换、选区约束、标注命中测试、撤销栈、OCR 文字选择、命名模板。
-2. **服务契约测试**：使用 fake `CaptureProvider`、`ClipboardProvider`、`HotkeyProvider` 验证成功/失败/取消。
+2. **服务契约测试**：显式注入 fake `CapturePort`、`ClipboardPort`、`HotkeyPort`，验证成功、失败、取消和陈旧结果拒绝；fake 不参与生产后端选择。
 3. **平台探针**：在授权的隔离桌面会话运行截图、热键、置顶和剪贴板能力检查，不连接共享服务。
 4. **UI 场景测试**：区域截图、编辑、贴图、OCR、导出的端到端操作；覆盖 Esc、权限拒绝和窗口关闭竞态。
 5. **性能与稳定性**：多屏 HiDPI、10 个以上贴图、连续 OCR、长时间事件循环和异常退出恢复。
@@ -903,20 +1081,21 @@ erDiagram
 
 ```text
 cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo check
-cargo test
-平台隔离探针（按发布平台执行）
-人工验收核心流程和降级提示
+cargo check --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+变更模块的领域/服务契约测试
+目标平台的编译与授权隔离探针
+核心流程、失败路径、关闭回收与可访问性人工验收
 ```
 
-编译、打包成功不能替代业务测试；每个阶段必须把实际命令输出写入对应任务的完成记录。
+静态门禁、业务契约和桌面探针是三类独立证据。编译、打包或 fake 测试成功不能替代真实能力验证；每个阶段必须把实际命令输出、测试场景、已跳过条件和残留风险写入对应任务的完成记录。任何发布平台若缺少目标编译或授权探针，均保持“未验证”状态。
 
 ---
 
 ## 10. 推荐仓库结构与依赖方向
 
-进程入口固定为仓库根目录 `src/main.rs`（二进制 crate `pinora`）。业务库放在 `crates/` 下；`pinora-app` 只做生命周期与依赖组装库，不再单独提供 binary。
+进程入口固定为仓库根目录 `src/main.rs`（二进制 crate `pinora`）。下列是**目标逻辑边界**，不是一次性拆 crate 的要求：先在现有 crate 中以内部模块和契约测试建立边界，只有独立编译、依赖隔离或平台分发确有收益时才拆出 crate。`src/main.rs`、注册器和路由聚合文件必须保持薄。
 
 ```text
 pinora/
@@ -924,18 +1103,14 @@ pinora/
 ├── src/
 │   └── main.rs                # 唯一进程入口
 ├── crates/
-│   ├── pinora-app/            # 生命周期、AppRuntime、依赖组装（库）
 │   ├── pinora-core/           # 纯领域模型、命令、事件、错误码
-│   ├── pinora-capture/        # 显示器、Overlay、截图工作流
-│   ├── pinora-annotate/       # 标注数据、命中测试、撤销重做
-│   ├── pinora-pin/            # 贴图实体与窗口生命周期
-│   ├── pinora-ocr/            # OCR 引擎适配、文字层、选择器
-│   ├── pinora-hotkey/         # 热键抽象和平台后端
-│   ├── pinora-export/         # 剪贴板、编码、命名、文件导出
-│   ├── pinora-history/        # 历史索引、清理、复用
-│   ├── pinora-platform/       # 窗口、权限、启动项、能力探测
-│   ├── pinora-diagnostics/    # 日志、错误映射、诊断包
-│   └── pinora-ui/             # GPUI + Liora 视图和交互
+│   ├── pinora-application/    # 会话、工作流、依赖端口、关闭编排
+│   ├── pinora-platform-api/   # 平台能力端口与 CapabilitySnapshot
+│   ├── pinora-platform-*/     # 逐平台适配器，仅在实现后存在
+│   ├── pinora-ui/             # 待选 UI 框架的 Adapter、视图和可访问性
+│   ├── pinora-jobs/           # 任务监督、取消、超时和进程封装
+│   ├── pinora-storage/        # 设置、历史、原子文件操作与清理
+│   └── pinora-diagnostics/    # 日志、错误映射、诊断包与探针
 ├── assets/
 └── docs/
     └── Pinora-开发设计文档.md
@@ -943,71 +1118,94 @@ pinora/
 
 ```mermaid
 graph TD
-    Main["src/main.rs (pinora bin)"] --> App[pinora-app]
+    Main["src/main.rs (pinora bin)"] --> App[pinora-application]
     App --> UI[pinora-ui]
     App --> Core[pinora-core]
+    App --> PlatformApi[pinora-platform-api]
+    App --> Jobs[pinora-jobs]
+    App --> Storage[pinora-storage]
+    App --> Diagnostics[pinora-diagnostics]
     UI --> Core
-    UI --> Capture[pinora-capture]
-    UI --> Pin[pinora-pin]
-    UI --> Export[pinora-export]
-    Capture --> Core
-    Pin --> Core
-    Pin --> Platform[pinora-platform]
-    Capture --> Platform
-    Hotkey[pinora-hotkey] --> Platform
-    Ocr[pinora-ocr] --> Core
-    Ocr --> Platform
-    Export --> Core
-    History[pinora-history] --> Core
-    Diagnostics[pinora-diagnostics] --> Core
-    App --> Hotkey
-    App --> Ocr
-    App --> History
-    App --> Diagnostics
+    UI --> App
+    Jobs --> Core
+    Storage --> Core
+    Diagnostics --> Core
+    PlatformLinux[pinora-platform-linux] --> PlatformApi
+    PlatformWindows[pinora-platform-windows] --> PlatformApi
+    PlatformMac[pinora-platform-macos] --> PlatformApi
 ```
 
-依赖方向只能由上层指向下层或能力接口；`pinora-core` 不得反向依赖 UI、平台适配器或具体第三方实现。根 `src/main.rs` 只负责启动编排，业务逻辑放在 `crates/` 中。
+依赖方向只能由上层指向下层或能力接口；`pinora-core` 不得反向依赖 UI、平台适配器或具体第三方实现。UI 依赖 `pinora-application` 的命令/视图模型，不得绕过应用层直连平台适配器。根 `src/main.rs` 只负责启动编排，业务逻辑放在聚焦模块中。
 
 ---
 
 ## 11. 开发阶段与交付拆分
 
-### Phase 0：可运行骨架
+### 阶段 0：行为冻结与重构护栏
 
-- 建立 Cargo workspace 和最小 `AppRuntime`。
-- 接入 GPUI/Liora 的版本验证、托盘、空设置页和单实例。
-- 建立 `Command`、`DomainEvent`、错误码和 fake 平台能力。
-- 验收：应用能启动、退出、第二次启动能激活首实例；离线单元测试可运行。
+- 为现有区域截图、选区取消、贴图创建/关闭、导出、OCR 失败和单实例转发建立可观察场景清单；没有等价场景不得删除旧路径。
+- 保持 `cargo fmt --check`、workspace check、严格 Clippy 和测试通过；记录真实桌面测试被跳过的条件。
+- 将 `desktop_shell` 中的状态修改集中到可测试的应用状态机接口，不增加新 UI 功能。
+- 验收：每项遗留功能被标为“保留、迁移、重做或废弃”，并有回滚点和最小契约测试。
 
-### Phase 1：截图 + 基础贴图 MVP（P0）
+### 阶段 1：领域边界、应用工作流与任务监督（P0 基础）
 
-- 区域 Overlay、全屏截图、单/多显示器坐标、xcap/Portal 抽象。
-- 贴图窗口拖动、缩放、透明度、锁定、置顶、关闭。
-- PNG 复制和保存、基础热键、托盘菜单。
-- 验收：完成“热键 → 区域截图 → 贴图 → 复制/保存”闭环。
+- 引入 `CaptureAsset` generation、`AppState` 所有权、`CapabilitySnapshot`、稳定错误语义和 `JobSupervisor`，先提供 fake/内存契约实现。
+- 将截图、导出、OCR、窗口生命周期的命令编排从 UI 事件循环移出；入口文件保持薄。
+- 验收：取消、超时、关闭、陈旧结果丢弃和退出回收均有离线契约测试，且不请求真实桌面权限。
 
-### Phase 2：标注工作台（P0）
+### 阶段 2：单一发布平台的真实截图与应用会话（P0）
 
-- 图形、画笔、文本、序号、马赛克/模糊、取色、撤销重做。
-- 标注编辑与贴图双向进入，确定性合成导出。
-- 验收：标注在缩放、导出和再次编辑后保持一致。
+- 在明确选定的首发平台实现 `CapturePort`，覆盖显示器快照、授权、区域/全屏、坐标转换、自隐藏和失败反馈。
+- 禁用生产自动 fake 回退；平台不可用必须阻止“截图成功”事件。
+- 验收：目标编译、单屏/双屏/HiDPI、取消、授权拒绝和自隐藏的隔离桌面探针通过。
 
-### Phase 3：OCR 与文字选择（P1）
+### 阶段 3：Overlay、贴图与导出垂直切片（P0）
 
-- 本地引擎抽象、模型加载、中文/英文、文字层、跨行选择复制。
-- 任务取消、超时、缓存、隐私说明和失败降级。
-- 验收：标准样例识别、选择、复制和失败恢复均可测试。
+- 用 UI Adapter 迁移区域 Overlay、工具栏、贴图窗口、锁定/缩放/置顶能力显示和 PNG 导出。
+- 剪贴板、保存和窗口创建必须采用真实结果语义；窗口关闭取消所属任务。
+- 验收：完成“热键/托盘 -> 区域截图 -> 贴图 -> 系统复制或原子保存”闭环，包含失败和关闭竞态场景。
 
-### Phase 4：跨平台打磨与历史（P1）
+### 阶段 4：标注工作台与可编辑资产（P0）
 
-- Wayland Portal 授权与降级、HiDPI、多屏热插拔、历史面板、配置迁移。
-- 性能、稳定性、可访问性和诊断包。
-- 验收：Windows、macOS、Linux X11、至少一个 Wayland 合成器完成核心场景。
+- 迁移矢量标注事务、撤销重做、渲染缓存、坐标空间和确定性合成；保留原始资产不可变。
+- 优先交付矩形、箭头、画笔、文本和马赛克等核心工具，其他工具按独立任务扩展。
+- 验收：编辑、撤销重做、缩放、导出和重新打开在资产/revision 一致性测试及桌面场景中通过。
 
-### Phase 5：增强生态（P2）
+### 阶段 5：OCR、历史与设置（P1）
 
-- 长截图、短录屏、标签分组、插件化导出、自动更新和可选云端能力。
-- 每项能力单独立项，默认不改变本地优先和隐私边界。
+- 在 `JobSupervisor` 内实现本地 OCR 引擎适配、模型可用性、取消、超时、缓存和文字层选择；不隐式下载模型。
+- 实现版本化设置、历史索引、配额清理、诊断和故障恢复。
+- 验收：中英文样例、取消/关闭、失败重试、配置损坏恢复和历史清理均有离线测试；目标平台上完成授权探针。
+
+### 阶段 6：逐平台适配与发布准备（P1）
+
+- 每个新增平台单独建立 adapter、target 编译、能力矩阵和核心流程探针；不以共享 UI/领域测试替代平台验证。
+- 完成可访问性、性能、长时运行、崩溃恢复、诊断包和发布材料。
+- 验收：仅对通过完整证据链的平台声明正式支持；未完成的能力保留实验标记或隐藏入口。
+
+### 阶段 7：增强生态（P2）
+
+- 长截图、短录屏、标签分组、插件导出、自动更新和可选云端能力均需独立 ADR、隐私评审和可回滚任务。
+- 默认不改变本地优先、最小权限和不可变资产边界。
+
+#### 遗留实现迁移流程图
+
+```mermaid
+flowchart LR
+    Audit["016 接管审计"] --> Freeze["冻结场景与契约测试"]
+    Freeze --> Boundary["阶段 1\n状态机 + 端口 + JobSupervisor"]
+    Boundary --> Platform["阶段 2\n首发平台真实 CapturePort"]
+    Platform --> Vertical["阶段 3\nOverlay / Pin / Export"]
+    Vertical --> Annotation["阶段 4\nAnnotation"]
+    Annotation --> OcrHistory["阶段 5\nOCR / 设置 / 历史"]
+    OcrHistory --> Release["阶段 6\n平台验证与发布"]
+    Legacy["遗留路径"] --> Freeze
+    Legacy --> Keep["保留直到等价场景通过"]
+    Vertical --> Compare{"等价契约\n和桌面场景通过？"}
+    Compare -->|否| Keep
+    Compare -->|是| Retire["受控废弃遗留路径"]
+```
 
 ---
 
@@ -1015,17 +1213,19 @@ graph TD
 
 | 编号 | 风险/问题 | 影响 | 处理策略 | 决策时点 |
 | --- | --- | --- | --- | --- |
-| D-001 | GPUI/Liora 的版本与窗口能力 | 编译、窗口和托盘实现 | 先做最小可运行 spike，锁定兼容版本 | Phase 0 |
-| D-002 | Wayland GlobalShortcuts 覆盖率 | 热键体验不一致 | Portal 优先，系统快捷方式降级 | Phase 0/4 |
-| D-003 | OCR 引擎与模型分发 | 包体、启动、许可证 | 对比 ONNX/Tesseract，默认本地模型路径 | Phase 3 前 |
-| D-004 | 透明置顶在不同合成器行为 | 贴图核心体验 | 能力探测、明确降级，不伪造成功 | Phase 1/4 |
-| D-005 | 历史文件和用户导出边界 | 数据丢失或误删 | 白名单目录、内容哈希、原子写入 | Phase 4 |
-| D-006 | 设计目标与实现状态混淆 | 计划失真 | 代码落地后同步 `.context/system/overview.md` 和任务完成记录 | 每个阶段 |
+| D-001 | UI 宿主框架与窗口能力 | 编译、窗口、托盘、可访问性实现 | 先实现 UI Adapter；以官方文档、最小窗口 spike、许可证和可访问性评审选型 | 阶段 1 前 |
+| D-002 | Wayland 全局热键和截图授权覆盖率 | 核心交互体验不一致 | 单独验证受支持机制；手动入口降级；不读环境变量伪造能力 | 对应平台阶段前 |
+| D-003 | OCR 引擎与模型分发 | 包体、启动、许可证、取消语义 | 对比本地引擎；验证模型来源、离线策略、输出边界和子进程回收 | 阶段 5 前 |
+| D-004 | 置顶、透明和点击穿透的合成器差异 | 贴图核心体验 | WindowPort 能力探测、明确降级、逐环境探针，不伪造成功 | 阶段 3/6 |
+| D-005 | 历史文件和用户导出边界 | 数据丢失或误删 | 自有目录白名单、tombstone、内容哈希、原子写入和恢复测试 | 阶段 5 |
+| D-006 | 设计目标与实现状态混淆 | 计划失真 | 代码落地后同步 `.context/system/overview.md` 和任务完成记录；发布能力须有证据链接 | 每个阶段 |
+| D-007 | 旧桌面壳迁移期间行为回退 | 用户核心流程中断 | 先冻结场景，双路径比较，按能力切换；未通过不删除旧路径 | 阶段 0-4 |
+| D-008 | 生产 fake 回退与陈旧帧 | 将模拟图或自身窗口误报为截图 | fake 仅测试注入；资产记录来源/generation；会话拒绝任意旧帧 | 阶段 1-2 |
 
 ### 12.1 待确认问题
 
 - 首发平台顺序是 Windows、macOS 还是 Linux Wayland 优先？
-- Liora 是直接依赖上游仓库、workspace 子模块还是先以适配层隔离？
+- UI 宿主框架的窗口、托盘、可访问性和跨平台许可是否满足阶段 3 的需求？
 - OCR 模型是否随安装包发布，还是由用户导入本地模型？
 - 首版是否支持窗口截图，还是只交付区域/全屏截图？
 - 历史记录默认保存多久、最大磁盘占用是多少？
@@ -1036,39 +1236,44 @@ graph TD
 ## 附录 A：建议接口草案
 
 ```rust
-pub trait CaptureProvider {
-    fn displays(&self) -> Result<Vec<DisplayInfo>, PlatformError>;
-    fn capture(&self, request: CaptureRequest) -> Result<CaptureImage, CaptureError>;
+pub trait CapturePort {
+    fn snapshot(&self) -> CapabilityResult<DisplaySnapshot>;
+    fn capture(&self, request: CaptureRequest) -> CapabilityResult<CaptureAsset>;
 }
 
-pub trait WindowProvider {
-    fn create_pin(&self, image: &CaptureImage) -> Result<WindowHandle, PlatformError>;
-    fn set_transform(&self, handle: WindowHandle, transform: PinTransform) -> Result<(), PlatformError>;
-    fn close(&self, handle: WindowHandle) -> Result<(), PlatformError>;
+pub trait WindowPort {
+    fn create_pin(&mut self, request: CreatePinWindow) -> CapabilityResult<()>;
+    fn apply_pin_view(&mut self, pin_id: PinId, view: PinViewModel) -> CapabilityResult<()>;
+    fn destroy_pin(&mut self, pin_id: PinId) -> CapabilityResult<()>;
 }
 
-pub trait HotkeyProvider {
-    fn register(&mut self, binding: KeyBinding) -> Result<(), HotkeyError>;
-    fn unregister(&mut self, action: ActionId) -> Result<(), HotkeyError>;
+pub trait ClipboardPort {
+    fn write_image(&mut self, image: ExportImage) -> CapabilityResult<SystemClipboardReceipt>;
+    fn write_text(&mut self, text: ClipboardText) -> CapabilityResult<SystemClipboardReceipt>;
 }
 
-pub trait OcrEngine {
-    fn recognize(&self, image: &RgbaImage, options: OcrOptions) -> OcrFuture;
+pub trait JobSupervisor {
+    fn submit(&mut self, request: JobRequest) -> Result<JobId, JobAdmissionError>;
+    fn cancel(&mut self, job_id: JobId, reason: CancelReason);
+    fn poll(&mut self) -> Vec<JobOutcome>;
+    fn shutdown(&mut self, deadline: Deadline) -> ShutdownReport;
 }
 ```
 
-接口草案只表达能力边界，最终签名要结合所选依赖、线程模型和错误类型验证；不得直接复制为未经评审的公共 API。
+`CapabilityResult<T>` 必须区分可用、需授权、暂时失败、不支持和内部故障，并携带稳定错误码、是否可重试及脱敏后端信息。`JobRequest` 必须引用资产 ID/generation、owner、截止时间、取消令牌、输入输出上限和关联 ID。接口草案只表达能力边界，最终签名要结合所选依赖、线程模型、错误类型和平台探针验证；不得直接复制为未经评审的公共 API。
 
 ## 附录 B：术语表
 
 | 术语 | 定义 |
 | --- | --- |
-| CaptureImage | 一次截图产生的不可变像素和来源元数据 |
+| CaptureAsset | 一次真实截图产生的不可变像素、来源、坐标空间、内容哈希和 generation |
 | Pin | 显示在桌面的可交互贴图实体 |
 | Overlay | 覆盖屏幕用于选区、取色或窗口候选的临时 UI |
 | AnnotationDoc | 与原图坐标绑定、可撤销重做的标注文档 |
 | OcrResult | 带文字块、行、边界框和置信度的识别结果 |
 | CapabilitySnapshot | 当前平台能力和权限探测结果 |
 | DomainEvent | 已发生的领域事实，供 UI、服务和诊断订阅 |
+| JobSupervisor | 管理耗时工作、取消、超时、并发和退出回收的应用服务 |
+| generation | 资产或编辑版本号，用于拒绝陈旧任务结果 |
 
 *文档结束。实现阶段须把每个阶段拆成独立计划/任务，并用仓库证据更新本文和 `.context/`。*

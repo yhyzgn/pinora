@@ -53,9 +53,8 @@ pub fn run_pin_session(pins: Vec<PinView>) -> Result<(PinSessionEnd, Vec<PinId>)
         return Ok((PinSessionEnd::AllClosed, Vec::new()));
     }
 
-    let event_loop = EventLoop::new().map_err(|e| {
-        PinoraError::new(ErrorCode::Internal, format!("pin event loop: {e}"))
-    })?;
+    let event_loop = EventLoop::new()
+        .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("pin event loop: {e}")))?;
 
     let mut app = PinDesktopApp {
         pending: pins,
@@ -195,7 +194,7 @@ impl ApplicationHandler for PinDesktopApp {
                 // outer' = outer + (cursor_client - grab)
                 let new_x = f64::from(outer.x) + (position.x - drag.grab_x);
                 let new_y = f64::from(outer.y) + (position.y - drag.grab_y);
-                let _ = state.window.set_outer_position(PhysicalPosition::new(
+                state.window.set_outer_position(PhysicalPosition::new(
                     new_x.round() as i32,
                     new_y.round() as i32,
                 ));
@@ -259,9 +258,9 @@ impl PinDesktopApp {
             .with_resizable(true)
             .with_window_level(WindowLevel::AlwaysOnTop);
 
-        let window = event_loop
-            .create_window(attrs)
-            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("create pin window: {e}")))?;
+        let window = event_loop.create_window(attrs).map_err(|e| {
+            PinoraError::new(ErrorCode::Internal, format!("create pin window: {e}"))
+        })?;
         let window = Rc::new(window);
 
         if self.context.is_none() {
@@ -316,9 +315,10 @@ impl PinDesktopApp {
         let bw = size.width.max(1) as usize;
         let bh = size.height.max(1) as usize;
 
-        let mut buffer = state.surface.buffer_mut().map_err(|e| {
-            PinoraError::new(ErrorCode::Internal, format!("pin buffer: {e}"))
-        })?;
+        let mut buffer = state
+            .surface
+            .buffer_mut()
+            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("pin buffer: {e}")))?;
         if buffer.len() < bw * bh {
             return Err(PinoraError::new(
                 ErrorCode::Internal,

@@ -2,15 +2,26 @@
 //!
 //! 缺引擎或模型时返回可理解错误；不自动联网下载。
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use pinora_core::{
-    union_bboxes, CaptureImage, ErrorCode, OcrLine, OcrResult, OcrWord, PixelRect, PinoraError,
+    CaptureImage, ErrorCode, OcrLine, OcrResult, OcrWord, PinoraError, PixelRect, union_bboxes,
 };
-use png;
+
+use crate::job_supervisor::JobCancellation;
+
+const TESSERACT_TIMEOUT: Duration = Duration::from_secs(30);
+const TESSERACT_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const MAX_TSV_BYTES: usize = 16 * 1024 * 1024;
 
 /// 探测 tesseract 是否可用。
 pub fn tesseract_available() -> bool {
@@ -19,6 +30,21 @@ pub fn tesseract_available() -> bool {
 
 /// 对截图做 OCR。优先 `eng`，有 `chi_sim` 时用 `chi_sim+eng`。
 pub fn recognize_image(image: &CaptureImage) -> Result<OcrResult, PinoraError> {
+    let cancellation = JobCancellation::standalone();
+    recognize_image_with_cancellation(image, &cancellation)
+}
+
+/// 可被任务监督器取消的 OCR 入口。
+pub fn recognize_image_with_cancellation(
+    image: &CaptureImage,
+    cancellation: &JobCancellation,
+) -> Result<OcrResult, PinoraError> {
+    if cancellation.is_cancelled() {
+        return Err(PinoraError::new(
+            ErrorCode::Cancelled,
+            "ocr cancelled before start",
+        ));
+    }
     let bin = which("tesseract").ok_or_else(|| {
         PinoraError::new(
             ErrorCode::Internal,
@@ -32,11 +58,14 @@ pub fn recognize_image(image: &CaptureImage) -> Result<OcrResult, PinoraError> {
     let png = encode_png_bytes(image)?;
     let tmp = write_temp_png(&png)?;
 
-    let output = run_tesseract_tsv(&bin, &tmp, &lang_arg)?;
-    let _ = std::fs::remove_file(&tmp);
+    let output = run_tesseract_tsv(&bin, tmp.as_path(), &lang_arg, cancellation)?;
 
     let lines = parse_tsv(&output)?;
-    Ok(OcrResult::from_lines(lines, langs, format!("tesseract-cli:{lang_arg}")))
+    Ok(OcrResult::from_lines(
+        lines,
+        langs,
+        format!("tesseract-cli:{lang_arg}"),
+    ))
 }
 
 fn detect_languages() -> Vec<String> {
@@ -63,14 +92,22 @@ fn list_tesseract_langs() -> Vec<String> {
     let Some(bin) = which("tesseract") else {
         return Vec::new();
     };
-    let Ok(out) = Command::new(bin)
+    let child = match Command::new(bin)
         .arg("--list-langs")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-    else {
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return probe_tessdata_files(),
+    };
+    let cancellation = JobCancellation::standalone();
+    let Ok(out) = wait_for_child(child, &cancellation, TESSERACT_PROBE_TIMEOUT) else {
         return probe_tessdata_files();
     };
+    if !out.status.success() {
+        return probe_tessdata_files();
+    }
     let text = String::from_utf8_lossy(&out.stdout);
     let mut langs: Vec<String> = text
         .lines()
@@ -100,17 +137,23 @@ fn probe_tessdata_files() -> Vec<String> {
         for ent in rd.flatten() {
             let name = ent.file_name();
             let name = name.to_string_lossy();
-            if let Some(stem) = name.strip_suffix(".traineddata") {
-                if stem != "osd" && stem != "equ" {
-                    langs.push(stem.to_string());
-                }
+            if let Some(stem) = name.strip_suffix(".traineddata")
+                && stem != "osd"
+                && stem != "equ"
+            {
+                langs.push(stem.to_string());
             }
         }
     }
     langs
 }
 
-fn run_tesseract_tsv(bin: &Path, image: &Path, langs: &str) -> Result<String, PinoraError> {
+fn run_tesseract_tsv(
+    bin: &Path,
+    image: &Path,
+    langs: &str,
+    cancellation: &JobCancellation,
+) -> Result<String, PinoraError> {
     // tesseract img stdout -l lang tsv
     let child = Command::new(bin)
         .args([
@@ -127,37 +170,155 @@ fn run_tesseract_tsv(bin: &Path, image: &Path, langs: &str) -> Result<String, Pi
         .spawn()
         .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("spawn tesseract: {e}")))?;
 
-    // 超时保护
-    let (tx, rx) = std::sync::mpsc::channel();
-    let child_id = child.id();
-    std::thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
-    });
-    match rx.recv_timeout(Duration::from_secs(30)) {
-        Ok(Ok(out)) => {
-            if !out.status.success() {
-                let err = String::from_utf8_lossy(&out.stderr);
+    let output = wait_for_child(child, cancellation, TESSERACT_TIMEOUT)?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(PinoraError::new(
+            ErrorCode::Internal,
+            format!("tesseract failed: {}", err.trim()),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[derive(Debug)]
+struct ChildOutput {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+/// 等待并回收一个由当前适配器创建的 child。
+///
+/// stdout/stderr 在独立读取线程中排空，主线程只负责取消、超时和 `wait`；因此
+/// 子进程无论哪条错误路径都不会把句柄遗留给调用方。
+fn wait_for_child(
+    child: Child,
+    cancellation: &JobCancellation,
+    timeout: Duration,
+) -> Result<ChildOutput, PinoraError> {
+    wait_for_child_with_limit(child, cancellation, timeout, MAX_TSV_BYTES)
+}
+
+fn wait_for_child_with_limit(
+    mut child: Child,
+    cancellation: &JobCancellation,
+    timeout: Duration,
+    output_limit: usize,
+) -> Result<ChildOutput, PinoraError> {
+    if cancellation.is_cancelled() {
+        terminate_child(&mut child);
+        return Err(PinoraError::new(ErrorCode::Cancelled, "ocr cancelled"));
+    }
+
+    let stdout = child.stdout.take().ok_or_else(|| {
+        terminate_child(&mut child);
+        PinoraError::new(ErrorCode::Internal, "tesseract stdout pipe missing")
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        terminate_child(&mut child);
+        PinoraError::new(ErrorCode::Internal, "tesseract stderr pipe missing")
+    })?;
+    let output_exceeded = Arc::new(AtomicBool::new(false));
+    let stdout_thread = spawn_pipe_reader(stdout, output_exceeded.clone(), output_limit);
+    let stderr_thread = spawn_pipe_reader(stderr, output_exceeded.clone(), output_limit);
+    let started = Instant::now();
+
+    let status = loop {
+        if cancellation.is_cancelled() {
+            terminate_child(&mut child);
+            join_pipe_readers(stdout_thread, stderr_thread);
+            return Err(PinoraError::new(ErrorCode::Cancelled, "ocr cancelled"));
+        }
+        if output_exceeded.load(Ordering::Acquire) {
+            terminate_child(&mut child);
+            join_pipe_readers(stdout_thread, stderr_thread);
+            return Err(PinoraError::new(
+                ErrorCode::ResourceLimitExceeded,
+                format!("tesseract output exceeded {output_limit} bytes"),
+            ));
+        }
+        if started.elapsed() >= timeout {
+            terminate_child(&mut child);
+            join_pipe_readers(stdout_thread, stderr_thread);
+            return Err(PinoraError::new(
+                ErrorCode::TimedOut,
+                format!("tesseract timed out ({}s)", timeout.as_secs()),
+            ));
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => thread::sleep(CHILD_POLL_INTERVAL),
+            Err(error) => {
+                terminate_child(&mut child);
+                join_pipe_readers(stdout_thread, stderr_thread);
                 return Err(PinoraError::new(
                     ErrorCode::Internal,
-                    format!("tesseract failed: {}", err.trim()),
+                    format!("tesseract wait: {error}"),
                 ));
             }
-            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
         }
-        Ok(Err(e)) => Err(PinoraError::new(
-            ErrorCode::Internal,
-            format!("tesseract wait: {e}"),
-        )),
-        Err(_) => {
-            let _ = Command::new("kill")
-                .args(["-9", &child_id.to_string()])
-                .status();
-            Err(PinoraError::new(
-                ErrorCode::Internal,
-                "tesseract timed out (30s)",
-            ))
-        }
+    };
+
+    let stdout = join_pipe_reader(stdout_thread)?;
+    let stderr = join_pipe_reader(stderr_thread)?;
+    if output_exceeded.load(Ordering::Acquire) {
+        return Err(PinoraError::new(
+            ErrorCode::ResourceLimitExceeded,
+            format!("tesseract output exceeded {output_limit} bytes"),
+        ));
     }
+    Ok(ChildOutput {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn spawn_pipe_reader<R>(
+    reader: R,
+    output_exceeded: Arc<AtomicBool>,
+    output_limit: usize,
+) -> JoinHandle<std::io::Result<Vec<u8>>>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        reader
+            .take((output_limit + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > output_limit {
+            output_exceeded.store(true, Ordering::Release);
+            bytes.truncate(output_limit);
+        }
+        Ok(bytes)
+    })
+}
+
+fn join_pipe_reader(reader: JoinHandle<std::io::Result<Vec<u8>>>) -> Result<Vec<u8>, PinoraError> {
+    reader
+        .join()
+        .map_err(|_| PinoraError::new(ErrorCode::Internal, "tesseract output reader panicked"))?
+        .map_err(|error| {
+            PinoraError::new(
+                ErrorCode::Internal,
+                format!("read tesseract output: {error}"),
+            )
+        })
+}
+
+fn join_pipe_readers(
+    stdout: JoinHandle<std::io::Result<Vec<u8>>>,
+    stderr: JoinHandle<std::io::Result<Vec<u8>>>,
+) {
+    let _ = stdout.join();
+    let _ = stderr.join();
+}
+
+fn terminate_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// 解析 tesseract TSV（level=5 为 word）。
@@ -229,9 +390,9 @@ fn encode_png_bytes(image: &CaptureImage) -> Result<Vec<u8>, PinoraError> {
         let mut encoder = png::Encoder::new(cursor, width, height);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().map_err(|e| {
-            PinoraError::new(ErrorCode::Internal, format!("ocr png header: {e}"))
-        })?;
+        let mut writer = encoder
+            .write_header()
+            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("ocr png header: {e}")))?;
         writer
             .write_image_data(&image.pixels.bytes)
             .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("ocr png data: {e}")))?;
@@ -239,7 +400,23 @@ fn encode_png_bytes(image: &CaptureImage) -> Result<Vec<u8>, PinoraError> {
     Ok(buf)
 }
 
-fn write_temp_png(png: &[u8]) -> Result<PathBuf, PinoraError> {
+struct TempPng {
+    path: PathBuf,
+}
+
+impl TempPng {
+    fn as_path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempPng {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn write_temp_png(png: &[u8]) -> Result<TempPng, PinoraError> {
     let dir = std::env::temp_dir();
     let path = dir.join(format!(
         "pinora-ocr-{}-{}.png",
@@ -253,7 +430,7 @@ fn write_temp_png(png: &[u8]) -> Result<PathBuf, PinoraError> {
         .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("ocr temp: {e}")))?;
     f.write_all(png)
         .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("ocr temp write: {e}")))?;
-    Ok(path)
+    Ok(TempPng { path })
 }
 
 fn which(name: &str) -> Option<PathBuf> {
@@ -271,6 +448,87 @@ fn which(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn running_shell() -> Child {
+        Command::new("sh")
+            .args(["-c", "while true; do :; done"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn local shell")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_reaps_owned_child_without_external_kill() {
+        use pinora_core::{
+            AssetRef, CorrelationId, ImageId, JobId, JobKind, JobOwner, JobSpec, SessionId,
+        };
+
+        let asset = AssetRef::initial(ImageId::from_raw(901));
+        let spec = JobSpec::new(
+            JobId::from_raw(901),
+            CorrelationId::from_raw(901),
+            asset,
+            JobOwner::Session(SessionId::from_raw(901)),
+            JobKind::Ocr,
+            u64::MAX,
+        );
+        let mut supervisor = crate::job_supervisor::JobSupervisor::new();
+        let ticket = supervisor.submit(spec).expect("submit job");
+        let cancellation = ticket.cancellation();
+        supervisor.cancel(ticket.id).expect("cancel job");
+
+        let error = wait_for_child(running_shell(), &cancellation, Duration::from_secs(2))
+            .expect_err("cancelled child must not complete");
+        assert_eq!(error.code, ErrorCode::Cancelled);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timeout_reaps_owned_child() {
+        let cancellation = JobCancellation::standalone();
+        let error = wait_for_child(running_shell(), &cancellation, Duration::from_millis(30))
+            .expect_err("timed out child must not complete");
+        assert_eq!(error.code, ErrorCode::TimedOut);
+    }
+
+    #[test]
+    fn output_reader_marks_and_truncates_over_limit() {
+        let output_exceeded = Arc::new(AtomicBool::new(false));
+        let input = std::io::Cursor::new(vec![b'x'; MAX_TSV_BYTES + 1]);
+        let reader = spawn_pipe_reader(input, output_exceeded.clone(), MAX_TSV_BYTES);
+        let bytes = join_pipe_reader(reader).expect("reader");
+
+        assert_eq!(bytes.len(), MAX_TSV_BYTES);
+        assert!(output_exceeded.load(Ordering::Acquire));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn over_limit_output_is_reaped_and_has_stable_error() {
+        let child = Command::new("sh")
+            .args(["-c", "printf 123456789"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn local shell");
+        let cancellation = JobCancellation::standalone();
+
+        let error = wait_for_child_with_limit(child, &cancellation, Duration::from_secs(2), 8)
+            .expect_err("over-limit output must be rejected");
+        assert_eq!(error.code, ErrorCode::ResourceLimitExceeded);
+    }
+
+    #[test]
+    fn temporary_png_is_removed_when_scope_ends() {
+        let temp = write_temp_png(b"test png bytes").expect("temp file");
+        let path = temp.as_path().to_path_buf();
+        assert!(path.is_file());
+        drop(temp);
+        assert!(!path.exists());
+    }
 
     #[test]
     fn parse_sample_tsv() {

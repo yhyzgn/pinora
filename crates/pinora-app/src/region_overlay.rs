@@ -9,9 +9,7 @@ use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use pinora_core::{
-    CaptureImage, ErrorCode, PinoraError, PixelPoint, PixelRect, SelectionSession,
-};
+use pinora_core::{CaptureImage, ErrorCode, PinoraError, PixelPoint, PixelRect, SelectionSession};
 use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -38,9 +36,8 @@ pub fn run_region_selection(background: &CaptureImage) -> Result<Option<PixelRec
     let dimmed: Vec<u32> = base.iter().copied().map(darken).collect();
     let frame = dimmed.clone();
 
-    let event_loop = EventLoop::new().map_err(|e| {
-        PinoraError::new(ErrorCode::Internal, format!("event loop: {e}"))
-    })?;
+    let event_loop = EventLoop::new()
+        .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("event loop: {e}")))?;
 
     let mut app = OverlayApp {
         width,
@@ -281,12 +278,11 @@ impl ApplicationHandler for OverlayApp {
             WindowEvent::Resized(size) => {
                 self.win_w = size.width.max(1);
                 self.win_h = size.height.max(1);
-                if let Some(surface) = self.surface.as_mut() {
-                    if let (Some(w), Some(h)) =
+                if let Some(surface) = self.surface.as_mut()
+                    && let (Some(w), Some(h)) =
                         (NonZeroU32::new(self.win_w), NonZeroU32::new(self.win_h))
-                    {
-                        let _ = surface.resize(w, h);
-                    }
+                {
+                    let _ = surface.resize(w, h);
                 }
                 self.last_drawn_rect = None;
                 self.frame.copy_from_slice(&self.dimmed);
@@ -331,18 +327,14 @@ impl OverlayApp {
             }
             if let Some(rect) = new_rect {
                 blit_rect(&mut self.frame, &self.base, img_w, img_h, rect);
-                let x0 = rect.origin.x.max(0) as usize;
-                let y0 = rect.origin.y.max(0) as usize;
-                let x1 = (rect.right() as usize).min(img_w);
-                let y1 = (rect.bottom() as usize).min(img_h);
-                draw_rect_border(&mut self.frame, img_w, img_h, x0, y0, x1, y1, 0x00_FF_CC_33);
+                draw_rect_border(&mut self.frame, img_w, img_h, rect, 0x00_FF_CC_33);
             }
             self.last_drawn_rect = new_rect;
         }
 
-        let mut buffer = surface.buffer_mut().map_err(|e| {
-            PinoraError::new(ErrorCode::Internal, format!("buffer_mut: {e}"))
-        })?;
+        let mut buffer = surface
+            .buffer_mut()
+            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("buffer_mut: {e}")))?;
 
         let bw = self.win_w as usize;
         let bh = self.win_h as usize;
@@ -415,16 +407,11 @@ fn darken(c: u32) -> u32 {
     (r << 16) | (g << 8) | b
 }
 
-fn draw_rect_border(
-    buf: &mut [u32],
-    stride: usize,
-    height: usize,
-    x0: usize,
-    y0: usize,
-    x1: usize,
-    y1: usize,
-    color: u32,
-) {
+fn draw_rect_border(buf: &mut [u32], stride: usize, height: usize, rect: PixelRect, color: u32) {
+    let x0 = rect.origin.x.max(0) as usize;
+    let y0 = rect.origin.y.max(0) as usize;
+    let x1 = (rect.right() as usize).min(stride);
+    let y1 = (rect.bottom() as usize).min(height);
     if x1 <= x0 || y1 <= y0 {
         return;
     }
@@ -472,8 +459,8 @@ mod tests {
         let mut dst = vec![0u32; 4 * 4];
         let src: Vec<u32> = (0..16).collect();
         blit_rect(&mut dst, &src, 4, 4, PixelRect::new(1, 1, 2, 2));
-        assert_eq!(dst[1 * 4 + 1], 5);
-        assert_eq!(dst[1 * 4 + 2], 6);
+        assert_eq!(dst[4 + 1], 5);
+        assert_eq!(dst[4 + 2], 6);
         assert_eq!(dst[2 * 4 + 1], 9);
         assert_eq!(dst[0], 0);
     }

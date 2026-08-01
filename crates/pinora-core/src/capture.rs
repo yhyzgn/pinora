@@ -17,14 +17,9 @@ pub struct DisplayInfo {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CaptureRequest {
     /// 指定显示器上的矩形区域（图像坐标，需落在显示器 bounds 内或可裁剪）。
-    Region {
-        display: DisplayId,
-        rect: PixelRect,
-    },
+    Region { display: DisplayId, rect: PixelRect },
     /// 整屏捕获。
-    FullDisplay {
-        display: DisplayId,
-    },
+    FullDisplay { display: DisplayId },
 }
 
 /// 截图提供者。业务层只依赖此 trait；测试注入 fake。
@@ -60,14 +55,12 @@ pub fn resolve_capture_rect(
 
     let rect = match request {
         CaptureRequest::FullDisplay { .. } => info.bounds,
-        CaptureRequest::Region { rect, .. } => rect
-            .clamp_to(info.bounds)
-            .ok_or_else(|| {
-                PinoraError::new(
-                    ErrorCode::CommandRejected,
-                    "capture region does not intersect display",
-                )
-            })?,
+        CaptureRequest::Region { rect, .. } => rect.clamp_to(info.bounds).ok_or_else(|| {
+            PinoraError::new(
+                ErrorCode::CommandRejected,
+                "capture region does not intersect display",
+            )
+        })?,
     };
 
     if rect.size.is_empty() {
@@ -101,7 +94,7 @@ mod tests {
         let req = CaptureRequest::FullDisplay {
             display: DisplayId::new("d0"),
         };
-        let (info, rect) = resolve_capture_rect(&[d.clone()], &req).unwrap();
+        let (info, rect) = resolve_capture_rect(std::slice::from_ref(&d), &req).unwrap();
         assert_eq!(info.id, d.id);
         assert_eq!(rect, d.bounds);
     }

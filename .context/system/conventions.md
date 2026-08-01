@@ -9,6 +9,7 @@
 - 高层用户意图优先映射为 `ActionId`，再展开为 `Command`（`InvokeAction`）。
 - **区域选区**几何在 `pinora-core::selection`；交互 Overlay 在 `pinora-app::region_overlay`（阻塞事件循环），不嵌入 `AppRuntime::dispatch`。
 - 修改公共模块、类型或函数前，使用 `rg` 搜索全部引用，并运行 `cargo check --workspace` 与相关测试。
+- 外部 CLI 适配器必须持有自己创建的 `Child`；超时先对句柄执行 `kill` 再 `wait`，不得通过 PID 字符串或外部 `kill` 命令回收，也不得把 `wait_with_output` 放进脱离调用方生命周期的线程。
 
 ## 系统依赖（Linux + xcap）
 
@@ -21,7 +22,9 @@ sudo dnf install -y pipewire-devel mesa-libgbm-devel wayland-devel libxcb-devel
 ## 验证命令
 
 - 工程元数据：`cargo metadata --no-deps --format-version 1`
+- 格式：`cargo fmt --check`
 - 编译：`cargo check --workspace`
+- 静态检查：`cargo clippy --workspace --all-targets -- -D warnings`
 - 测试：`cargo test --workspace`
 - 真捕获（可选）：`cargo test -p pinora-app real_capture -- --ignored`
 - 运行探针：`cargo run`

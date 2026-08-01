@@ -36,9 +36,8 @@ impl OsSingleInstance {
     /// 使用指定运行时目录（测试可传入临时目录）。
     pub fn with_dir(dir: impl Into<PathBuf>) -> Result<Self, SingleInstanceError> {
         let dir = dir.into();
-        fs::create_dir_all(&dir).map_err(|e| {
-            SingleInstanceError::ForwardFailed(format!("create runtime dir: {e}"))
-        })?;
+        fs::create_dir_all(&dir)
+            .map_err(|e| SingleInstanceError::ForwardFailed(format!("create runtime dir: {e}")))?;
         Ok(Self {
             lock_path: dir.join("instance.lock"),
             sock_path: dir.join("activate.sock"),
@@ -147,10 +146,10 @@ impl OsSingleInstance {
             let _ = stream.write_all(b"STOP\n");
             let _ = stream.shutdown(Shutdown::Both);
         }
-        if let Ok(mut guard) = self.listener.lock() {
-            if let Some(handle) = guard.take() {
-                let _ = handle.join();
-            }
+        if let Ok(mut guard) = self.listener.lock()
+            && let Some(handle) = guard.take()
+        {
+            let _ = handle.join();
         }
         if let Ok(mut guard) = self.activate_tx.lock() {
             *guard = None;
@@ -265,7 +264,10 @@ fn parse_ipc_frame(buf: &[u8]) -> Option<Command> {
     if buf.windows(QUIT_FRAME.len()).any(|w| w == QUIT_FRAME) {
         return Some(Command::shutdown());
     }
-    if buf.windows(ACTIVATE_FRAME.len()).any(|w| w == ACTIVATE_FRAME) {
+    if buf
+        .windows(ACTIVATE_FRAME.len())
+        .any(|w| w == ACTIVATE_FRAME)
+    {
         return Some(Command::activate());
     }
     None

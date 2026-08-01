@@ -73,12 +73,7 @@ impl PixelRect {
         if x1 <= x0 || y1 <= y0 {
             return None;
         }
-        Some(PixelRect::new(
-            x0,
-            y0,
-            (x1 - x0) as u32,
-            (y1 - y0) as u32,
-        ))
+        Some(PixelRect::new(x0, y0, (x1 - x0) as u32, (y1 - y0) as u32))
     }
 }
 

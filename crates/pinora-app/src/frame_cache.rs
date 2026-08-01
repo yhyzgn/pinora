@@ -142,12 +142,10 @@ fn worker<C>(
                 // 只在第一帧或偶尔打印，避免刷屏
                 static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
                 let n = N.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-                if n == 1 || n % 20 == 0 {
+                if n == 1 || n.is_multiple_of(20) {
                     println!(
                         "pinora: frame-cache ready {}x{} in {:.0}ms (#{n})",
-                        frame.image.pixels.size.width,
-                        frame.image.pixels.size.height,
-                        ms
+                        frame.image.pixels.size.width, frame.image.pixels.size.height, ms
                     );
                 }
                 if let Ok(mut g) = latest.lock() {

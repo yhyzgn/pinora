@@ -3,8 +3,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use pinora_core::{
-    resolve_capture_rect, CaptureImage, CaptureMetadata, CaptureProvider, CaptureRequest,
-    DisplayId, DisplayInfo, ErrorCode, ImageId, PixelRect, PixelSize, PinoraError, RgbaBuffer,
+    CaptureImage, CaptureMetadata, CaptureProvider, CaptureRequest, DisplayId, DisplayInfo,
+    ErrorCode, ImageId, PinoraError, PixelRect, PixelSize, RgbaBuffer, resolve_capture_rect,
 };
 use xcap::Monitor;
 
@@ -63,9 +63,8 @@ impl CaptureProvider for XcapCaptureProvider {
         }
         let bytes = rgba.into_raw();
         let size = PixelSize::new(w, h);
-        let pixels = RgbaBuffer::new(size, bytes).map_err(|msg| {
-            PinoraError::new(ErrorCode::Internal, format!("xcap buffer: {msg}"))
-        })?;
+        let pixels = RgbaBuffer::new(size, bytes)
+            .map_err(|msg| PinoraError::new(ErrorCode::Internal, format!("xcap buffer: {msg}")))?;
 
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -161,9 +160,6 @@ mod tests {
             .expect("capture");
         assert!(image.size().width > 0);
         assert!(image.size().height > 0);
-        assert_eq!(
-            image.pixels.byte_len(),
-            (image.size().area() * 4) as usize
-        );
+        assert_eq!(image.pixels.byte_len(), (image.size().area() * 4) as usize);
     }
 }

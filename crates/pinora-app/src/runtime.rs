@@ -166,9 +166,7 @@ where
                 produced.extend(self.do_capture(correlation_id, request)?);
             }
             Command::CaptureAndPin {
-                request,
-                position,
-                ..
+                request, position, ..
             } => {
                 self.require_running()?;
                 let cap_events = self.do_capture(correlation_id, request)?;
@@ -198,9 +196,7 @@ where
                 ));
             }
             Command::CreatePinFromImage {
-                image_id,
-                position,
-                ..
+                image_id, position, ..
             } => {
                 self.require_running()?;
                 let pin_id = self.state.create_pin_from_image(image_id, position)?;
@@ -219,11 +215,12 @@ where
             } => {
                 self.require_running()?;
                 self.state.set_pin_transform(pin_id, transform)?;
-                produced.push(event(correlation_id, DomainEventKind::PinUpdated { pin_id }));
+                produced.push(event(
+                    correlation_id,
+                    DomainEventKind::PinUpdated { pin_id },
+                ));
             }
-            Command::SavePng {
-                image_id, path, ..
-            } => {
+            Command::SavePng { image_id, path, .. } => {
                 self.require_running()?;
                 let image = self.state.image(image_id).cloned().ok_or_else(|| {
                     fail(ErrorCode::NotFound, format!("image not found: {image_id}"))
@@ -278,16 +275,18 @@ where
                 ))
             }
             ActionId::SaveLastCapture => {
-                let image_id = self.state.last_capture_id.ok_or_else(|| {
-                    fail(ErrorCode::NotFound, "no last capture to save")
-                })?;
+                let image_id = self
+                    .state
+                    .last_capture_id
+                    .ok_or_else(|| fail(ErrorCode::NotFound, "no last capture to save"))?;
                 let path = self.default_export_dir.join(format!("{image_id}.png"));
                 Ok(Command::save_png(image_id, path))
             }
             ActionId::CopyLastCapture => {
-                let image_id = self.state.last_capture_id.ok_or_else(|| {
-                    fail(ErrorCode::NotFound, "no last capture to copy")
-                })?;
+                let image_id = self
+                    .state
+                    .last_capture_id
+                    .ok_or_else(|| fail(ErrorCode::NotFound, "no last capture to copy"))?;
                 Ok(Command::copy_image(image_id))
             }
             ActionId::Quit => Ok(Command::shutdown()),
@@ -320,10 +319,7 @@ where
     }
 }
 
-fn event(
-    correlation_id: pinora_core::CorrelationId,
-    kind: DomainEventKind,
-) -> EventEnvelope {
+fn event(correlation_id: pinora_core::CorrelationId, kind: DomainEventKind) -> EventEnvelope {
     EventEnvelope::now(correlation_id, DomainEvent { kind })
 }
 
@@ -338,11 +334,15 @@ mod tests {
     use crate::image_sink::LocalImageSink;
     use crate::platform::FakeCapabilityProbe;
     use crate::single_instance::InMemorySingleInstance;
-    use pinora_core::{PixelSize, PinTransform};
+    use pinora_core::{PinTransform, PixelSize};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    type TestRt =
-        AppRuntime<InMemorySingleInstance, FakeCapabilityProbe, FakeCaptureProvider, LocalImageSink>;
+    type TestRt = AppRuntime<
+        InMemorySingleInstance,
+        FakeCapabilityProbe,
+        FakeCaptureProvider,
+        LocalImageSink,
+    >;
 
     fn runtime() -> TestRt {
         AppRuntime::new(

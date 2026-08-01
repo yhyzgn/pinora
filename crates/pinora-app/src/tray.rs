@@ -2,7 +2,7 @@
 //!
 //! 注意：Linux 后端基于 GTK，创建托盘前必须 `gtk::init()`，否则会直接 panic。
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
@@ -27,9 +27,7 @@ impl AppTray {
         // tray-icon 内部可能 panic（未 gtk::init），必须 catch
         match catch_unwind(AssertUnwindSafe(try_new_inner)) {
             Ok(r) => r,
-            Err(_) => Err(
-                "tray panicked (often GTK not initialized or no display)".into(),
-            ),
+            Err(_) => Err("tray panicked (often GTK not initialized or no display)".into()),
         }
     }
 

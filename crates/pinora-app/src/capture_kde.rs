@@ -13,8 +13,8 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use pinora_core::{
-    resolve_capture_rect, CaptureImage, CaptureMetadata, CaptureProvider, CaptureRequest,
-    DisplayId, DisplayInfo, ErrorCode, ImageId, PixelRect, PixelSize, PinoraError, RgbaBuffer,
+    CaptureImage, CaptureMetadata, CaptureProvider, CaptureRequest, DisplayId, DisplayInfo,
+    ErrorCode, ImageId, PinoraError, PixelRect, PixelSize, RgbaBuffer, resolve_capture_rect,
 };
 
 /// 基于 KDE Spectacle CLI 的捕获提供者。
@@ -127,8 +127,8 @@ impl CaptureProvider for KdeSpectacleCaptureProvider {
         let (info, rect) = resolve_capture_rect(&displays, &request)?;
 
         // 单屏 FullDisplay：用 -m 快路径；区域或需全桌面坐标系时用 -f。
-        let want_monitor_only = matches!(request, CaptureRequest::FullDisplay { .. })
-            && rect == info.bounds;
+        let want_monitor_only =
+            matches!(request, CaptureRequest::FullDisplay { .. }) && rect == info.bounds;
 
         let png_path = if want_monitor_only {
             self.capture_monitor_png()?
@@ -181,10 +181,7 @@ impl CaptureProvider for KdeSpectacleCaptureProvider {
         )
         .map_err(|m| PinoraError::new(ErrorCode::Internal, m))?;
 
-        if local.origin.x == 0
-            && local.origin.y == 0
-            && local.size == img_size
-        {
+        if local.origin.x == 0 && local.origin.y == 0 && local.size == img_size {
             return Ok(full);
         }
 
@@ -242,17 +239,16 @@ fn now_ms() -> u64 {
 }
 
 fn load_png_rgba(path: &std::path::Path) -> Result<(PixelSize, Vec<u8>), PinoraError> {
-    let data = std::fs::read(path).map_err(|e| {
-        PinoraError::new(ErrorCode::Internal, format!("read png failed: {e}"))
-    })?;
+    let data = std::fs::read(path)
+        .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("read png failed: {e}")))?;
     let decoder = png::Decoder::new(Cursor::new(data));
-    let mut reader = decoder.read_info().map_err(|e| {
-        PinoraError::new(ErrorCode::Internal, format!("png decode header: {e}"))
-    })?;
+    let mut reader = decoder
+        .read_info()
+        .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("png decode header: {e}")))?;
     let mut buf = vec![0; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut buf).map_err(|e| {
-        PinoraError::new(ErrorCode::Internal, format!("png decode frame: {e}"))
-    })?;
+    let info = reader
+        .next_frame(&mut buf)
+        .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("png decode frame: {e}")))?;
     let width = info.width;
     let height = info.height;
     let rgba = match info.color_type {
@@ -333,22 +329,22 @@ fn parse_kscreen_doctor(text: &str) -> Result<Vec<DisplayInfo>, PinoraError> {
                  geom: &mut Option<(i32, i32, u32, u32)>,
                  scale: &mut f64,
                  enabled: &mut bool| {
-        if let (Some(n), Some(g)) = (name.take(), geom.take()) {
-            if *enabled {
-                let (x, y, w, h) = g;
-                if w > 0 && h > 0 {
-                    let disp_id = id.take().unwrap_or_else(|| format!("kde-{n}"));
-                    displays.push(DisplayInfo {
-                        id: DisplayId::new(disp_id),
-                        name: n,
-                        bounds: PixelRect::new(x, y, w, h),
-                        scale: if scale.is_finite() && *scale > 0.0 {
-                            *scale
-                        } else {
-                            1.0
-                        },
-                    });
-                }
+        if let (Some(n), Some(g)) = (name.take(), geom.take())
+            && *enabled
+        {
+            let (x, y, w, h) = g;
+            if w > 0 && h > 0 {
+                let disp_id = id.take().unwrap_or_else(|| format!("kde-{n}"));
+                displays.push(DisplayInfo {
+                    id: DisplayId::new(disp_id),
+                    name: n,
+                    bounds: PixelRect::new(x, y, w, h),
+                    scale: if scale.is_finite() && *scale > 0.0 {
+                        *scale
+                    } else {
+                        1.0
+                    },
+                });
             }
         }
         *id = None;
