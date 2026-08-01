@@ -30,6 +30,15 @@ sudo dnf install -y pipewire-devel mesa-libgbm-devel wayland-devel libxcb-devel
 - 运行探针：`cargo run`
 - 上下文完整性：`python /home/neo/.agents/skills/ctx/scripts/context_bootstrap.py validate --root /home/neo/Projects/neo/pub/pinora`
 
+## 跨平台构建与打包
+
+- Linux CI/打包依赖：`libasound2-dev libgbm-dev libgtk-3-dev libpipewire-0.3-dev libwayland-dev libx11-dev libxkbcommon-dev libxkbcommon-x11-dev pkg-config rpm`。
+- Linux 打包：`PINORA_VERSION=... PINORA_PLATFORM=linux bash packaging/package-unix.sh`。
+- macOS 打包：`PINORA_VERSION=... PINORA_PLATFORM=darwin bash packaging/package-unix.sh`（原生 `macos-14` runner）。
+- Windows 打包：`$env:PINORA_VERSION='...'; ./packaging/package-windows.ps1`（原生 `windows-2022` runner，NSIS 可选）。
+- GitHub Actions：先运行 `ci.yml`，再运行 `package.yml`；tag 成功后由 `runtime-verify.yml` 下载同一 run 的 artifacts 做安装/`--version`/卸载 smoke。
+- 本阶段未提供本机 macOS GUI 验证；Windows target 仅在 Linux 主机完成编译检查，运行验证以 GitHub 原生 runner 为准。
+
 ## Git 身份（固定，勿再询问）
 
 本仓库本地固定使用以下提交身份，代理在提交/改写历史时直接使用，不得改用其他账号，也不得再次向用户确认：

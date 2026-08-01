@@ -1,14 +1,11 @@
 //! Pinora 进程入口（仓库根 `src/main.rs`）。
 
 use std::env;
-use std::io::Write;
-use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
 
 use pinora_app::{
     AppRuntime, BootstrapOutcome, LocalImageSink, OsSingleInstance, RuntimeCapabilityProbe,
     SelectedCaptureProvider, SettingsLoad, SettingsStore, default_settings_path,
-    ensure_user_desktop_entry, run_desktop_shell,
+    ensure_user_desktop_entry, forward_ipc_frame, run_desktop_shell,
 };
 use pinora_core::{AppSettings, PixelPoint, PixelRect};
 
@@ -37,7 +34,7 @@ fn main() {
 
     // 若已有实例：经 Unix socket 转发后退出（不抢锁）
     if let Some(frame) = action.ipc_frame() {
-        if try_forward_to_running(frame) {
+        if forward_ipc_frame(frame) {
             println!("pinora: forwarded {:?} to running instance", action);
             return;
         }
@@ -105,7 +102,7 @@ fn main() {
         Ok(BootstrapOutcome::SecondaryForwarded) => {
             // 竞态：bootstrap 时已有实例；默认 Activate，若用户要 capture 再补一次
             if matches!(action, CliAction::Capture | CliAction::Default) {
-                let _ = try_forward_to_running(b"CAPTURE\n");
+                let _ = forward_ipc_frame(b"CAPTURE\n");
             }
             println!("pinora: another instance is running; forwarded and exiting");
         }
@@ -114,27 +111,6 @@ fn main() {
             std::process::exit(1);
         }
     }
-}
-
-/// 尝试连接已运行实例的 activate.sock 并写入 IPC 帧。
-fn try_forward_to_running(frame: &[u8]) -> bool {
-    let sock = runtime_sock_path();
-    let Ok(mut stream) = UnixStream::connect(&sock) else {
-        return false;
-    };
-    if stream.write_all(frame).is_err() {
-        return false;
-    }
-    let _ = stream.flush();
-    true
-}
-
-fn runtime_sock_path() -> PathBuf {
-    if let Ok(xdg) = env::var("XDG_RUNTIME_DIR") {
-        return PathBuf::from(xdg).join("pinora/activate.sock");
-    }
-    let user = env::var("USER").unwrap_or_else(|_| "user".into());
-    std::env::temp_dir().join(format!("pinora-{user}/activate.sock"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,6 +142,10 @@ fn parse_cli_action(args: &[String]) -> CliAction {
             print_help();
             std::process::exit(0);
         }
+        "version" | "--version" | "-V" => {
+            println!("pinora {}", env!("CARGO_PKG_VERSION"));
+            std::process::exit(0);
+        }
         _ => {
             eprintln!("pinora: unknown argument `{a}` (try --help)");
             std::process::exit(2);
@@ -186,6 +166,7 @@ Usage:
   pinora              Start primary, or trigger capture if already running
   pinora capture      Trigger region capture on running instance
   pinora quit         Quit running instance
+  pinora --version    Print the installed version
 
 Global hotkeys (when OS registration succeeds):
   F2, Ctrl+N, Ctrl+Shift+S → capture

@@ -1,6 +1,7 @@
-//! 系统托盘（Linux StatusNotifier / appindicator via tray-icon）。
+//! 系统托盘（通过 `tray-icon` 适配各平台）。
 //!
-//! 注意：Linux 后端基于 GTK，创建托盘前必须 `gtk::init()`，否则会直接 panic。
+//! Linux 的 StatusNotifier/appindicator 后端依赖 GTK；GTK 只在 Linux target
+//! 编译并在创建托盘前初始化，Windows/macOS 走 tray-icon 原生后端。
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -58,7 +59,8 @@ impl AppTray {
 }
 
 fn try_new_inner() -> Result<AppTray, String> {
-    // Linux tray-icon → appindicator → GTK 菜单
+    // Linux tray-icon → appindicator → GTK 菜单；GTK 不应进入其他 target。
+    #[cfg(target_os = "linux")]
     if gtk::init().is_err() {
         // 可能已初始化
         if !gtk::is_initialized() {

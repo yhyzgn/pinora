@@ -12,7 +12,10 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::thread::{self, JoinHandle};
+#[cfg(target_os = "linux")]
+use std::thread;
+use std::thread::JoinHandle;
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 use pinora_core::{ActionId, KeyBinding, PinoraError};
@@ -151,6 +154,7 @@ impl Drop for GlobalHotkeyHub {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn spawn_global_hotkey_thread(
     tx: Sender<ActionId>,
     stop: std::sync::Arc<AtomicBool>,
@@ -208,15 +212,31 @@ fn spawn_global_hotkey_thread(
     Ok(handle)
 }
 
+#[cfg(not(target_os = "linux"))]
+fn spawn_global_hotkey_thread(
+    _tx: Sender<ActionId>,
+    _stop: std::sync::Arc<AtomicBool>,
+) -> Result<JoinHandle<()>, String> {
+    Err("global hotkey adapter is not enabled on this build; use pinora capture".into())
+}
+
 /// 安装/刷新用户级 desktop 入口，便于 KDE 系统设置绑定 `pinora capture`。
 pub fn ensure_user_desktop_entry(bin_path: &std::path::Path) -> Result<std::path::PathBuf, String> {
-    let apps = dirs_applications()
-        .ok_or_else(|| "cannot resolve ~/.local/share/applications".to_string())?;
-    std::fs::create_dir_all(&apps).map_err(|e| format!("mkdir applications: {e}"))?;
-    let path = apps.join("pinora.desktop");
-    let exec = bin_path.display().to_string();
-    let content = format!(
-        r#"[Desktop Entry]
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = bin_path;
+        return Err("desktop entry is only supported on Linux".into());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let apps = dirs_applications()
+            .ok_or_else(|| "cannot resolve ~/.local/share/applications".to_string())?;
+        std::fs::create_dir_all(&apps).map_err(|e| format!("mkdir applications: {e}"))?;
+        let path = apps.join("pinora.desktop");
+        let exec = bin_path.display().to_string();
+        let content = format!(
+            r#"[Desktop Entry]
 Type=Application
 Name=Pinora
 Comment=Screenshot, pin and annotate
@@ -244,15 +264,17 @@ Name=Quit
 Name[zh_CN]=退出
 Exec={exec} quit
 "#
-    );
-    std::fs::write(&path, content).map_err(|e| format!("write desktop: {e}"))?;
-    // 通知桌面缓存（忽略失败）
-    let _ = std::process::Command::new("update-desktop-database")
-        .arg(&apps)
-        .status();
-    Ok(path)
+        );
+        std::fs::write(&path, content).map_err(|e| format!("write desktop: {e}"))?;
+        // 通知桌面缓存（忽略失败）
+        let _ = std::process::Command::new("update-desktop-database")
+            .arg(&apps)
+            .status();
+        Ok(path)
+    }
 }
 
+#[cfg(target_os = "linux")]
 fn dirs_applications() -> Option<std::path::PathBuf> {
     if let Some(home) = std::env::var_os("HOME") {
         return Some(std::path::PathBuf::from(home).join(".local/share/applications"));

@@ -565,6 +565,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn owned_clipboard_command_reaps_normal_exit() {
         let shell = which("sh").expect("test requires sh");
         pipe_to_cmd_with_timeout_and_cancellation(
@@ -578,6 +579,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn owned_clipboard_command_reaps_timeout() {
         let shell = which("sh").expect("test requires sh");
         let error = pipe_to_cmd_with_timeout_and_cancellation(

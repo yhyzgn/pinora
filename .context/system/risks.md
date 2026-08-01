@@ -85,6 +85,15 @@
 - 回滚或隔离动作：先保留当前 OCR 服务作为隔离边界；剪贴板/导出迁移失败时关闭对应异步入口，保留同步 fake 接口，完成生命周期契约后重新开放。
 - 负责人和状态：未分配；开放。
 
+## R-011：跨平台流水线与真实桌面能力分离（高）
+
+- 证据和影响范围：2026-08-02 已加入 Linux/macOS/Windows 原生 runner 的 CI、package、runtime-verify；本地 Linux 与 `x86_64-pc-windows-msvc` check 通过。runtime smoke 只运行 `--version` 和安装器，不创建真实 GUI 会话。
+- 触发条件：把 workflow 绿色、包可安装或进程能启动当作屏幕捕获、系统剪贴板、热键、透明置顶、多显示器和权限流程已经生产可用。
+- 失败模式：用户在不同桌面/权限环境中看到 capability unavailable、热键不触发、剪贴板不可用或窗口管理器行为不同。
+- 缓解措施：release notes 和 runtime report 明确列出 smoke 范围；未通过真实桌面探针的平台能力不宣称等同 Linux/KDE；保留 tar/zip 回滚分发物。
+- 回滚或隔离动作：删除 038 workflow/packaging 与非 Unix IPC adapter；保留 Unix 主路径和现有实验能力。
+- 负责人和状态：Neo；跨平台静态/安装门禁已建立，真实 GUI 验证开放。
+
 ## 风险一：上下文漂移
 
 - 触发条件：代码、配置或工作流变化后，没有同步更新对应上下文文件。

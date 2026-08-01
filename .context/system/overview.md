@@ -48,6 +48,14 @@
 - `pinora-core::history` 与 `pinora-app::HistoryStore` 已于 2026-08-02 建立历史索引基础：条目包含不可变图像/代际引用、显示器与选区元数据、受管目录单文件名、SHA-256 内容摘要、OCR 状态和 tombstone 状态；索引 codec 有 magic/schema/长度/CRC 校验，保存使用同目录临时文件、`sync_all`、rename 与读取校验。领域层按摘要和大小去重并按条数/字节配额将旧条目标记为 tombstone；尚未接入历史 UI、PNG 删除事务或贴图复用入口。
 - `pinora-core::ocr` 与贴图窗口已于 2026-08-02 新增 `OcrTextSelection`：Ctrl+左键拖拽将物理窗口坐标映射为图像坐标，按相交词框和 OCR 阅读顺序生成局部文本，选中词框高亮；文本复制经既有 `ExportJobService` 监督并绑定 pin owner/asset，未通过真实 GUI/系统剪贴板探针。
 
+## 2026-08-02 跨平台交付基线
+
+- `pinora-app` 的 GTK 依赖已限制为 Linux target；Windows/macOS 不再在 `cargo check` 阶段探测 GTK/GLib 的 `pkg-config`。
+- `OsSingleInstance` 在 Unix 保留 `instance.lock` + `activate.sock`；非 Unix 使用同目录文件锁和只绑定 `127.0.0.1` 的 loopback TCP，端口写入 `activate.port`。CLI 通过 `forward_ipc_frame` 统一转发。
+- KWin 窗口放置在非 Linux 返回能力不可用；Linux desktop entry 在非 Linux 不创建。KDE/Spectacle 仍只在 Linux/KDE 会话探测，其他平台由 xcap 或 `Unavailable` 选择。
+- `packaging/package-unix.sh` 生成 Linux `.tar.gz`、可用时 `.deb`/`.rpm`；macOS 生成 `.app` `.zip` `.dmg`。`package-windows.ps1` 生成 `.zip`，检测到 NSIS 时额外生成 setup `.exe`。每个平台生成 `SHA256SUMS.txt`。
+- `.github/workflows/ci.yml`、`package.yml`、`runtime-verify.yml` 已建立三平台原生 runner 矩阵；runtime smoke 只证明包可解包/安装和 `--version` 启动，不等价于 GUI、屏幕捕获、剪贴板、权限或多显示器验证。
+
 ## 主流程
 
 统一 `desktop_shell` 事件循环（选区 + 贴图同一 loop，适配 Wayland）：

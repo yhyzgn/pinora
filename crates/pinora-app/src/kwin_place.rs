@@ -4,10 +4,15 @@
 //! 新建窗会被 KWin 摆到屏幕中央。这里通过 KWin Scripting D-Bus
 //! 设置 `frameGeometry`，与 Spectacle 等 KDE 应用同权。
 
+#[cfg(any(target_os = "linux", test))]
 use std::fs;
+#[cfg(any(target_os = "linux", test))]
 use std::path::PathBuf;
+#[cfg(any(target_os = "linux", test))]
 use std::process::Command;
+#[cfg(any(target_os = "linux", test))]
 use std::thread;
+#[cfg(any(target_os = "linux", test))]
 use std::time::Duration;
 
 /// 按窗口标题子串，把匹配到的第一个窗口放到 (x,y,w,h)。
@@ -20,7 +25,15 @@ pub fn place_window_by_title(
     height: u32,
     delay_ms: u64,
 ) {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (title_substr, x, y, width, height, delay_ms);
+        return;
+    }
+
+    #[cfg(target_os = "linux")]
     let title = title_substr.to_string();
+    #[cfg(target_os = "linux")]
     thread::spawn(move || {
         if delay_ms > 0 {
             thread::sleep(Duration::from_millis(delay_ms));
@@ -44,25 +57,37 @@ pub fn place_window_by_title_sync(
     width: u32,
     height: u32,
 ) -> Result<(), String> {
-    // 短轮询：窗口刚 map 时 KWin 列表可能尚未收录
-    let mut last_err = String::new();
-    for attempt in 0..12 {
-        if attempt > 0 {
-            thread::sleep(Duration::from_millis(16));
-        }
-        match place_once(title_substr, x, y, width, height) {
-            Ok(()) => {
-                // 紧接再钉一次，压住合成器回弹
-                let _ = place_once(title_substr, x, y, width, height);
-                println!("pinora: kwin place sync '{title_substr}' → ({x},{y}) {width}x{height}");
-                return Ok(());
-            }
-            Err(e) => last_err = e,
-        }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (title_substr, x, y, width, height);
+        return Err("KWin placement is unavailable on this platform".into());
     }
-    Err(last_err)
+
+    #[cfg(target_os = "linux")]
+    {
+        // 短轮询：窗口刚 map 时 KWin 列表可能尚未收录
+        let mut last_err = String::new();
+        for attempt in 0..12 {
+            if attempt > 0 {
+                thread::sleep(Duration::from_millis(16));
+            }
+            match place_once(title_substr, x, y, width, height) {
+                Ok(()) => {
+                    // 紧接再钉一次，压住合成器回弹
+                    let _ = place_once(title_substr, x, y, width, height);
+                    println!(
+                        "pinora: kwin place sync '{title_substr}' → ({x},{y}) {width}x{height}"
+                    );
+                    return Ok(());
+                }
+                Err(e) => last_err = e,
+            }
+        }
+        Err(last_err)
+    }
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn place_once(title_substr: &str, x: i32, y: i32, width: u32, height: u32) -> Result<(), String> {
     // 转义进 JS 字符串
     let title_js = escape_js(title_substr);
@@ -139,6 +164,7 @@ for (var i = 0; i < list.length; ++i) {{
     Ok(())
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn now_ms() -> u128 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -147,6 +173,7 @@ fn now_ms() -> u128 {
         .unwrap_or(0)
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn script_path() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_RUNTIME_DIR") {
         return PathBuf::from(xdg).join("pinora/kwin-place.js");
@@ -154,6 +181,7 @@ fn script_path() -> PathBuf {
     std::env::temp_dir().join("pinora-kwin-place.js")
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn escape_js(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('"', "\\\"")
@@ -161,6 +189,7 @@ fn escape_js(s: &str) -> String {
         .replace(['\n', '\r'], " ")
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn parse_script_id(busctl_out: &str) -> Option<u32> {
     // "i 3\n" or "i 3"
     let parts: Vec<&str> = busctl_out.split_whitespace().collect();
@@ -173,6 +202,7 @@ fn parse_script_id(busctl_out: &str) -> Option<u32> {
         .find_map(|p| p.parse::<u32>().ok())
 }
 
+#[cfg(target_os = "linux")]
 fn busctl(args: &[&str]) -> Result<String, String> {
     let out = Command::new("busctl")
         .arg("--user")
@@ -191,6 +221,10 @@ fn busctl(args: &[&str]) -> Result<String, String> {
 
 /// 当前是否可能在 KWin 会话（有 org.kde.KWin）。
 pub fn kwin_available() -> bool {
+    #[cfg(not(target_os = "linux"))]
+    return false;
+
+    #[cfg(target_os = "linux")]
     Command::new("busctl")
         .args(["--user", "status", "org.kde.KWin"])
         .output()

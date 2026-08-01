@@ -40,14 +40,23 @@ impl CapabilityProbe for RuntimeCapabilityProbe {
         match crate::image_sink::detect_system_clipboard_backend() {
             Some(b) => notes.push(format!("system clipboard: {b} (image/png)")),
             None => {
-                notes.push("system clipboard: unavailable (install wl-clipboard or xclip)".into())
+                #[cfg(unix)]
+                notes.push("system clipboard: unavailable (install wl-clipboard or xclip)".into());
+                #[cfg(not(unix))]
+                notes.push("system clipboard: unavailable on this build; memory clipboard remains available".into());
             }
+        }
+
+        let global_hotkey_available = cfg!(target_os = "linux");
+        if !global_hotkey_available {
+            notes.push("global hotkey: unavailable on this build; use pinora capture IPC".into());
         }
 
         CapabilitySnapshot {
             capture_available: !matches!(self.capture_backend, CaptureBackendKind::Unavailable),
-            global_hotkey_available: true,
-            clipboard_image_available: true,
+            global_hotkey_available,
+            clipboard_image_available: crate::image_sink::detect_system_clipboard_backend()
+                .is_some(),
             always_on_top_available: false,
             notes,
         }
@@ -60,11 +69,14 @@ pub struct FakeCapabilityProbe;
 
 impl CapabilityProbe for FakeCapabilityProbe {
     fn probe(&self) -> CapabilitySnapshot {
-        RuntimeCapabilityProbe::new(
+        let mut snapshot = RuntimeCapabilityProbe::new(
             CaptureBackendKind::Fake,
             Some("test probe: FakeCaptureProvider".into()),
         )
-        .probe()
+        .probe();
+        snapshot.global_hotkey_available = true;
+        snapshot.clipboard_image_available = true;
+        snapshot
     }
 }
 

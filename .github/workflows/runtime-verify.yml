@@ -1,0 +1,159 @@
+name: Verify Pinora packages
+
+on:
+  workflow_run:
+    workflows: [Package Pinora]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Package workflow run id
+        required: false
+        type: string
+      tag:
+        description: Release tag (for example v0.1.0-preview.1)
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      run_id: ${{ steps.resolve.outputs.run_id }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      should_run: ${{ steps.resolve.outputs.should_run }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve package run
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+          WORKFLOW_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WORKFLOW_TAG: ${{ github.event.workflow_run.head_branch }}
+          INPUT_RUN_ID: ${{ inputs.source_run_id }}
+          INPUT_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id="$INPUT_RUN_ID"
+          tag="$INPUT_TAG"
+          should_run=true
+          if [[ "$EVENT_NAME" == workflow_run ]]; then
+            run_id="$WORKFLOW_RUN_ID"; tag="$WORKFLOW_TAG"
+            [[ "$WORKFLOW_CONCLUSION" == success && "$tag" == v* ]] || should_run=false
+          fi
+          if [[ -z "$run_id" && -n "$tag" ]]; then
+            run_id="$(gh run list --workflow package.yml --branch "$tag" --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+          fi
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "should_run=$should_run" >> "$GITHUB_OUTPUT"
+  verify:
+    needs: prepare
+    if: needs.prepare.outputs.should_run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-24.04
+          - platform: macos
+            os: macos-14
+          - platform: windows
+            os: windows-2022
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux runtime dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libgbm1 libgtk-3-0 libpipewire-0.3-0 \
+            libwayland-client0 libx11-6 libxkbcommon0
+      - name: Download platform packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ needs.prepare.outputs.run_id }}
+          PLATFORM: ${{ matrix.platform }}
+        shell: bash
+        run: gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --pattern "pinora-${PLATFORM}-*" --dir runtime-dist
+      - name: Verify Linux packages
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball="$(find runtime-dist -name '*.tar.gz' | head -n1)"
+          mkdir extracted
+          tar -xzf "$tarball" -C extracted
+          timeout 8s extracted/usr/bin/pinora --version
+          if deb="$(find runtime-dist -name '*.deb' | head -n1)"; then sudo dpkg -i "$deb"; /usr/bin/pinora --version; sudo dpkg -r pinora; fi
+      - name: Verify macOS packages
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          zipfile="$(find runtime-dist -name '*.zip' | head -n1)"
+          unzip -q "$zipfile" -d extracted
+          timeout 8s extracted/Pinora.app/Contents/MacOS/pinora --version
+      - name: Verify Windows packages
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem runtime-dist -Filter '*.zip' -Recurse | Select-Object -First 1
+          Expand-Archive $zip.FullName extracted -Force
+          & (Join-Path (Resolve-Path extracted) 'pinora.exe') --version
+          $setup = Get-ChildItem runtime-dist -Filter '*setup.exe' -Recurse | Select-Object -First 1
+          if ($setup) { Start-Process $setup.FullName -ArgumentList '/S' -Wait; & "$env:LOCALAPPDATA\Programs\Pinora\pinora.exe" --version; Start-Process "$env:LOCALAPPDATA\Programs\Pinora\uninstall.exe" -ArgumentList '/S' -Wait }
+      - name: Write runtime report
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        shell: bash
+        run: |
+          mkdir -p runtime-report
+          status=pass; notes='Runner-safe --version and package inspection completed.'
+          if [[ "$JOB_STATUS" != success ]]; then status=fail; notes='One or more package smoke steps failed; inspect the matrix job log.'; fi
+          printf '[{"status":"%s","platform":"%s","kind":"package","artifact":"runtime-dist","action":"version smoke","notes":"%s"}]\n' "$status" '${{ matrix.platform }}' "$notes" > runtime-report/runtime-verification-${{ matrix.platform }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pinora-runtime-${{ matrix.platform }}
+          path: runtime-report/*.json
+          if-no-files-found: warn
+  report:
+    needs: [prepare, verify]
+    if: always() && needs.prepare.outputs.should_run == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pinora-runtime-*
+          path: runtime-reports
+          merge-multiple: true
+      - name: Publish runtime report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '<!-- PINORA_RUNTIME_VERIFICATION:START -->'; echo '## Runtime verification report'; echo; echo "Package run for `$TAG` completed on Linux, macOS and Windows runners."; echo; cat runtime-reports/*.json; echo '<!-- PINORA_RUNTIME_VERIFICATION:END -->';
+          } > runtime-verification-report.md
+          if [[ "$TAG" == v* ]] && gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > release-body.md
+            cat release-body.md runtime-verification-report.md > release-body-with-runtime.md
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file release-body-with-runtime.md
+          fi
+          if [[ "${{ needs.verify.result }}" != success ]]; then exit 1; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pinora-runtime-summary
+          path: runtime-verification-report.md

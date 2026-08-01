@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/036_ocr_text_selection.md`
-- 任务：`.context/tasks/036_ocr_text_selection.md`
+- 计划：`.context/plans/038_cross_platform_delivery.md`
+- 任务：`.context/tasks/038_cross_platform_delivery.md`
 
 ## 交付要求
 

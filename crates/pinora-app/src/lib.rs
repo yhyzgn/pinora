@@ -46,7 +46,7 @@ pub use job_supervisor::{
 };
 pub use ocr::{recognize_image, recognize_image_with_cancellation, tesseract_available};
 pub use ocr_job::{LocalOcrRunner, OcrJobCompletion, OcrJobService, OcrRunner};
-pub use os_instance::OsSingleInstance;
+pub use os_instance::{OsSingleInstance, forward_ipc_frame};
 pub use pin_window::{PinSessionEnd, PinView, run_pin_session, scaled_window_size};
 pub use platform::{CapabilityProbe, FakeCapabilityProbe, RuntimeCapabilityProbe};
 pub use region_overlay::run_region_selection;

@@ -1,0 +1,95 @@
+name: Package Pinora
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version override (defaults to Cargo.toml)
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Package ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-24.04
+          - platform: macos
+            os: macos-14
+          - platform: windows
+            os: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='${{ inputs.version }}'
+          if [[ -z "$version" ]]; then version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Install Linux packaging dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            dpkg-dev libasound2-dev libgbm-dev libgtk-3-dev libpipewire-0.3-dev \
+            libwayland-dev libx11-dev libxkbcommon-dev libxkbcommon-x11-dev pkg-config rpm
+      - name: Install Windows packaging dependencies
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: choco install nsis -y --no-progress
+      - name: Package Unix target
+        if: matrix.platform != 'windows'
+        env:
+          PINORA_VERSION: ${{ steps.version.outputs.version }}
+          PINORA_PLATFORM: ${{ matrix.platform == 'macos' && 'darwin' || 'linux' }}
+        run: bash packaging/package-unix.sh
+      - name: Package Windows target
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          PINORA_VERSION: ${{ steps.version.outputs.version }}
+        run: ./packaging/package-windows.ps1
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pinora-${{ matrix.platform }}-${{ steps.version.outputs.version }}
+          path: target/package/**
+          if-no-files-found: error
+          retention-days: 90
+
+  release:
+    name: Publish prerelease
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pinora-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$(find release-assets -type f -name 'SHA256SUMS.txt' -print -quit)"
+          while IFS= read -r sums; do (cd "$(dirname "$sums")" && sha256sum -c "$(basename "$sums")"); done < <(find release-assets -type f -name SHA256SUMS.txt)
+          mapfile -t assets < <(find release-assets -type f ! -name SHA256SUMS.txt -o -name SHA256SUMS.txt | sort)
+          gh release create "${GITHUB_REF_NAME}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}" --prerelease --generate-notes --title "Pinora ${GITHUB_REF_NAME}"
