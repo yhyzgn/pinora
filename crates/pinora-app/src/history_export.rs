@@ -4,12 +4,14 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use pinora_core::{
-    AssetRef, ContentDigest, HistoryEntry, HistoryEntrySpec, HistoryIndex, HistoryInsert,
-    HistoryOcrState, JobOwner,
+    AssetRef, CaptureImage, CaptureMetadata, ContentDigest, HistoryEntry, HistoryEntrySpec,
+    HistoryIndex, HistoryInsert, HistoryOcrState, ImageId, JobOwner, RgbaBuffer,
 };
 
 use crate::export_job::ExportJobInput;
 use crate::history_store::{HistoryLoad, HistoryStore};
+
+const MAX_HISTORY_PNG_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Debug)]
 pub(crate) struct HistoryExportCandidate {
@@ -175,7 +177,7 @@ pub(crate) fn cleanup_history_tombstones(
     Ok(cleanup)
 }
 
-fn managed_history_png_path(export_dir: &Path, file_name: &str) -> Option<PathBuf> {
+pub(crate) fn managed_history_png_path(export_dir: &Path, file_name: &str) -> Option<PathBuf> {
     let file = Path::new(file_name);
     if file_name.is_empty()
         || file_name.contains('/')
@@ -187,6 +189,93 @@ fn managed_history_png_path(export_dir: &Path, file_name: &str) -> Option<PathBu
         return None;
     }
     Some(export_dir.join(file))
+}
+
+/// 从受管历史目录加载经完整性验证的 PNG，并赋予新的运行时图像身份。
+///
+/// 历史索引只保存不可变元数据。重新贴图不得复用旧 `ImageId`，否则晚到任务可能
+/// 错误命中一个已经关闭的资产。
+pub(crate) fn load_history_image(
+    export_dir: &Path,
+    entry: &HistoryEntry,
+) -> Result<CaptureImage, String> {
+    let Some(path) = managed_history_png_path(export_dir, &entry.file_name) else {
+        return Err("history file name is invalid".into());
+    };
+    let metadata =
+        std::fs::symlink_metadata(&path).map_err(|_| "history image is unavailable".to_string())?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err("history image is not a regular file".into());
+    }
+    if metadata.len() != entry.byte_len {
+        return Err("history image length does not match index".into());
+    }
+    if entry.byte_len == 0 || entry.byte_len > MAX_HISTORY_PNG_BYTES {
+        return Err("history image exceeds read limit".into());
+    }
+    let bytes = std::fs::read(path).map_err(|_| "history image is unavailable".to_string())?;
+    if ContentDigest::of(&bytes) != entry.digest {
+        return Err("history image digest does not match index".into());
+    }
+
+    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    let mut reader = decoder
+        .read_info()
+        .map_err(|_| "history image PNG header is invalid".to_string())?;
+    let header = reader.info();
+    let expected_len = u64::from(header.width)
+        .checked_mul(u64::from(header.height))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| "history image dimensions overflow".to_string())?;
+    if header.width == 0
+        || header.height == 0
+        || expected_len > MAX_HISTORY_PNG_BYTES
+        || expected_len > usize::MAX as u64
+    {
+        return Err("history image dimensions exceed limit".into());
+    }
+    let mut rgba = vec![0; expected_len as usize];
+    let info = reader
+        .next_frame(&mut rgba)
+        .map_err(|_| "history image PNG data is invalid".to_string())?;
+    if info.color_type != png::ColorType::Rgba
+        || info.bit_depth != png::BitDepth::Eight
+        || info.width != entry.source_rect.size.width
+        || info.height != entry.source_rect.size.height
+        || info.buffer_size() != rgba.len()
+    {
+        return Err("history image PNG metadata does not match index".into());
+    }
+    let pixels = RgbaBuffer::new(entry.source_rect.size, rgba)
+        .map_err(|_| "history image pixel buffer is invalid".to_string())?;
+    CaptureImage::new(
+        ImageId::new(),
+        pixels,
+        entry.source_rect,
+        CaptureMetadata::new(entry.display.clone(), 1.0, entry.created_at_ms),
+    )
+    .map_err(|_| "history image metadata is invalid".to_string())
+}
+
+/// 先持久化 tombstone，再尝试受管文件清理。
+///
+/// 索引保存失败时内存完整回滚；清理阶段失败时已落盘 tombstone 保留，下次可重试。
+pub(crate) fn delete_history_entry(
+    store: &HistoryStore,
+    export_dir: &Path,
+    index: &mut HistoryIndex,
+    image_id: ImageId,
+) -> Result<HistoryCleanup, String> {
+    let previous = index.clone();
+    if index.mark_deleted(image_id).is_none() {
+        return Err("history entry is not active".into());
+    }
+    if store.save(index).is_err() {
+        *index = previous;
+        return Err("save history tombstone failed".into());
+    }
+    cleanup_history_tombstones(store, export_dir, index)
+        .map_err(|_| "history tombstone cleanup deferred".to_string())
 }
 
 #[cfg(test)]
@@ -503,6 +592,102 @@ mod tests {
         assert!(error.contains("save compacted history index"));
         assert_eq!(index, before);
         assert!(!export_dir.join("old.png").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn history_reopen_verifies_digest_and_creates_fresh_image_identity() {
+        let root = temp_root("reopen");
+        let export_dir = root.join("exports");
+        fs::create_dir_all(&export_dir).expect("create exports");
+        let original = sample_image(ImageId::from_raw(70));
+        let path = export_dir.join("saved.png");
+        crate::image_sink::save_png_file(&original, &path).expect("save png");
+        let bytes = fs::read(&path).expect("read png");
+        let entry = HistoryEntry::new(HistoryEntrySpec {
+            image_id: original.id,
+            generation: AssetGeneration::INITIAL,
+            created_at_ms: original.metadata.captured_at_ms,
+            display: original.metadata.display.clone(),
+            source_rect: original.source_rect,
+            file_name: "saved.png".into(),
+            byte_len: bytes.len() as u64,
+            digest: ContentDigest::of(&bytes),
+            ocr: HistoryOcrState::Unknown,
+        })
+        .expect("entry");
+
+        let loaded = load_history_image(&export_dir, &entry).expect("load history png");
+        assert_ne!(loaded.id, entry.image_id);
+        assert_eq!(loaded.pixels, original.pixels);
+        assert_eq!(loaded.source_rect, entry.source_rect);
+
+        fs::write(&path, b"tampered").expect("tamper png");
+        assert_eq!(
+            load_history_image(&export_dir, &entry),
+            Err("history image length does not match index".into())
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn history_delete_rolls_back_when_tombstone_cannot_be_saved() {
+        let root = temp_root("delete-rollback");
+        let export_dir = root.join("exports");
+        fs::create_dir_all(&export_dir).expect("create exports");
+        let blocked_parent = root.join("blocked-parent");
+        fs::write(&blocked_parent, b"not a directory").expect("block parent");
+        let store = HistoryStore::new(blocked_parent.join("history.bin"), 10, u64::MAX);
+        let mut index = store.empty_index();
+        index
+            .insert(history_entry(71, "saved.png", b"saved"))
+            .expect("insert history");
+        let before = index.clone();
+
+        let error = delete_history_entry(&store, &export_dir, &mut index, ImageId::from_raw(71))
+            .expect_err("tombstone save fails");
+
+        assert_eq!(error, "save history tombstone failed");
+        assert_eq!(index, before);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn history_delete_persists_then_removes_only_managed_file() {
+        let root = temp_root("delete");
+        let export_dir = root.join("exports");
+        fs::create_dir_all(&export_dir).expect("create exports");
+        let image = sample_image(ImageId::from_raw(72));
+        let path = export_dir.join("saved.png");
+        crate::image_sink::save_png_file(&image, &path).expect("save png");
+        let bytes = fs::read(&path).expect("read png");
+        let store = HistoryStore::new(root.join("history.bin"), 10, u64::MAX);
+        let mut index = store.empty_index();
+        index
+            .insert(
+                HistoryEntry::new(HistoryEntrySpec {
+                    image_id: image.id,
+                    generation: AssetGeneration::INITIAL,
+                    created_at_ms: image.metadata.captured_at_ms,
+                    display: image.metadata.display.clone(),
+                    source_rect: image.source_rect,
+                    file_name: "saved.png".into(),
+                    byte_len: bytes.len() as u64,
+                    digest: ContentDigest::of(&bytes),
+                    ocr: HistoryOcrState::Unknown,
+                })
+                .expect("entry"),
+            )
+            .expect("insert history");
+        store.save(&index).expect("save index");
+
+        let cleanup = delete_history_entry(&store, &export_dir, &mut index, image.id)
+            .expect("delete history");
+
+        assert_eq!(cleanup.removed_files, 1);
+        assert!(index.entries().is_empty());
+        assert!(!path.exists());
+        assert!(matches!(store.load(), HistoryLoad::Loaded(loaded) if loaded.entries().is_empty()));
         let _ = fs::remove_dir_all(root);
     }
 }

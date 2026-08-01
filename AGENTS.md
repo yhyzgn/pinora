@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/041_settings_panel.md`
-- 任务：`.context/tasks/041_settings_panel.md`
+- 计划：`.context/plans/042_history_browser.md`
+- 任务：`.context/tasks/042_history_browser.md`
 
 ## 交付要求
 
