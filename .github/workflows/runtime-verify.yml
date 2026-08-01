@@ -152,7 +152,10 @@ jobs:
           } > runtime-verification-report.md
           if [[ "$TAG" == v* ]] && gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > release-body.md
-            cat release-body.md runtime-verification-report.md > release-body-with-runtime.md
+            sed '/^<!-- PINORA_RUNTIME_VERIFICATION:START -->$/,/^<!-- PINORA_RUNTIME_VERIFICATION:END -->$/d' release-body.md > release-body-with-runtime.md
+            printf '\n' >> release-body-with-runtime.md
+            cat runtime-verification-report.md >> release-body-with-runtime.md
+            printf '\n' >> release-body-with-runtime.md
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file release-body-with-runtime.md
           fi
           if [[ "${{ needs.verify.result }}" != success ]]; then exit 1; fi
