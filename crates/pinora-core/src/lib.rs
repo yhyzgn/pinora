@@ -42,7 +42,9 @@ pub use history::{
 pub use ids::{CorrelationId, EventId, ImageId, JobId, PinId, SessionId};
 pub use image::{CaptureImage, CaptureMetadata, DisplayId, RgbaBuffer};
 pub use job::{JobKind, JobOwner, JobResultRef, JobSpec, JobTerminalState};
-pub use ocr::{OcrLine, OcrResult, OcrWord, join_lines_text, union_bboxes};
+pub use ocr::{
+    OcrLine, OcrResult, OcrTextSelection, OcrWord, OcrWordRef, join_lines_text, union_bboxes,
+};
 pub use pin::{Pin, PinMode, PinTransform};
 pub use selection::{
     MIN_SELECTION_EDGE, SelectionOutcome, SelectionSession, clamp_to_image, normalize_rect,

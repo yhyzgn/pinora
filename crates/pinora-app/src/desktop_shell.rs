@@ -29,8 +29,8 @@ use pinora_core::{
     ActionId, AnnotateSession, AnnotateTool, AnnotationRevision, AssetGeneration, AssetRef,
     CaptureImage, CaptureProvider, CaptureRequest, Command, CorrelationId, DisplayId,
     DomainEventKind, ErrorCode, ImageId, ImageSink, JobId, JobKind, JobOwner, JobSpec, OcrResult,
-    PinId, PinTransform, PinoraError, PixelPoint, PixelRect, SelectionSession, SessionId,
-    bake_annotations, render_preview_rgba,
+    OcrTextSelection, OcrWordRef, PinId, PinTransform, PinoraError, PixelPoint, PixelRect,
+    SelectionSession, SessionId, bake_annotations, render_preview_rgba,
 };
 use softbuffer::{Context, Rect as DamageRect, Surface};
 use winit::application::ApplicationHandler;
@@ -348,6 +348,12 @@ struct PinWin {
     ocr: Option<OcrResult>,
     /// 是否绘制 OCR 词框。
     ocr_show_boxes: bool,
+    /// 最近一次窗口内光标位置（物理像素）。
+    cursor_position: (f64, f64),
+    /// Ctrl+左键拖选的起点（物理像素）。
+    ocr_drag_start: Option<(f64, f64)>,
+    /// 当前选中的 OCR 词。
+    ocr_selection: OcrTextSelection,
 }
 
 struct DesktopApp<L, P, C, S> {
@@ -1426,6 +1432,8 @@ where
                     {
                         pin.ocr = Some(result);
                         pin.ocr_show_boxes = true;
+                        pin.ocr_drag_start = None;
+                        pin.ocr_selection = OcrTextSelection::default();
                         pin.window.request_redraw();
                     }
                 }
@@ -1828,6 +1836,9 @@ where
                 surface,
                 ocr: None,
                 ocr_show_boxes: true,
+                cursor_position: (0.0, 0.0),
+                ocr_drag_start: None,
+                ocr_selection: OcrTextSelection::default(),
             },
         );
 
@@ -1919,6 +1930,10 @@ where
                         && let Some(pin) = self.pins.get_mut(&window_id)
                     {
                         pin.ocr_show_boxes = !pin.ocr_show_boxes;
+                        if !pin.ocr_show_boxes {
+                            pin.ocr_drag_start = None;
+                            pin.ocr_selection = OcrTextSelection::default();
+                        }
                         println!(
                             "pinora: pin {} OCR boxes {}",
                             pin.pin_id,
@@ -1934,6 +1949,16 @@ where
                 ..
             } => {
                 if let Some(pin) = self.pins.get(&window_id) {
+                    if self.modifiers.control_key() && pin.ocr_show_boxes && pin.ocr.is_some() {
+                        let cursor = pin.cursor_position;
+                        if let Some(pin) = self.pins.get_mut(&window_id) {
+                            pin.ocr_drag_start = Some(cursor);
+                            pin.ocr_selection = OcrTextSelection::default();
+                            pin.window.request_redraw();
+                        }
+                        self.drag_pin = None;
+                        return;
+                    }
                     if pin.locked {
                         println!("pinora: pin locked — press L to unlock");
                         return;
@@ -1952,9 +1977,36 @@ where
                 button: MouseButton::Left,
                 ..
             } => {
+                let (handled, selection) = self.finish_pin_text_selection(window_id);
+                if handled {
+                    if let Some((owner, asset, text)) = selection
+                        && let Err(error) = self.submit_export_job(
+                            owner,
+                            asset,
+                            ExportJobInput::CopyText { text },
+                            PendingExportAction::CopyText,
+                        )
+                    {
+                        eprintln!("pinora: selected OCR text submit failed: {error}");
+                    }
+                    return;
+                }
                 self.drag_pin = None;
             }
             WindowEvent::CursorMoved { position, .. } => {
+                let selecting = if let Some(pin) = self.pins.get_mut(&window_id) {
+                    pin.cursor_position = (position.x, position.y);
+                    let selecting = pin.ocr_drag_start.is_some();
+                    if selecting {
+                        pin.window.request_redraw();
+                    }
+                    selecting
+                } else {
+                    false
+                };
+                if selecting {
+                    return;
+                }
                 // 回退拖动（X11 / drag_window 失败时）
                 let Some(id) = self.drag_pin else {
                     return;
@@ -2029,6 +2081,39 @@ where
         let image = pin.image.clone();
         let asset = pin.asset;
         self.submit_ocr_job(JobOwner::Pin(pin_id), image, asset);
+    }
+
+    fn finish_pin_text_selection(
+        &mut self,
+        window_id: WindowId,
+    ) -> (bool, Option<(JobOwner, AssetRef, String)>) {
+        let Some(pin) = self.pins.get_mut(&window_id) else {
+            return (false, None);
+        };
+        let Some(start) = pin.ocr_drag_start.take() else {
+            return (false, None);
+        };
+        let Some(ocr) = pin.ocr.as_ref() else {
+            return (true, None);
+        };
+        let size = pin.window.inner_size();
+        let region = selection_rect_from_window_points(
+            start,
+            pin.cursor_position,
+            size.width,
+            size.height,
+            pin.image.size().width,
+            pin.image.size().height,
+        );
+        let selection = ocr.select_words(region);
+        let text = ocr.text_for_selection(&selection);
+        pin.ocr_selection = selection;
+        pin.window.request_redraw();
+        if text.trim().is_empty() {
+            (true, None)
+        } else {
+            (true, Some((JobOwner::Pin(pin.pin_id), pin.asset, text)))
+        }
     }
 
     fn nudge_pin_opacity(&mut self, window_id: WindowId, delta: f64) {
@@ -2123,13 +2208,30 @@ where
         let opacity = pin.opacity;
         let locked = pin.locked;
         let show_ocr = pin.ocr_show_boxes;
-        let ocr_boxes: Vec<PixelRect> = if show_ocr {
+        let ocr_selection = pin.ocr_selection.clone();
+        let ocr_drag = pin.ocr_drag_start.map(|start| (start, pin.cursor_position));
+        let ocr_boxes: Vec<(PixelRect, bool)> = if show_ocr {
+            let selection = &ocr_selection;
             pin.ocr
                 .as_ref()
                 .map(|r| {
                     r.lines
                         .iter()
-                        .flat_map(|l| l.words.iter().map(|w| w.bbox))
+                        .enumerate()
+                        .flat_map(|(line_index, line)| {
+                            line.words
+                                .iter()
+                                .enumerate()
+                                .map(move |(word_index, word)| {
+                                    (
+                                        word.bbox,
+                                        selection.contains(OcrWordRef {
+                                            line_index,
+                                            word_index,
+                                        }),
+                                    )
+                                })
+                        })
                         .collect()
                 })
                 .unwrap_or_default()
@@ -2149,7 +2251,7 @@ where
         if !ocr_boxes.is_empty() && sw > 0 && sh > 0 {
             let sx = bw as f64 / sw as f64;
             let sy = bh as f64 / sh as f64;
-            for rect in ocr_boxes {
+            for (rect, selected) in ocr_boxes {
                 let x0 = (rect.origin.x as f64 * sx).round() as i32;
                 let y0 = (rect.origin.y as f64 * sy).round() as i32;
                 let x1 = (rect.right() as f64 * sx).round() as i32;
@@ -2160,9 +2262,24 @@ where
                     bh,
                     PixelPoint::new(x0, y0),
                     PixelPoint::new(x1.max(x0 + 1), y1.max(y0 + 1)),
-                    0x00_22_EE_66,
+                    if selected {
+                        0x00_FF_B0_20
+                    } else {
+                        0x00_22_EE_66
+                    },
                 );
             }
+        }
+        if let Some((start, end)) = ocr_drag {
+            let drag_rect = window_rect_from_points(start, end);
+            draw_rect_outline_xrgb(
+                &mut buffer[..bw * bh],
+                bw,
+                bh,
+                PixelPoint::new(drag_rect.origin.x, drag_rect.origin.y),
+                PixelPoint::new(drag_rect.right(), drag_rect.bottom()),
+                0x00_FF_B0_20,
+            );
         }
         let border = if locked {
             0x00_CC_44_22 // 锁定：偏红边
@@ -2605,6 +2722,37 @@ fn window_to_image(x: f64, y: f64, win_w: u32, win_h: u32, img_w: u32, img_h: u3
     )
 }
 
+fn selection_rect_from_window_points(
+    start: (f64, f64),
+    end: (f64, f64),
+    window_w: u32,
+    window_h: u32,
+    image_w: u32,
+    image_h: u32,
+) -> PixelRect {
+    let x0 = window_edge_to_image(start.0, window_w, image_w);
+    let y0 = window_edge_to_image(start.1, window_h, image_h);
+    let x1 = window_edge_to_image(end.0, window_w, image_w);
+    let y1 = window_edge_to_image(end.1, window_h, image_h);
+    PixelRect::new(x0.min(x1), y0.min(y1), x0.abs_diff(x1), y0.abs_diff(y1))
+}
+
+fn window_edge_to_image(value: f64, window_extent: u32, image_extent: u32) -> i32 {
+    if window_extent == 0 || image_extent == 0 {
+        return 0;
+    }
+    let clamped = value.clamp(0.0, f64::from(window_extent));
+    ((clamped / f64::from(window_extent)) * f64::from(image_extent)).round() as i32
+}
+
+fn window_rect_from_points(start: (f64, f64), end: (f64, f64)) -> PixelRect {
+    let x0 = start.0.min(end.0).max(0.0).round() as i32;
+    let y0 = start.1.min(end.1).max(0.0).round() as i32;
+    let x1 = start.0.max(end.0).max(0.0).round() as i32;
+    let y1 = start.1.max(end.1).max(0.0).round() as i32;
+    PixelRect::new(x0, y0, (x1 - x0).max(0) as u32, (y1 - y0).max(0) as u32)
+}
+
 fn rgba_to_xrgb(bytes: &[u8]) -> Vec<u32> {
     let (base, _) = rgba_to_xrgb_and_dim(bytes);
     base
@@ -2794,6 +2942,18 @@ mod overlay_scale_tests {
         assert!((opacity_from_settings_percent(72) - 0.72).abs() < f64::EPSILON);
         assert!((opacity_from_settings_percent(0) - 0.15).abs() < f64::EPSILON);
         assert!((opacity_from_settings_percent(255) - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn ocr_selection_rect_maps_scaled_window_to_image_pixels() {
+        assert_eq!(
+            selection_rect_from_window_points((20.0, 10.0), (120.0, 60.0), 200, 100, 100, 50),
+            PixelRect::new(10, 5, 50, 25)
+        );
+        assert_eq!(
+            selection_rect_from_window_points((120.0, 60.0), (20.0, 10.0), 200, 100, 100, 50),
+            PixelRect::new(10, 5, 50, 25)
+        );
     }
 
     #[test]
