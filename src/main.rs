@@ -7,13 +7,23 @@ use std::path::PathBuf;
 
 use pinora_app::{
     AppRuntime, BootstrapOutcome, LocalImageSink, OsSingleInstance, RuntimeCapabilityProbe,
-    SelectedCaptureProvider, ensure_user_desktop_entry, run_desktop_shell,
+    SelectedCaptureProvider, SettingsLoad, SettingsStore, default_settings_path,
+    ensure_user_desktop_entry, run_desktop_shell,
 };
 use pinora_core::{PixelPoint, PixelRect};
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let action = parse_cli_action(&args);
+
+    match SettingsStore::new(default_settings_path()).load() {
+        SettingsLoad::Missing(_) => println!("pinora: settings unavailable; using defaults"),
+        SettingsLoad::Loaded { repairs, .. } if repairs.is_empty() => {
+            println!("pinora: settings loaded")
+        }
+        SettingsLoad::Loaded { .. } => println!("pinora: settings loaded with repaired values"),
+        SettingsLoad::Invalid(_) => println!("pinora: settings invalid; using defaults"),
+    }
 
     // 若已有实例：经 Unix socket 转发后退出（不抢锁）
     if let Some(frame) = action.ipc_frame() {

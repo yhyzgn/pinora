@@ -31,7 +31,7 @@
 - 生产入口仍是 `src/main.rs`，但使用 `std::os::unix::net::UnixStream`；没有平台条件编译，因此 Windows target 无法完成 workspace 检查。
 - `crates/pinora-app/src/desktop_shell.rs` 为 2859 行，集中承载 winit/softbuffer 窗口事件、截图编排、Overlay 绘制、标注输入、贴图生命周期、OCR 触发、托盘和 IPC 轮询；最近连续提交 `eb5dfaf`、`e0ea849`、`3912f64`、`f3cb45a`、`b0bd260` 均修补该文件的交互/性能问题。
 - 当前依赖树把 `gtk`/`tray-icon`、`xcap`/PipeWire、`winit`/`softbuffer` 和 Linux CLI 后端直接放入 `pinora-app`；没有 Windows/macOS/Linux 适配器边界。
-- `cargo fmt --check`、`cargo check --workspace` 和 `cargo clippy --workspace --all-targets -- -D warnings` 已于 2026-08-01 通过；`cargo test --workspace` 通过 122 个可执行单元测试（78 app、44 core），另有 2 个真实桌面测试被忽略；仍没有 GUI 端到端测试。
+- `cargo fmt --check`、`cargo check --workspace` 和 `cargo clippy --workspace --all-targets -- -D warnings` 已于 2026-08-02 通过；`cargo test --workspace` 通过 128 个可执行单元测试（82 app、46 core），另有 2 个真实桌面测试被忽略；仍没有 GUI 端到端测试。
 - `cargo check --workspace --target x86_64-pc-windows-msvc` 失败于 GTK 的 `gdk-pixbuf-sys`/`glib-sys` pkg-config 交叉编译，尚未进入应用代码编译阶段。
 - OCR 通过 `tesseract` 子进程和临时 PNG 工作；适配器已持有自身 `Child`，支持协作式取消、30 秒截止时间、16 MiB 输出上限和 RAII 临时文件清理，不再调用外部 `kill`。贴图与 Overlay UI 已经通过 `OcrJobService` 提交到 `JobSupervisor`，结果交付受 owner、终态和 `AssetRef` generation 门禁保护；worker 不触碰窗口或剪贴板。
 - 截图后端自动选择 KDE `spectacle` → xcap → `Unavailable`；两者不可用时保留后端失败摘要并由 provider 返回 `CapabilityUnavailable`，`fake` 只能通过显式测试/开发注入使用。
@@ -44,6 +44,7 @@
 - `pinora-app::save_png_file` 已于 2026-08-01 使用同目录临时文件、文件 `sync_all`、rename 发布和目标可读性校验；未提交临时文件由 RAII 删除。该事实只在 Linux 本地文件系统测试，未证明跨平台覆盖或断电后目录持久性。
 - `OcrJobService` 与 `ExportJobService` 已于 2026-08-01 保存自己创建的 worker 句柄，正常轮询会回收结束线程；桌面退出先取消、最多等待 2 秒并输出取消/join/panic/残留计数。协作式 worker 若不响应取消会被如实报告为残留，不能视为已回收。
 - `pinora-core::annotate` 已于 2026-08-01 新增 `AnnotationRevision`：新文档从非零版本开始，有效提交、非空撤销和非空重做均单调推进且在 `u64::MAX` 饱和；标注集合与 redo 栈只暴露只读查询。Overlay 已为确认选区建立稳定派生 `ImageId`，将 revision 映射为 `AssetRef.generation` 并用于 OCR、复制和保存；有效编辑、撤销、重做或重选会拒绝晚到结果。贴图尚无标注回编辑。
+- `pinora-core::settings` 与 `pinora-app::SettingsStore` 已于 2026-08-02 建立版本化设置与原子文件基础：格式有 magic、schema 与长度校验，非法数值逐字段修复，损坏/未知版本保留源文件并回退内存默认。启动只读 Linux XDG/HOME 默认路径，不自动写入；设置 UI、实际运行时应用和跨平台目录策略仍未交付。
 
 ## 主流程
 

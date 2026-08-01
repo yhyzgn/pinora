@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/032_annotation_redo_transactions.md`
-- 任务：`.context/tasks/032_annotation_redo_transactions.md`
+- 计划：`.context/plans/033_versioned_settings_store.md`
+- 任务：`.context/tasks/033_versioned_settings_store.md`
 
 ## 交付要求
 
