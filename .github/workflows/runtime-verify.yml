@@ -148,7 +148,7 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo '<!-- PINORA_RUNTIME_VERIFICATION:START -->'; echo '## Runtime verification report'; echo; echo "Package run for `$TAG` completed on Linux, macOS and Windows runners."; echo; cat runtime-reports/*.json; echo '<!-- PINORA_RUNTIME_VERIFICATION:END -->';
+            echo '<!-- PINORA_RUNTIME_VERIFICATION:START -->'; echo '## Runtime verification report'; echo; printf 'Package run for `%s` completed on Linux, macOS and Windows runners.\n' "$TAG"; echo; cat runtime-reports/*.json; echo '<!-- PINORA_RUNTIME_VERIFICATION:END -->';
           } > runtime-verification-report.md
           if [[ "$TAG" == v* ]] && gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > release-body.md
