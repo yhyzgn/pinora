@@ -26,10 +26,11 @@ use crate::overlay_toolbar::{
 };
 use crate::tray::{AppTray, TrayAction};
 use pinora_core::{
-    ActionId, AnnotateSession, AnnotateTool, AssetRef, CaptureImage, CaptureProvider,
-    CaptureRequest, Command, CorrelationId, DisplayId, DomainEventKind, ErrorCode, ImageSink,
-    JobId, JobKind, JobOwner, JobSpec, OcrResult, PinId, PinTransform, PinoraError, PixelPoint,
-    PixelRect, SelectionSession, SessionId, bake_annotations, render_preview_rgba,
+    ActionId, AnnotateSession, AnnotateTool, AnnotationRevision, AssetGeneration, AssetRef,
+    CaptureImage, CaptureProvider, CaptureRequest, Command, CorrelationId, DisplayId,
+    DomainEventKind, ErrorCode, ImageId, ImageSink, JobId, JobKind, JobOwner, JobSpec, OcrResult,
+    PinId, PinTransform, PinoraError, PixelPoint, PixelRect, SelectionSession, SessionId,
+    bake_annotations, render_preview_rgba,
 };
 use softbuffer::{Context, Rect as DamageRect, Surface};
 use winit::application::ApplicationHandler;
@@ -65,6 +66,38 @@ fn pending_asset_for_owner(
     pending_assets
         .get(&job_id)
         .and_then(|(pending_owner, asset)| (*pending_owner == owner).then_some(*asset))
+}
+
+/// 已确认 Overlay 选区的派生图像身份。
+///
+/// 选区内标注只改变 generation；重选来源像素时才生成新的图像身份。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OverlayAssetIdentity {
+    image_id: ImageId,
+}
+
+impl OverlayAssetIdentity {
+    fn new() -> Self {
+        Self {
+            image_id: ImageId::new(),
+        }
+    }
+
+    fn current(self, revision: AnnotationRevision) -> AssetRef {
+        let generation = AssetGeneration::from_raw(revision.raw())
+            .expect("annotation revision is guaranteed non-zero");
+        AssetRef::new(self.image_id, generation)
+    }
+
+    fn stamp(self, image: &mut CaptureImage) {
+        image.id = self.image_id;
+    }
+}
+
+fn overlay_current_asset(overlay: &OverlayState) -> Option<AssetRef> {
+    overlay
+        .annotation_asset
+        .map(|identity| identity.current(overlay.annotate.doc.revision()))
 }
 
 /// 运行统一桌面 shell（阻塞直到退出）。
@@ -268,7 +301,8 @@ struct OverlayState {
     display_origin: PixelPoint,
     full_image: CaptureImage,
     session_id: SessionId,
-    ocr_asset: Option<AssetRef>,
+    /// 当前确认选区的派生图像身份；重选后必须更换。
+    annotation_asset: Option<OverlayAssetIdentity>,
 }
 
 struct PinWin {
@@ -899,7 +933,7 @@ where
             display_origin,
             full_image: prep.image,
             session_id: SessionId::new(),
-            ocr_asset: None,
+            annotation_asset: None,
         });
         self.mode = Mode::Idle;
         window.request_redraw();
@@ -947,7 +981,11 @@ where
                     if let Some(ov) = self.overlay.as_mut()
                         && ov.annotate.is_text_editing()
                     {
+                        let revision = ov.annotate.doc.revision();
                         ov.annotate.commit();
+                        if ov.annotate.doc.revision() != revision {
+                            ov.annotate_dirty = true;
+                        }
                         ov.needs_redraw = true;
                         println!("pinora: text committed on overlay");
                         return;
@@ -1032,6 +1070,8 @@ where
                             ov.annotate = AnnotateSession::new(1, 1);
                             ov.annotate_cache = None;
                             ov.active_src_rect = None;
+                            // 选区一旦确认重选，旧任务立即失效；不能等到松手才换身份。
+                            ov.annotation_asset = Some(OverlayAssetIdentity::new());
                             ov.annotate_dirty = true;
                             ov.session.begin_drag(ov.drag_anchor);
                             ov.session.update_cursor(p);
@@ -1194,6 +1234,7 @@ where
                         ov.toolbar = layout_toolbar(sel, ov.buf_w, ov.buf_h);
                         let src_sel = buf_rect_to_src(sel, ov.buf_w, ov.buf_h, ov.src_w, ov.src_h);
                         ov.active_src_rect = Some(src_sel);
+                        ov.annotation_asset = Some(OverlayAssetIdentity::new());
                         let tool = ov.annotate.tool;
                         let color = ov.annotate.color;
                         let stroke = ov.annotate.stroke;
@@ -1321,7 +1362,7 @@ where
         let overlay_asset = self
             .overlay
             .as_ref()
-            .and_then(|ov| ov.ocr_asset.map(|asset| (ov.session_id, asset)));
+            .and_then(|ov| overlay_current_asset(ov).map(|asset| (ov.session_id, asset)));
         let completions = self.ocr_jobs.poll(monotonic_ms(), |owner| match owner {
             JobOwner::Pin(pin_id) => pin_assets.get(&pin_id).copied(),
             JobOwner::Session(session_id) => overlay_asset
@@ -1378,7 +1419,7 @@ where
         let overlay_asset = self
             .overlay
             .as_ref()
-            .and_then(|ov| ov.ocr_asset.map(|asset| (ov.session_id, asset)));
+            .and_then(|ov| overlay_current_asset(ov).map(|asset| (ov.session_id, asset)));
         let pending_assets: HashMap<JobId, (JobOwner, AssetRef)> = self
             .pending_exports
             .iter()
@@ -1437,6 +1478,7 @@ where
     }
 
     fn overlay_ocr(&mut self) {
+        self.commit_overlay_draft();
         let image = match self.crop_overlay_image(true) {
             Ok(img) => img,
             Err(e) => {
@@ -1444,13 +1486,32 @@ where
                 return;
             }
         };
-        let Some(ov) = self.overlay.as_mut() else {
+        let Some(ov) = self.overlay.as_ref() else {
             return;
         };
         let owner = JobOwner::Session(ov.session_id);
-        let asset = AssetRef::initial(image.id);
-        ov.ocr_asset = Some(asset);
+        let Some(asset) = overlay_current_asset(ov) else {
+            eprintln!("pinora: OCR asset missing for overlay selection");
+            return;
+        };
         self.submit_ocr_job(owner, image, asset);
+    }
+
+    /// 对外部副作用冻结标注事务，避免预览草稿与任务 AssetRef 不一致。
+    fn commit_overlay_draft(&mut self) {
+        let Some(ov) = self.overlay.as_mut() else {
+            return;
+        };
+        if ov.annotate.draft.is_none() {
+            return;
+        }
+        let revision = ov.annotate.doc.revision();
+        ov.annotate.commit();
+        ov.annotate_dragging = false;
+        if ov.annotate.doc.revision() != revision {
+            ov.annotate_dirty = true;
+            ov.needs_redraw = true;
+        }
     }
 
     /// 从当前 overlay 选区裁剪**原图像素**，可选烧录标注。
@@ -1465,9 +1526,15 @@ where
             let disp = ov.session.try_confirm()?;
             buf_rect_to_src(disp, ov.buf_w, ov.buf_h, ov.src_w, ov.src_h)
         };
+        let identity = ov.annotation_asset.ok_or_else(|| {
+            PinoraError::new(
+                ErrorCode::InvalidState,
+                "overlay selection asset is not initialized",
+            )
+        })?;
         let crop = ov.full_image.crop_local(src_rect)?;
-        if bake && !ov.annotate.doc.is_empty() {
-            Ok(bake_annotations(&crop, &ov.annotate.doc))
+        let mut output = if bake && !ov.annotate.doc.is_empty() {
+            bake_annotations(&crop, &ov.annotate.doc)
         } else if bake {
             if ov.annotate.draft.is_some() {
                 let rgba = render_preview_rgba(&crop, &ov.annotate);
@@ -1475,13 +1542,15 @@ where
                 if rgba.len() == img.pixels.bytes.len() {
                     img.pixels.bytes = rgba;
                 }
-                Ok(img)
+                img
             } else {
-                Ok(crop)
+                crop
             }
         } else {
-            Ok(crop)
-        }
+            crop
+        };
+        identity.stamp(&mut output);
+        Ok(output)
     }
 
     fn finish_overlay_action(
@@ -1489,6 +1558,7 @@ where
         event_loop: &ActiveEventLoop,
         action: OverlayFinish,
     ) -> Result<(), PinoraError> {
+        self.commit_overlay_draft();
         let ov = self
             .overlay
             .as_ref()
@@ -1506,6 +1576,12 @@ where
         };
         let display_id = ov.display_id.clone();
         let session_owner = JobOwner::Session(ov.session_id);
+        let asset = overlay_current_asset(ov).ok_or_else(|| {
+            PinoraError::new(
+                ErrorCode::InvalidState,
+                "overlay selection asset is not initialized",
+            )
+        })?;
         let global = PixelRect::new(
             ov.display_origin.x.saturating_add(src_rect.origin.x),
             ov.display_origin.y.saturating_add(src_rect.origin.y),
@@ -1534,7 +1610,6 @@ where
 
         match action {
             OverlayFinish::Copy => {
-                let asset = AssetRef::initial(image.id);
                 if let Some(rt) = self.runtime.as_mut() {
                     rt.dispatch(Command::create_pin(image.clone(), position))?;
                 }
@@ -1546,7 +1621,6 @@ where
                 )?;
             }
             OverlayFinish::Save => {
-                let asset = AssetRef::initial(image.id);
                 let path = self
                     .runtime
                     .as_ref()
@@ -2184,11 +2258,19 @@ fn refresh_overlay_ready(ov: &mut OverlayState) {
         && ov.phase == OverlayPhase::Ready
     {
         ov.toolbar = layout_toolbar(sel, ov.buf_w, ov.buf_h);
-        if ov.annotate.image_w != sel.size.width || ov.annotate.image_h != sel.size.height {
+        let src_sel = buf_rect_to_src(sel, ov.buf_w, ov.buf_h, ov.src_w, ov.src_h);
+        let source_changed = ov.active_src_rect != Some(src_sel);
+        if source_changed {
+            ov.active_src_rect = Some(src_sel);
+            ov.annotation_asset = Some(OverlayAssetIdentity::new());
+            ov.annotate_cache = None;
+            ov.annotate_dirty = true;
+        }
+        if ov.annotate.image_w != src_sel.size.width || ov.annotate.image_h != src_sel.size.height {
             let tool = ov.annotate.tool;
             let color = ov.annotate.color;
             let stroke = ov.annotate.stroke;
-            ov.annotate = AnnotateSession::new(sel.size.width, sel.size.height);
+            ov.annotate = AnnotateSession::new(src_sel.size.width, src_sel.size.height);
             ov.annotate.tool = tool;
             ov.annotate.color = color;
             ov.annotate.stroke = stroke;
@@ -2600,6 +2682,11 @@ fn draw_border(buf: &mut [u32], w: usize, h: usize, color: u32) {
 #[cfg(test)]
 mod overlay_scale_tests {
     use super::*;
+    use crate::job_supervisor::{JobResultDisposition, JobSupervisor};
+    use pinora_core::{
+        Annotation, AnnotationDoc, CaptureMetadata, DEFAULT_STROKE, DEFAULT_WIDTH, JobResultRef,
+        RgbaBuffer,
+    };
 
     #[test]
     fn buf_to_src_identity_when_1to1() {
@@ -2633,5 +2720,71 @@ mod overlay_scale_tests {
             pending_asset_for_owner(&pending, job_id, JobOwner::Session(SessionId::from_raw(10))),
             None
         );
+    }
+
+    #[test]
+    fn annotation_revision_changes_overlay_asset_and_rejects_late_result() {
+        let identity = OverlayAssetIdentity::new();
+        let mut doc = AnnotationDoc::new();
+        let submitted = identity.current(doc.revision());
+
+        doc.push(Annotation::Rect {
+            a: PixelPoint::new(1, 1),
+            b: PixelPoint::new(4, 4),
+            color: DEFAULT_STROKE,
+            stroke: DEFAULT_WIDTH,
+        });
+        let current = identity.current(doc.revision());
+        assert_eq!(submitted.image_id, current.image_id);
+        assert_ne!(submitted.generation, current.generation);
+
+        let spec = JobSpec::new(
+            JobId::from_raw(11),
+            CorrelationId::from_raw(12),
+            submitted,
+            JobOwner::Session(SessionId::from_raw(13)),
+            JobKind::Ocr,
+            100,
+        );
+        let mut supervisor = JobSupervisor::new();
+        let ticket = supervisor.submit(spec).expect("submit overlay OCR");
+        assert_eq!(
+            supervisor
+                .accept_result(JobResultRef::new(ticket.id, submitted), current, 1)
+                .expect("known job"),
+            JobResultDisposition::Rejected(pinora_core::JobTerminalState::StaleAsset)
+        );
+
+        let before_empty_undo = identity.current(doc.revision());
+        assert!(doc.undo().is_some());
+        assert_ne!(identity.current(doc.revision()), before_empty_undo);
+        let after_undo = identity.current(doc.revision());
+        assert_eq!(doc.undo(), None);
+        assert_eq!(identity.current(doc.revision()), after_undo);
+    }
+
+    #[test]
+    fn reselection_uses_a_new_image_identity_and_stamps_derived_image() {
+        let first = OverlayAssetIdentity::new();
+        let second = OverlayAssetIdentity::new();
+        let revision = AnnotationRevision::INITIAL;
+        assert_ne!(
+            first.current(revision).image_id,
+            second.current(revision).image_id
+        );
+        assert_eq!(
+            first.current(revision).generation,
+            second.current(revision).generation
+        );
+
+        let mut image = CaptureImage::new(
+            ImageId::from_raw(99),
+            RgbaBuffer::solid(pinora_core::PixelSize::new(2, 2), [1, 2, 3, 255]),
+            PixelRect::new(0, 0, 2, 2),
+            CaptureMetadata::new(DisplayId::new("test"), 1.0, 0),
+        )
+        .expect("derived test image");
+        first.stamp(&mut image);
+        assert_eq!(image.id, first.current(revision).image_id);
     }
 }
