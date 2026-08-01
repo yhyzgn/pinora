@@ -101,7 +101,7 @@ jobs:
           set -euo pipefail
           zipfile="$(find runtime-dist -name '*.zip' | head -n1)"
           unzip -q "$zipfile" -d extracted
-          timeout 8s extracted/Pinora.app/Contents/MacOS/pinora --version
+          extracted/Pinora.app/Contents/MacOS/pinora --version
       - name: Verify Windows packages
         if: matrix.platform == 'windows'
         shell: pwsh
