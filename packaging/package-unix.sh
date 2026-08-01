@@ -17,6 +17,10 @@ cargo build --release --locked
 binary="target/release/pinora"
 test -x "$binary"
 
+# Keep the original release-mode executable as a separately downloadable asset.
+raw_binary="$out/pinora-${version}-${platform_name}-${arch_name}"
+install -m 755 "$binary" "$raw_binary"
+
 if [[ "$platform_name" == linux ]]; then
   deb_version="$(printf '%s' "$version" | sed 's/-/~/g')"
   stage="target/package-stage/linux"

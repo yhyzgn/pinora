@@ -8,6 +8,7 @@ $binary = Join-Path (Get-Location) 'target/release/pinora.exe'
 if (-not (Test-Path $binary)) { throw "missing release binary: $binary" }
 $stage = Join-Path (Get-Location) 'target/package-stage/windows'
 Copy-Item $binary (Join-Path $stage 'pinora.exe')
+Copy-Item $binary (Join-Path $out "pinora-$version-windows-x86_64-raw.exe")
 Compress-Archive -Path (Join-Path $stage 'pinora.exe') -DestinationPath (Join-Path $out "pinora-$version-windows-x86_64.zip") -Force
 
 $makensis = Get-Command makensis -ErrorAction SilentlyContinue

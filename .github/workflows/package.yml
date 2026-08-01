@@ -79,18 +79,51 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: pinora-*
-          path: release-assets
-          merge-multiple: true
+      - name: Download package artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-download release-assets
+          for platform in linux macos windows; do
+            gh run download "$GITHUB_RUN_ID" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern "pinora-${platform}-*" \
+              --dir "release-download/${platform}"
+          done
       - name: Verify and publish release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$(find release-assets -type f -name 'SHA256SUMS.txt' -print -quit)"
-          while IFS= read -r sums; do (cd "$(dirname "$sums")" && sha256sum -c "$(basename "$sums")"); done < <(find release-assets -type f -name SHA256SUMS.txt)
-          mapfile -t assets < <(find release-assets -type f ! -name SHA256SUMS.txt -o -name SHA256SUMS.txt | sort)
-          gh release create "${GITHUB_REF_NAME}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}" --prerelease --generate-notes --title "Pinora ${GITHUB_REF_NAME}"
+          test -n "$(find release-download -type f -name 'SHA256SUMS.txt' -print -quit)"
+          while IFS= read -r sums; do
+            (cd "$(dirname "$sums")" && sha256sum -c "$(basename "$sums")")
+          done < <(find release-download -type f -name SHA256SUMS.txt | sort)
+
+          while IFS= read -r source; do
+            name="$(basename "$source")"
+            [[ "$name" == SHA256SUMS.txt ]] && continue
+            destination="release-assets/$name"
+            if [[ -e "$destination" ]]; then
+              echo "duplicate release asset name: $name" >&2
+              exit 1
+            fi
+            cp "$source" "$destination"
+          done < <(find release-download -type f | sort)
+
+          : > release-assets/SHA256SUMS.txt
+          while IFS= read -r asset; do
+            name="$(basename "$asset")"
+            printf '%s  %s\n' "$(sha256sum "$asset" | awk '{print $1}')" "$name" >> release-assets/SHA256SUMS.txt
+          done < <(find release-assets -type f ! -name SHA256SUMS.txt | sort)
+
+          mapfile -t assets < <(find release-assets -type f | sort)
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --prerelease --title "Pinora ${GITHUB_REF_NAME}" --generate-notes
+            gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}" --prerelease --generate-notes --title "Pinora ${GITHUB_REF_NAME}"
+          fi

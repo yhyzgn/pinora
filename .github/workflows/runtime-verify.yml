@@ -46,6 +46,9 @@ jobs:
           should_run=true
           if [[ "$EVENT_NAME" == workflow_run ]]; then
             run_id="$WORKFLOW_RUN_ID"; tag="$WORKFLOW_TAG"
+            if [[ "$tag" != v* ]]; then
+              tag="$(gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --json headBranch --jq '.headBranch')"
+            fi
             [[ "$WORKFLOW_CONCLUSION" == success && "$tag" == v* ]] || should_run=false
           fi
           if [[ -z "$run_id" && -n "$tag" ]]; then
