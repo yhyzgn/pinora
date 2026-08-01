@@ -10,20 +10,30 @@ use pinora_app::{
     SelectedCaptureProvider, SettingsLoad, SettingsStore, default_settings_path,
     ensure_user_desktop_entry, run_desktop_shell,
 };
-use pinora_core::{PixelPoint, PixelRect};
+use pinora_core::{AppSettings, PixelPoint, PixelRect};
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let action = parse_cli_action(&args);
 
-    match SettingsStore::new(default_settings_path()).load() {
-        SettingsLoad::Missing(_) => println!("pinora: settings unavailable; using defaults"),
-        SettingsLoad::Loaded { repairs, .. } if repairs.is_empty() => {
-            println!("pinora: settings loaded")
+    let settings = match SettingsStore::new(default_settings_path()).load() {
+        SettingsLoad::Missing(settings) => {
+            println!("pinora: settings unavailable; using defaults");
+            settings
         }
-        SettingsLoad::Loaded { .. } => println!("pinora: settings loaded with repaired values"),
-        SettingsLoad::Invalid(_) => println!("pinora: settings invalid; using defaults"),
-    }
+        SettingsLoad::Loaded { settings, repairs } if repairs.is_empty() => {
+            println!("pinora: settings loaded");
+            settings
+        }
+        SettingsLoad::Loaded { settings, .. } => {
+            println!("pinora: settings loaded with repaired values");
+            settings
+        }
+        SettingsLoad::Invalid(_) => {
+            println!("pinora: settings invalid; using defaults");
+            AppSettings::default()
+        }
+    };
 
     // 若已有实例：经 Unix socket 转发后退出（不抢锁）
     if let Some(frame) = action.ipc_frame() {
@@ -65,11 +75,13 @@ fn main() {
 
     let export_dir = lock.dir().join("export");
     let probe = RuntimeCapabilityProbe::new(backend, note);
-    let mut runtime = AppRuntime::new(lock, probe, capture, LocalImageSink::new()).with_defaults(
-        PixelRect::new(100, 80, 320, 180),
-        PixelPoint::new(120, 80),
-        export_dir,
-    );
+    let mut runtime = AppRuntime::new(lock, probe, capture, LocalImageSink::new())
+        .with_defaults(
+            PixelRect::new(100, 80, 320, 180),
+            PixelPoint::new(120, 80),
+            export_dir,
+        )
+        .with_settings(settings);
 
     match runtime.bootstrap() {
         Ok(BootstrapOutcome::Primary) => {

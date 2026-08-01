@@ -74,4 +74,4 @@
 - 实际变更：新增 `SettingsStore`，格式包含固定 magic、schema、theme、历史上限、贴图上限和不透明度；严格检查记录长度、magic、schema 和 theme。保存经同目录临时文件、同步、rename 和读取验证完成，临时文件由 RAII 清理。
 - 实际变更：`src/main.rs` 只读取 XDG/HOME 回退路径并输出不含路径的状态。缺失和无效设置均只使用内存默认，不会在启动时创建或覆盖用户文件。
 - 验证：`cargo test -p pinora-core settings::tests -- --nocapture` 通过 2/2；`cargo test -p pinora-app settings_store::tests -- --nocapture` 通过 4/4；`cargo fmt --check`、`cargo check --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`git diff --check` 与上下文校验均通过。workspace 为 app 82 项通过、2 项真实桌面测试忽略，core 46 项通过。
-- 未覆盖项：设置尚未驱动运行时行为或提供 UI，未验证真实用户配置目录；历史、迁移、热键和跨平台目录策略仍属后续任务。
+- 未覆盖项：设置尚未提供 UI、主题渲染、热键热更新或真实用户配置目录探针；035 已接入贴图数量上限和新贴图默认不透明度，历史、迁移、热键和跨平台目录策略仍属后续任务。

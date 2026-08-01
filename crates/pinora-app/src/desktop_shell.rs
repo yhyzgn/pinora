@@ -136,6 +136,12 @@ where
             None
         }
     };
+    let settings = runtime.settings();
+    let default_pin_opacity = opacity_from_settings_percent(settings.default_pin_opacity_percent);
+    println!(
+        "pinora: settings policy pin-limit={} default-opacity={}%; theme rendering unavailable",
+        settings.pin_limit, settings.default_pin_opacity_percent
+    );
 
     let mut app = DesktopApp {
         runtime: Some(runtime),
@@ -158,6 +164,7 @@ where
         pending_exports: HashMap::new(),
         start_capture_wait: None,
         tray,
+        default_pin_opacity,
     };
 
     event_loop
@@ -365,6 +372,8 @@ struct DesktopApp<L, P, C, S> {
     /// 等待 frame-cache 首帧的起始时间；超时走 cold path。
     start_capture_wait: Option<Instant>,
     tray: Option<AppTray>,
+    /// 设置驱动的新建贴图默认不透明度；运行时手动调整后不再覆盖。
+    default_pin_opacity: f64,
 }
 
 impl<L, P, C, S> ApplicationHandler for DesktopApp<L, P, C, S>
@@ -1703,7 +1712,13 @@ where
         );
 
         // 先弹出贴图窗；导出/剪贴板放到后面，避免挡住贴图
-        self.spawn_pin(event_loop, pin_id, image, position, 1.0)?;
+        self.spawn_pin(
+            event_loop,
+            pin_id,
+            image,
+            position,
+            self.default_pin_opacity,
+        )?;
         self.mode = Mode::Idle;
         self.resume_frame_cache();
 
@@ -2605,6 +2620,10 @@ fn apply_opacity_darken(buf: &mut [u32], opacity: f64) {
     }
 }
 
+fn opacity_from_settings_percent(percent: u8) -> f64 {
+    f64::from(percent.clamp(15, 100)) / 100.0
+}
+
 fn blit_rect(dst: &mut [u32], src: &[u32], stride: usize, height: usize, rect: PixelRect) {
     let x0 = rect.origin.x.max(0) as usize;
     let y0 = rect.origin.y.max(0) as usize;
@@ -2766,6 +2785,13 @@ mod overlay_scale_tests {
             Some(AnnotationHistoryAction::Redo)
         );
         assert_eq!(annotation_history_action(false, false, "z"), None);
+    }
+
+    #[test]
+    fn settings_opacity_is_converted_to_bounded_runtime_value() {
+        assert!((opacity_from_settings_percent(72) - 0.72).abs() < f64::EPSILON);
+        assert!((opacity_from_settings_percent(0) - 0.15).abs() < f64::EPSILON);
+        assert!((opacity_from_settings_percent(255) - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]

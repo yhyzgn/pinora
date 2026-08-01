@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
 use pinora_core::{
-    ActionId, AppPhase, AppState, CaptureProvider, CaptureRequest, Command, DomainEvent,
-    DomainEventKind, ErrorCode, EventEnvelope, ImageSink, PinoraError, PixelPoint, PixelRect,
+    ActionId, AppPhase, AppSettings, AppState, CaptureProvider, CaptureRequest, Command,
+    DomainEvent, DomainEventKind, ErrorCode, EventEnvelope, ImageSink, PinoraError, PixelPoint,
+    PixelRect,
 };
 
 use crate::platform::CapabilityProbe;
@@ -32,6 +33,7 @@ pub struct AppRuntime<L, P, C, S> {
     default_capture_rect: PixelRect,
     default_pin_position: PixelPoint,
     default_export_dir: PathBuf,
+    settings: AppSettings,
     events: Vec<EventEnvelope>,
 }
 
@@ -52,6 +54,7 @@ where
             default_capture_rect: PixelRect::new(100, 80, 320, 180),
             default_pin_position: PixelPoint::new(120, 80),
             default_export_dir: std::env::temp_dir().join("pinora-export"),
+            settings: AppSettings::default(),
             events: Vec::new(),
         }
     }
@@ -65,6 +68,14 @@ where
         self.default_capture_rect = capture_rect;
         self.default_pin_position = pin_position;
         self.default_export_dir = export_dir;
+        self
+    }
+
+    /// 应用启动时注入经过 `SettingsStore` 校验的设置，并立即应用安全策略。
+    pub fn with_settings(mut self, settings: AppSettings) -> Self {
+        let (settings, _) = settings.with_repaired_values();
+        self.state.max_pins = settings.pin_limit as usize;
+        self.settings = settings;
         self
     }
 
@@ -90,6 +101,10 @@ where
 
     pub fn export_dir(&self) -> &PathBuf {
         &self.default_export_dir
+    }
+
+    pub fn settings(&self) -> AppSettings {
+        self.settings
     }
 
     pub fn bootstrap(&mut self) -> Result<BootstrapOutcome, PinoraError> {
@@ -351,6 +366,30 @@ mod tests {
             FakeCaptureProvider::new(),
             LocalImageSink::new(),
         )
+    }
+
+    #[test]
+    fn settings_apply_pin_limit_to_runtime_state() {
+        let settings = AppSettings {
+            pin_limit: 2,
+            default_pin_opacity_percent: 72,
+            ..AppSettings::default()
+        };
+        let rt = runtime().with_settings(settings);
+        assert_eq!(rt.state().max_pins, 2);
+        assert_eq!(rt.settings().default_pin_opacity_percent, 72);
+    }
+
+    #[test]
+    fn invalid_numeric_settings_are_repaired_before_runtime_application() {
+        let settings = AppSettings {
+            pin_limit: 0,
+            default_pin_opacity_percent: 14,
+            ..AppSettings::default()
+        };
+        let rt = runtime().with_settings(settings);
+        assert_eq!(rt.state().max_pins, 10);
+        assert_eq!(rt.settings().default_pin_opacity_percent, 100);
     }
 
     #[test]
