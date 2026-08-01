@@ -87,7 +87,7 @@
 
 ## R-011：跨平台流水线与真实桌面能力分离（高）
 
-- 证据和影响范围：2026-08-02 已加入 Linux/macOS/Windows 原生 runner 的 CI、package、runtime-verify；`v0.1.0-preview.4` 的 CI run `30718570254`、package run `30718584345`、发布 job `91418674201`、runtime-verify run `30718703854` 均成功，10 个 Release 资产及合并 SHA256 清单已逐项复核。runtime smoke 只运行 `--version` 和安装器，不创建真实 GUI 会话。
+- 证据和影响范围：2026-08-02 已加入 Linux/macOS/Windows 原生 runner 的 CI、package、runtime-verify；`v0.1.0-preview.5` 的 CI run `30719637865`、package run `30719649724`、发布 job `91421507686`、runtime-verify run `30719791965` 均成功，10 个可执行 Release 资产及合并 SHA256 清单已逐项复核。runtime smoke 只运行 `--version` 和安装器，不创建真实 GUI 会话。
 - 触发条件：把 workflow 绿色、包可安装或进程能启动当作屏幕捕获、系统剪贴板、热键、透明置顶、多显示器和权限流程已经生产可用。
 - 失败模式：用户在不同桌面/权限环境中看到 capability unavailable、热键不触发、剪贴板不可用或窗口管理器行为不同。
 - 缓解措施：release notes 和 runtime report 明确列出 smoke 范围；workflow 逐平台校验来源清单并生成合并 SHA256 清单；未通过真实桌面探针的平台能力不宣称等同 Linux/KDE；保留 tar/zip/raw binary 回滚分发物。
