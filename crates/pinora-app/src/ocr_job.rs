@@ -4,6 +4,7 @@
 //! 通过 `JobSupervisor` 重新检查 owner、截止时间和资产 generation，避免陈旧
 //! 结果更新已关闭的窗口或已变更的资产。
 
+use std::collections::VecDeque;
 use std::sync::{
     Arc,
     mpsc::{self, Receiver, Sender},
@@ -21,6 +22,94 @@ use crate::job_supervisor::{
 };
 use crate::ocr::recognize_image_with_cancellation;
 use crate::worker_lifecycle::{WorkerWaitOutcome, reap_finished_workers, wait_for_workers};
+
+const OCR_CACHE_MAX_ENTRIES: usize = 8;
+const OCR_CACHE_MAX_ESTIMATED_BYTES: usize = 2 * 1024 * 1024;
+const OCR_CACHE_MAX_RESULT_BYTES: usize = 512 * 1024;
+
+/// 仅在当前进程内复用已验证的 OCR 输出。
+///
+/// 键使用完整资产版本和提交时语言预设。引擎实例属于 `OcrJobService`，因此
+/// 不同 runner/configuration 不会共享此缓存。结果不写盘，应用退出即释放。
+#[derive(Debug, Default)]
+struct OcrResultCache {
+    entries: VecDeque<OcrCacheEntry>,
+    estimated_bytes: usize,
+}
+
+#[derive(Debug)]
+struct OcrCacheEntry {
+    asset: AssetRef,
+    language: OcrLanguage,
+    estimated_bytes: usize,
+    result: OcrResult,
+}
+
+impl OcrResultCache {
+    fn get(&mut self, asset: AssetRef, language: OcrLanguage) -> Option<OcrResult> {
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| entry.asset == asset && entry.language == language)?;
+        let entry = self.entries.remove(index)?;
+        let result = entry.result.clone();
+        self.entries.push_front(entry);
+        Some(result)
+    }
+
+    fn insert(&mut self, asset: AssetRef, language: OcrLanguage, result: OcrResult) {
+        let estimated_bytes = estimated_ocr_result_bytes(&result);
+        if estimated_bytes > OCR_CACHE_MAX_RESULT_BYTES {
+            return;
+        }
+
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|entry| entry.asset == asset && entry.language == language)
+            && let Some(previous) = self.entries.remove(index)
+        {
+            self.estimated_bytes = self
+                .estimated_bytes
+                .saturating_sub(previous.estimated_bytes);
+        }
+
+        while self.entries.len() >= OCR_CACHE_MAX_ENTRIES
+            || self.estimated_bytes.saturating_add(estimated_bytes) > OCR_CACHE_MAX_ESTIMATED_BYTES
+        {
+            let Some(evicted) = self.entries.pop_back() else {
+                break;
+            };
+            self.estimated_bytes = self.estimated_bytes.saturating_sub(evicted.estimated_bytes);
+        }
+
+        self.estimated_bytes = self.estimated_bytes.saturating_add(estimated_bytes);
+        self.entries.push_front(OcrCacheEntry {
+            asset,
+            language,
+            estimated_bytes,
+            result,
+        });
+    }
+}
+
+fn estimated_ocr_result_bytes(result: &OcrResult) -> usize {
+    let mut total = result
+        .full_text
+        .len()
+        .saturating_add(result.engine.len())
+        .saturating_add(64);
+    for language in &result.languages {
+        total = total.saturating_add(language.len().saturating_add(24));
+    }
+    for line in &result.lines {
+        total = total.saturating_add(64);
+        for word in &line.words {
+            total = total.saturating_add(word.text.len().saturating_add(64));
+        }
+    }
+    total
+}
 
 /// 可替换的 OCR 执行端口。生产实现调用本地 Tesseract，测试可注入纯内存 runner。
 pub trait OcrRunner: Send + Sync + 'static {
@@ -68,6 +157,7 @@ impl OcrRunner for LocalOcrRunner {
 #[derive(Debug)]
 struct WorkerResult {
     reference: JobResultRef,
+    language: OcrLanguage,
     result: Result<OcrResult, PinoraError>,
 }
 
@@ -89,6 +179,13 @@ pub enum OcrJobCompletion {
     },
 }
 
+/// OCR 提交的两种受控结果。
+#[derive(Debug)]
+pub enum OcrJobStart {
+    Cached(OcrResult),
+    Started(JobTicket),
+}
+
 /// 将 OCR worker 与任务监督器连接的应用服务。
 pub struct OcrJobService<R: OcrRunner = LocalOcrRunner> {
     supervisor: JobSupervisor,
@@ -96,6 +193,7 @@ pub struct OcrJobService<R: OcrRunner = LocalOcrRunner> {
     sender: Sender<WorkerResult>,
     receiver: Receiver<WorkerResult>,
     workers: Vec<JoinHandle<()>>,
+    cache: OcrResultCache,
 }
 
 impl OcrJobService<LocalOcrRunner> {
@@ -122,7 +220,38 @@ where
             sender,
             receiver,
             workers: Vec::new(),
+            cache: OcrResultCache::default(),
         }
+    }
+
+    /// 返回当前进程中已通过 owner、终态和资产版本门禁的结果副本。
+    ///
+    /// 命中不会创建 worker 或外部 OCR 进程。调用方仍须在自身 owner/asset 上下文
+    /// 中交付此副本，不能将它写给已关闭或已改变的 UI。
+    pub fn cached_result(&mut self, asset: AssetRef, language: OcrLanguage) -> Option<OcrResult> {
+        self.cache.get(asset, language)
+    }
+
+    /// 查询已验收缓存；未命中才创建 OCR worker。
+    ///
+    /// 即使命中也会先验证 `spec.kind`，避免调用方把非 OCR 任务伪装成缓存查询。
+    pub fn start_or_reuse(
+        &mut self,
+        spec: JobSpec,
+        image: CaptureImage,
+        language: OcrLanguage,
+    ) -> Result<OcrJobStart, PinoraError> {
+        if spec.kind != JobKind::Ocr {
+            return Err(PinoraError::new(
+                ErrorCode::CommandRejected,
+                "ocr job service accepts only JobKind::Ocr",
+            ));
+        }
+        if let Some(result) = self.cache.get(spec.asset, language) {
+            return Ok(OcrJobStart::Cached(result));
+        }
+        self.start_with_language(spec, image, language)
+            .map(OcrJobStart::Started)
     }
 
     /// 提交并启动一个 OCR worker。worker 的输出不会直接触碰 UI 或应用状态。
@@ -155,7 +284,11 @@ where
             .name(format!("pinora-ocr-{}", ticket.id.raw()))
             .spawn(move || {
                 let result = runner.recognize_with_language(&image, language, &cancellation);
-                let _ = sender.send(WorkerResult { reference, result });
+                let _ = sender.send(WorkerResult {
+                    reference,
+                    language,
+                    result,
+                });
             });
         let worker = worker.map_err(|error| {
             let _ = self.supervisor.fail(ticket.id);
@@ -212,6 +345,8 @@ where
                         .accept_result(worker.reference, asset, now_ms)
                     {
                         Ok(JobResultDisposition::Accepted(job)) => {
+                            self.cache
+                                .insert(job.asset, worker.language, result.clone());
                             completions.push(OcrJobCompletion::Completed { job, result });
                         }
                         Ok(JobResultDisposition::Rejected(terminal)) => {
@@ -436,6 +571,122 @@ mod tests {
             service.state(ticket.id),
             Some(JobState::Finished(JobTerminalState::Completed))
         );
+        assert!(service.cached_result(asset, OcrLanguage::Auto).is_some());
+    }
+
+    #[test]
+    fn accepted_result_cache_isolated_by_asset_generation_and_language() {
+        let image = sample_image(10);
+        let asset = AssetRef::initial(image.id);
+        let mut service = OcrJobService::with_runner(SuccessRunner);
+        service
+            .start_with_language(spec(10, asset, 100), image, OcrLanguage::English)
+            .expect("start");
+        let _ = poll_until(&mut service, 1, |_| Some(asset));
+
+        let mut cached = service
+            .cached_result(asset, OcrLanguage::English)
+            .expect("matching cache entry");
+        cached.full_text.push_str(" caller mutation");
+        assert_eq!(
+            service
+                .cached_result(asset, OcrLanguage::English)
+                .expect("cache retains its own result")
+                .full_text,
+            ""
+        );
+        assert!(service.cached_result(asset, OcrLanguage::Auto).is_none());
+        assert!(
+            service
+                .cached_result(asset.advance().expect("advance"), OcrLanguage::English)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn start_or_reuse_returns_cached_result_without_starting_another_worker() {
+        let image = sample_image(11);
+        let asset = AssetRef::initial(image.id);
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let runner = LanguageRecordingRunner {
+            received: received.clone(),
+        };
+        let mut service = OcrJobService::with_runner(runner);
+
+        let first = service
+            .start_or_reuse(spec(11, asset, 100), image.clone(), OcrLanguage::English)
+            .expect("first submission");
+        assert!(matches!(first, OcrJobStart::Started(_)));
+        let _ = poll_until(&mut service, 1, |_| Some(asset));
+
+        let reused = service
+            .start_or_reuse(spec(12, asset, 100), image, OcrLanguage::English)
+            .expect("cached submission");
+        assert!(matches!(reused, OcrJobStart::Cached(result) if result.engine == "language-fake"));
+        assert_eq!(
+            received
+                .lock()
+                .expect("language recording mutex")
+                .as_slice(),
+            [OcrLanguage::English]
+        );
+    }
+
+    #[test]
+    fn result_cache_evicts_oldest_entry_and_rejects_oversized_result() {
+        let mut cache = OcrResultCache::default();
+        for id in 1..=OCR_CACHE_MAX_ENTRIES as u64 + 1 {
+            let asset = AssetRef::initial(ImageId::from_raw(id));
+            cache.insert(
+                asset,
+                OcrLanguage::Auto,
+                OcrResult::from_lines(Vec::new(), Vec::new(), "cache-test"),
+            );
+        }
+
+        assert_eq!(cache.entries.len(), OCR_CACHE_MAX_ENTRIES);
+        assert!(
+            cache
+                .get(AssetRef::initial(ImageId::from_raw(1)), OcrLanguage::Auto)
+                .is_none()
+        );
+        assert!(
+            cache
+                .get(
+                    AssetRef::initial(ImageId::from_raw(OCR_CACHE_MAX_ENTRIES as u64 + 1)),
+                    OcrLanguage::Auto,
+                )
+                .is_some()
+        );
+
+        let oversized_asset = AssetRef::initial(ImageId::from_raw(100));
+        cache.insert(
+            oversized_asset,
+            OcrLanguage::Auto,
+            OcrResult {
+                lines: Vec::new(),
+                full_text: "x".repeat(OCR_CACHE_MAX_RESULT_BYTES),
+                languages: Vec::new(),
+                engine: "cache-test".into(),
+            },
+        );
+        assert!(cache.get(oversized_asset, OcrLanguage::Auto).is_none());
+
+        let mut byte_bounded = OcrResultCache::default();
+        for id in 200..=206 {
+            byte_bounded.insert(
+                AssetRef::initial(ImageId::from_raw(id)),
+                OcrLanguage::Auto,
+                OcrResult {
+                    lines: Vec::new(),
+                    full_text: "x".repeat(400 * 1024),
+                    languages: Vec::new(),
+                    engine: "cache-test".into(),
+                },
+            );
+        }
+        assert!(byte_bounded.estimated_bytes <= OCR_CACHE_MAX_ESTIMATED_BYTES);
+        assert!(byte_bounded.entries.len() < OCR_CACHE_MAX_ENTRIES);
     }
 
     #[test]
@@ -484,6 +735,7 @@ mod tests {
             service.state(ticket.id),
             Some(JobState::Finished(JobTerminalState::Failed))
         );
+        assert!(service.cached_result(asset, OcrLanguage::Auto).is_none());
     }
 
     #[test]
@@ -502,6 +754,7 @@ mod tests {
             [OcrJobCompletion::Discarded { job_id, terminal }]
                 if *job_id == ticket.id && *terminal == JobTerminalState::OwnerClosed
         ));
+        assert!(service.cached_result(asset, OcrLanguage::Auto).is_none());
     }
 
     #[test]
@@ -517,6 +770,7 @@ mod tests {
             [OcrJobCompletion::Discarded { job_id, terminal }]
                 if *job_id == ticket.id && *terminal == JobTerminalState::TimedOut
         ));
+        assert!(service.cached_result(asset, OcrLanguage::Auto).is_none());
     }
 
     #[test]
@@ -536,6 +790,7 @@ mod tests {
             service.state(ticket.id),
             Some(JobState::Finished(JobTerminalState::Cancelled))
         );
+        assert!(service.cached_result(asset, OcrLanguage::Auto).is_none());
     }
 
     #[test]
@@ -554,6 +809,11 @@ mod tests {
             [OcrJobCompletion::Discarded { job_id, terminal }]
                 if *job_id == ticket.id && *terminal == JobTerminalState::StaleAsset
         ));
+        assert!(
+            service
+                .cached_result(submitted_asset, OcrLanguage::Auto)
+                .is_none()
+        );
     }
 
     #[test]
@@ -572,6 +832,11 @@ mod tests {
             [OcrJobCompletion::Discarded { job_id, terminal }]
                 if *job_id == ticket.id && *terminal == JobTerminalState::StaleAsset
         ));
+        assert!(
+            service
+                .cached_result(submitted_asset, OcrLanguage::Auto)
+                .is_none()
+        );
     }
 
     #[test]
@@ -587,6 +852,7 @@ mod tests {
             [OcrJobCompletion::Discarded { job_id, terminal }]
                 if *job_id == ticket.id && *terminal == JobTerminalState::OwnerClosed
         ));
+        assert!(service.cached_result(asset, OcrLanguage::Auto).is_none());
     }
 
     #[test]

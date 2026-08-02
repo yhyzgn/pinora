@@ -32,7 +32,7 @@ use crate::history_store::{HistoryStore, default_history_path};
 use crate::history_window::HistoryWindow;
 use crate::hotkey::GlobalHotkeyHub;
 use crate::ocr::tesseract_available;
-use crate::ocr_job::{OcrJobCompletion, OcrJobService};
+use crate::ocr_job::{OcrJobCompletion, OcrJobService, OcrJobStart};
 use crate::overlay_preview_cache::OverlayPreviewCache;
 use crate::overlay_selection_readout::{
     SelectionReadout, layout_selection_readout, paint_selection_readout,
@@ -3098,8 +3098,16 @@ where
             JobKind::Ocr,
             monotonic_ms().saturating_add(OCR_JOB_TIMEOUT_MS),
         );
-        match self.ocr_jobs.start_with_language(spec, image, language) {
-            Ok(ticket) => {
+        match self.ocr_jobs.start_or_reuse(spec, image, language) {
+            Ok(OcrJobStart::Cached(result)) => {
+                println!(
+                    "pinora: OCR cache hit owner={owner:?} asset={} generation={} language={language:?}",
+                    asset.image_id,
+                    asset.generation.raw()
+                );
+                self.deliver_ocr_result(owner, asset, result);
+            }
+            Ok(OcrJobStart::Started(ticket)) => {
                 self.set_tray_feedback(TrayFeedback::OcrRunning);
                 println!(
                     "pinora: OCR job {} started owner={owner:?} {}x{}",
@@ -3110,6 +3118,36 @@ where
                 self.set_tray_feedback(TrayFeedback::OcrFailed(error.code));
                 eprintln!("pinora: OCR submit failed code={}", error.code);
             }
+        }
+    }
+
+    /// 将已经通过任务门禁或缓存 key 验证的 OCR 结果交付给当前 owner。
+    fn deliver_ocr_result(&mut self, owner: JobOwner, asset: AssetRef, result: OcrResult) {
+        self.set_tray_feedback(TrayFeedback::OcrCompleted);
+        println!(
+            "pinora: OCR ok owner={owner:?} — {} words",
+            result.word_count()
+        );
+        if !result.full_text.trim().is_empty() {
+            let text = result.full_text.clone();
+            if let Err(error) = self.submit_export_job(
+                owner,
+                asset,
+                ExportJobInput::CopyText { text },
+                PendingExportAction::CopyText,
+            ) {
+                eprintln!("pinora: text clipboard submit failed code={}", error.code);
+            }
+        }
+        if let JobOwner::Pin(pin_id) = owner
+            && let Some(pin) = self.pins.values_mut().find(|pin| pin.pin_id == pin_id)
+            && pin.asset == asset
+        {
+            pin.ocr = Some(result);
+            pin.ocr_show_boxes = true;
+            pin.ocr_drag_start = None;
+            pin.ocr_selection = OcrTextSelection::default();
+            pin.window.request_redraw();
         }
     }
 
@@ -3178,33 +3216,7 @@ where
         for completion in completions {
             match completion {
                 OcrJobCompletion::Completed { job, result } => {
-                    self.set_tray_feedback(TrayFeedback::OcrCompleted);
-                    println!(
-                        "pinora: OCR ok owner={:?} — {} words",
-                        job.owner,
-                        result.word_count()
-                    );
-                    if !result.full_text.trim().is_empty() {
-                        let text = result.full_text.clone();
-                        if let Err(error) = self.submit_export_job(
-                            job.owner,
-                            job.asset,
-                            ExportJobInput::CopyText { text },
-                            PendingExportAction::CopyText,
-                        ) {
-                            eprintln!("pinora: text clipboard submit failed code={}", error.code);
-                        }
-                    }
-                    if let JobOwner::Pin(pin_id) = job.owner
-                        && let Some(pin) = self.pins.values_mut().find(|pin| pin.pin_id == pin_id)
-                        && pin.asset == job.asset
-                    {
-                        pin.ocr = Some(result);
-                        pin.ocr_show_boxes = true;
-                        pin.ocr_drag_start = None;
-                        pin.ocr_selection = OcrTextSelection::default();
-                        pin.window.request_redraw();
-                    }
+                    self.deliver_ocr_result(job.owner, job.asset, result);
                 }
                 OcrJobCompletion::Failed {
                     job_id,

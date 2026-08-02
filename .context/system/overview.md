@@ -25,7 +25,7 @@
 | 系统托盘 | 截图、1/3/5 秒延时区域截图及取消、显示器指定全屏、可用 xcap 后端的最多 20 个经清洗窗口截图候选、设置、历史、显示/隐藏/关闭全部贴图、退出；菜单禁用状态项与图标 tooltip 显示最近一次受控截图/OCR/导出状态，另有本次启动的截图/热键/图像剪贴板/OCR 能力摘要（tray-icon；真实跨平台菜单与窗口枚举仍待探针） |
 | 后台驻留与窗口隔离 | 启动后只保留托盘、可用全局热键、IPC 与帧缓存，不自动截图；无法创建托盘时以 `CapabilityUnavailable` 退出；所有辅助窗口必须由 `window_policy` 工厂创建并请求跳过任务栏/Dock，真实桌面验证仍待完成 |
 | 贴图控制 | L 锁定，`[` `]` 透明度（压暗近似）；`O` 本地 OCR；`T` 词框 |
-| OCR | 系统 `tesseract` CLI；可持久化选择 Auto、English、SimplifiedChinese；全文复制剪贴板；词框叠加；缺引擎或指定本机模型时受控降级 |
+| OCR | 系统 `tesseract` CLI；可持久化选择 Auto、English、SimplifiedChinese；同资产版本和语言的 accepted 结果进程内复用；全文复制剪贴板；词框叠加；缺引擎或指定本机模型时受控降级 |
 
 ## 2026-08-01 接管审计事实
 
@@ -65,6 +65,7 @@
 - 2026-08-02 的 080 为桌面异步 PNG 保存增加 UTC 可读命名：分配器使用固定 `Pinora_YYYYMMDD_HHMMSS[_NNN].png` 格式，跳过同秒与已存在的候选；Overlay、贴图编辑、贴图自动保存和贴图菜单保存均在提交既有导出 worker 前使用它。没有改变编码、原子写入、历史、任务身份、窗口或 tray 生命周期；普通跨进程文件系统竞态仍未消除，真实桌面验证也未完成。
 - 2026-08-02 的 081 将 `GlobalHotkeyHub` 改为在 `winit` GUI 事件循环线程持有并释放 `GlobalHotKeyManager`，不再用仅 Linux 的应用侧线程转发事件。F2/Ctrl+N 是核心注册，Ctrl+Shift+S/F3 保持可选且状态说明来自实际注册结果；Windows/macOS 不再因应用编译期开关被直接禁用，Linux 仍只声明 X11，纯 Wayland 使用 tray 或 IPC 降级。Pinora 没有新增 `winit` 窗口；Windows 依赖后端会使用隐藏 `WS_EX_TOOLWINDOW` 消息窗口，源码请求跳过任务栏但尚缺实机证据。离线事件过滤、不可用降级、window policy、严格 workspace 门禁和 Windows target 编译已通过；真实 Windows/macOS/X11 热键、Wayland Portal、冲突、权限与睡眠恢复尚未验证。
 - 2026-08-02 的 082 将设置 schema 升级为 v2：18 字节 v1 记录保留既有字段并以 `Auto` 迁移，后续原子保存写入 19 字节 v2。设置窗口可选择 Auto、English、SimplifiedChinese；桌面壳在提交 OCR worker 前冻结 runtime 中的预设。自动模式仅组合本机 `chi_sim`/`eng`，指定模式缺模型时返回 `CapabilityUnavailable`，不下载模型、不回退；OCR 失败日志只写稳定错误码。离线 codec、面板、模型选择、worker 冻结和 workspace 门禁已通过，真实模型安装、设置输入、剪贴板与桌面体验仍未验证。
+- 2026-08-02 的 083 为 `OcrJobService` 增加进程内结果复用：只有通过 owner、终态和 `AssetRef` generation 门禁的成功 OCR 才以完整 asset 与冻结语言进入缓存。缓存为最多 8 条、2 MiB 估算总量、512 KiB 单条上限的内存 LRU 风格队列；命中由 service 保证不创建新 worker，桌面壳仍走原有词框、全文复制与 tray 成功交付。缓存不持久化、不感知外部模型文件变化；离线缓存、服务和 workspace 门禁已通过，真实连续操作、内存峰值和桌面体验仍未验证。
 - GitHub Actions CI `30732620836`、`30732765136`、`30732906042`、`30733684203`、`30734154282`、`30734583848`、`30734867309` 与 `30735354166` 已于 2026-08-02 在 Linux、macOS、Windows 原生 runner 通过格式、workspace 编译、严格 Clippy 和单元测试；这些运行未创建 GUI 会话，不能作为任务栏、Dock、窗口交互、KWin 行为、真实多显示器或渲染延迟的证据。
 - `pinora-core::asset` 已于 2026-08-01 新增 `AssetGeneration` 和 `AssetRef` 领域契约；它只组合既有 `ImageId`，可判定陈旧结果，已用于桌面贴图及 Overlay OCR、复制、保存任务的结果门禁。
 - `pinora-core::job` 与 `pinora-app::JobSupervisor` 已于 2026-08-01 新增：任务元数据绑定 `JobId`、关联 ID、`AssetRef`、领域 owner、类型和截止时间；监督器可协作式取消、关闭 owner、标记超时并拒绝终态或陈旧版本结果。桌面 OCR、导出和剪贴板均已接入，但这不代表所有后台进程均已在真实桌面环境验证。

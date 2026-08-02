@@ -57,7 +57,7 @@ pub use job_supervisor::{
     AcceptedJobResult, JobCancellation, JobResultDisposition, JobState, JobSupervisor, JobTicket,
 };
 pub use ocr::{recognize_image, recognize_image_with_cancellation, tesseract_available};
-pub use ocr_job::{LocalOcrRunner, OcrJobCompletion, OcrJobService, OcrRunner};
+pub use ocr_job::{LocalOcrRunner, OcrJobCompletion, OcrJobService, OcrJobStart, OcrRunner};
 pub use os_instance::{OsSingleInstance, forward_ipc_frame};
 pub use pin_layout::scaled_window_size;
 pub use platform::{CapabilityProbe, FakeCapabilityProbe, RuntimeCapabilityProbe};
