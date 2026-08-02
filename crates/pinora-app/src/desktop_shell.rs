@@ -2644,7 +2644,7 @@ where
                         && (p.y - ov.last_click_pos.y).abs() < 12;
                     ov.last_click_at = Some(now);
                     ov.last_click_pos = p;
-                    if is_double {
+                    if overlay_click_finishes_copy(ov.annotate.tool, is_double) {
                         if let Err(e) = self.finish_overlay_action(event_loop, OverlayFinish::Copy)
                         {
                             eprintln!("pinora: double-click copy failed: {e}");
@@ -2653,7 +2653,10 @@ where
                     }
                     if let Some(local) = overlay_annotate_local(ov, p) {
                         ov.annotate.begin(local);
-                        ov.annotate_dragging = ov.annotate.tool != AnnotateTool::Text;
+                        ov.annotate_dragging = !matches!(
+                            ov.annotate.tool,
+                            AnnotateTool::Text | AnnotateTool::Number | AnnotateTool::ColorPicker
+                        );
                         ov.annotate_dirty = true;
                         ov.needs_redraw = true;
                     }
@@ -4310,6 +4313,10 @@ fn handle_overlay_key(
             set_overlay_tool(ov, AnnotateTool::Rect);
             println!("pinora: tool = Rect");
         }
+        Key::Character(c) if c == "l" || c == "L" => {
+            set_overlay_tool(ov, AnnotateTool::Line);
+            println!("pinora: tool = Line");
+        }
         Key::Character(c) if c == "2" || c == "a" || c == "A" => {
             set_overlay_tool(ov, AnnotateTool::Arrow);
             println!("pinora: tool = Arrow");
@@ -4321,6 +4328,10 @@ fn handle_overlay_key(
         Key::Character(c) if c == "4" || c == "e" || c == "E" => {
             set_overlay_tool(ov, AnnotateTool::Ellipse);
             println!("pinora: tool = Ellipse");
+        }
+        Key::Character(c) if c == "n" || c == "N" => {
+            set_overlay_tool(ov, AnnotateTool::Number);
+            println!("pinora: tool = Number");
         }
         Key::Character(c) if c == "5" || c == "m" || c == "M" => {
             set_overlay_tool(ov, AnnotateTool::Mosaic);
@@ -4336,6 +4347,10 @@ fn handle_overlay_key(
         }
         _ => {}
     }
+}
+
+fn overlay_click_finishes_copy(tool: AnnotateTool, is_double_click: bool) -> bool {
+    is_double_click && tool != AnnotateTool::Number
 }
 
 fn set_overlay_tool(ov: &mut OverlayState, tool: AnnotateTool) {
@@ -5296,6 +5311,13 @@ mod overlay_scale_tests {
             Some(AnnotationHistoryAction::Redo)
         );
         assert_eq!(annotation_history_action(false, false, "z"), None);
+    }
+
+    #[test]
+    fn sequence_tool_consumes_a_double_click_instead_of_copying_the_overlay() {
+        assert!(overlay_click_finishes_copy(AnnotateTool::Rect, true));
+        assert!(!overlay_click_finishes_copy(AnnotateTool::Rect, false));
+        assert!(!overlay_click_finishes_copy(AnnotateTool::Number, true));
     }
 
     #[test]

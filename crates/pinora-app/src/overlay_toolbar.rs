@@ -36,9 +36,11 @@ pub fn layout_toolbar(selection: PixelRect, img_w: u32, img_h: u32) -> Vec<Toolb
         (ToolbarAction::Save, "保存"),
         (ToolbarAction::Ocr, "OCR"),
         (ToolbarAction::Tool(AnnotateTool::Rect), "矩形"),
+        (ToolbarAction::Tool(AnnotateTool::Line), "直线"),
         (ToolbarAction::Tool(AnnotateTool::Arrow), "箭头"),
         (ToolbarAction::Tool(AnnotateTool::Pen), "画笔"),
         (ToolbarAction::Tool(AnnotateTool::Ellipse), "椭圆"),
+        (ToolbarAction::Tool(AnnotateTool::Number), "序号"),
         (ToolbarAction::Tool(AnnotateTool::Mosaic), "马赛克"),
         (ToolbarAction::Tool(AnnotateTool::Text), "文本"),
         (ToolbarAction::Tool(AnnotateTool::ColorPicker), "取色"),
@@ -174,9 +176,11 @@ fn button_mark(b: &ToolbarButton) -> &'static str {
         ToolbarAction::Save => "Sav",
         ToolbarAction::Ocr => "OCR",
         ToolbarAction::Tool(AnnotateTool::Rect) => "R",
+        ToolbarAction::Tool(AnnotateTool::Line) => "L",
         ToolbarAction::Tool(AnnotateTool::Arrow) => "A",
         ToolbarAction::Tool(AnnotateTool::Pen) => "P",
         ToolbarAction::Tool(AnnotateTool::Ellipse) => "E",
+        ToolbarAction::Tool(AnnotateTool::Number) => "N",
         ToolbarAction::Tool(AnnotateTool::Mosaic) => "M",
         ToolbarAction::Tool(AnnotateTool::Text) => "T",
         ToolbarAction::Tool(AnnotateTool::ColorPicker) => "",
@@ -304,6 +308,8 @@ fn draw_mark(
         ('A', [0b010, 0b101, 0b111, 0b101, 0b101]),
         ('E', [0b111, 0b100, 0b111, 0b100, 0b111]),
         ('M', [0b101, 0b111, 0b111, 0b101, 0b101]),
+        ('L', [0b100, 0b100, 0b100, 0b100, 0b111]),
+        ('N', [0b101, 0b111, 0b111, 0b111, 0b101]),
         ('T', [0b111, 0b010, 0b010, 0b010, 0b010]),
     ];
     let chars: Vec<char> = mark.chars().take(3).collect();
@@ -359,6 +365,19 @@ mod tests {
             hit_test(&buttons, p),
             Some(ToolbarAction::Tool(AnnotateTool::Rect))
         );
+    }
+
+    #[test]
+    fn line_and_number_tools_are_available_and_hittable() {
+        let buttons = layout_toolbar(PixelRect::new(50, 50, 400, 80), 1000, 800);
+        for tool in [AnnotateTool::Line, AnnotateTool::Number] {
+            let button = buttons
+                .iter()
+                .find(|button| button.action == ToolbarAction::Tool(tool))
+                .expect("new tool button");
+            let point = PixelPoint::new(button.rect.origin.x + 1, button.rect.origin.y + 1);
+            assert_eq!(hit_test(&buttons, point), Some(ToolbarAction::Tool(tool)));
+        }
     }
 
     #[test]

@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/062_annotation_color_picker.md`
-- 任务：`.context/tasks/062_annotation_color_picker.md`
+- 计划：`.context/plans/063_line_number_annotations.md`
+- 任务：`.context/tasks/063_line_number_annotations.md`
 
 ## 交付要求
 

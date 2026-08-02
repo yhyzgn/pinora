@@ -24,8 +24,8 @@ mod state;
 pub use action::{ActionId, KeyBinding};
 pub use annotate::{
     AnnotateSession, AnnotateTool, Annotation, AnnotationDoc, AnnotationRevision, DEFAULT_STROKE,
-    DEFAULT_WIDTH, DraftShape, MAX_STROKE, MIN_STROKE, STROKE_PALETTE, bake_annotations,
-    color_to_hex, render_preview_rgba, sample_rgba_at,
+    DEFAULT_WIDTH, DraftShape, MAX_SEQUENCE_NUMBER, MAX_STROKE, MIN_SEQUENCE_NUMBER, MIN_STROKE,
+    STROKE_PALETTE, bake_annotations, color_to_hex, render_preview_rgba, sample_rgba_at,
 };
 pub use asset::{AssetGeneration, AssetRef};
 pub use capture::{

@@ -12,9 +12,11 @@ use crate::image::{CaptureImage, RgbaBuffer};
 pub enum AnnotateTool {
     #[default]
     Rect,
+    Line,
     Arrow,
     Pen,
     Ellipse,
+    Number,
     Mosaic,
     Text,
     /// 从当前截图像素采样后续标注颜色；不生成标注事务。
@@ -27,6 +29,12 @@ pub enum Annotation {
     Rect {
         a: PixelPoint,
         b: PixelPoint,
+        color: [u8; 4],
+        stroke: u32,
+    },
+    Line {
+        from: PixelPoint,
+        to: PixelPoint,
         color: [u8; 4],
         stroke: u32,
     },
@@ -46,6 +54,12 @@ pub enum Annotation {
         b: PixelPoint,
         color: [u8; 4],
         stroke: u32,
+    },
+    Number {
+        center: PixelPoint,
+        value: u32,
+        color: [u8; 4],
+        diameter: u32,
     },
     Mosaic {
         a: PixelPoint,
@@ -151,6 +165,8 @@ pub const DEFAULT_STROKE: [u8; 4] = [255, 64, 64, 255];
 pub const DEFAULT_WIDTH: u32 = 3;
 pub const MIN_STROKE: u32 = 1;
 pub const MAX_STROKE: u32 = 24;
+pub const MIN_SEQUENCE_NUMBER: u32 = 1;
+pub const MAX_SEQUENCE_NUMBER: u32 = 99_999;
 
 /// 可循环调色板。
 pub const STROKE_PALETTE: [[u8; 4]; 8] = [
@@ -168,6 +184,7 @@ pub const STROKE_PALETTE: [[u8; 4]; 8] = [
 #[derive(Debug, Clone, PartialEq)]
 pub enum DraftShape {
     Rect { a: PixelPoint, b: PixelPoint },
+    Line { from: PixelPoint, to: PixelPoint },
     Arrow { from: PixelPoint, to: PixelPoint },
     Pen { points: Vec<PixelPoint> },
     Ellipse { a: PixelPoint, b: PixelPoint },
@@ -186,6 +203,8 @@ pub struct AnnotateSession {
     pub stroke: u32,
     pub image_w: u32,
     pub image_h: u32,
+    next_sequence_number: u32,
+    sequence_exhausted: bool,
 }
 
 impl AnnotateSession {
@@ -199,6 +218,8 @@ impl AnnotateSession {
             stroke: DEFAULT_WIDTH,
             image_w: image_w.max(1),
             image_h: image_h.max(1),
+            next_sequence_number: MIN_SEQUENCE_NUMBER,
+            sequence_exhausted: false,
         }
     }
 
@@ -234,6 +255,23 @@ impl AnnotateSession {
         self.stroke = self.stroke.saturating_sub(1).max(MIN_STROKE);
     }
 
+    /// 设置下一枚序号的起始值。值受显示与布局上限约束，不改写既有标注。
+    pub fn set_sequence_start(&mut self, value: u32) -> u32 {
+        let value = value.clamp(MIN_SEQUENCE_NUMBER, MAX_SEQUENCE_NUMBER);
+        self.next_sequence_number = value;
+        self.sequence_exhausted = false;
+        value
+    }
+
+    /// 下一枚将被提交的序号；达到上限后返回 `None`，直到重新设置起始值。
+    pub const fn next_sequence_number(&self) -> Option<u32> {
+        if self.sequence_exhausted {
+            None
+        } else {
+            Some(self.next_sequence_number)
+        }
+    }
+
     /// 是否正在编辑文本草稿（键入中）。
     pub fn is_text_editing(&self) -> bool {
         matches!(self.draft, Some(DraftShape::Text { .. }))
@@ -242,6 +280,24 @@ impl AnnotateSession {
     pub fn begin(&mut self, p: PixelPoint) {
         let p = self.clamp_point(p);
         if self.tool == AnnotateTool::ColorPicker {
+            return;
+        }
+        if self.tool == AnnotateTool::Number {
+            let Some(value) = self.next_sequence_number() else {
+                return;
+            };
+            let diameter = sequence_marker_diameter(self.stroke, value);
+            self.doc.push(Annotation::Number {
+                center: p,
+                value,
+                color: self.color,
+                diameter,
+            });
+            if value == MAX_SEQUENCE_NUMBER {
+                self.sequence_exhausted = true;
+            } else {
+                self.next_sequence_number = value + 1;
+            }
             return;
         }
         // 文本：若已在编辑中则先提交再在新位置开始
@@ -257,12 +313,13 @@ impl AnnotateSession {
         }
         self.draft = Some(match self.tool {
             AnnotateTool::Rect => DraftShape::Rect { a: p, b: p },
+            AnnotateTool::Line => DraftShape::Line { from: p, to: p },
             AnnotateTool::Arrow => DraftShape::Arrow { from: p, to: p },
             AnnotateTool::Pen => DraftShape::Pen { points: vec![p] },
             AnnotateTool::Ellipse => DraftShape::Ellipse { a: p, b: p },
             AnnotateTool::Mosaic => DraftShape::Mosaic { a: p, b: p },
             AnnotateTool::Text => unreachable!(),
-            AnnotateTool::ColorPicker => return,
+            AnnotateTool::Number | AnnotateTool::ColorPicker => return,
         });
     }
 
@@ -270,6 +327,7 @@ impl AnnotateSession {
         let p = self.clamp_point(p);
         match &mut self.draft {
             Some(DraftShape::Rect { b, .. }) => *b = p,
+            Some(DraftShape::Line { to, .. }) => *to = p,
             Some(DraftShape::Arrow { to, .. }) => *to = p,
             Some(DraftShape::Ellipse { b, .. }) => *b = p,
             Some(DraftShape::Mosaic { b, .. }) => *b = p,
@@ -326,6 +384,17 @@ impl AnnotateSession {
                 Annotation::Rect {
                     a,
                     b,
+                    color,
+                    stroke,
+                }
+            }
+            DraftShape::Line { from, to } => {
+                if (from.x - to.x).abs() < 2 && (from.y - to.y).abs() < 2 {
+                    return;
+                }
+                Annotation::Line {
+                    from,
+                    to,
                     color,
                     stroke,
                 }
@@ -432,6 +501,12 @@ pub fn bake_annotations(source: &CaptureImage, doc: &AnnotationDoc) -> CaptureIm
                 color,
                 stroke,
             } => draw_rect_outline(&mut bytes, w, h, *a, *b, *color, *stroke),
+            Annotation::Line {
+                from,
+                to,
+                color,
+                stroke,
+            } => draw_line(&mut bytes, w, h, *from, *to, *color, *stroke),
             Annotation::Arrow {
                 from,
                 to,
@@ -449,6 +524,12 @@ pub fn bake_annotations(source: &CaptureImage, doc: &AnnotationDoc) -> CaptureIm
                 color,
                 stroke,
             } => draw_ellipse_outline(&mut bytes, w, h, *a, *b, *color, *stroke),
+            Annotation::Number {
+                center,
+                value,
+                color,
+                diameter,
+            } => draw_sequence_marker(&mut bytes, w, h, *center, *value, *color, *diameter),
             Annotation::Mosaic { a, b, block } => {
                 draw_mosaic(&mut bytes, &src_bytes, w, h, *a, *b, *block)
             }
@@ -482,6 +563,12 @@ pub fn render_preview_rgba(source: &CaptureImage, session: &AnnotateSession) -> 
             DraftShape::Rect { a, b } => doc.push(Annotation::Rect {
                 a: *a,
                 b: *b,
+                color,
+                stroke,
+            }),
+            DraftShape::Line { from, to } => doc.push(Annotation::Line {
+                from: *from,
+                to: *to,
                 color,
                 stroke,
             }),
@@ -733,6 +820,108 @@ fn draw_arrow(
     stamp_disc(buf, w, h, to.x as f64, to.y as f64, r, color);
 }
 
+fn sequence_marker_diameter(stroke: u32, value: u32) -> u32 {
+    let digits = value.to_string().len() as u32;
+    let glyph_scale = stroke.clamp(1, 4);
+    let label_width = digits.saturating_mul(4).saturating_mul(glyph_scale);
+    label_width
+        .saturating_add(stroke.saturating_mul(4))
+        .saturating_add(10)
+        .clamp(20, 128)
+}
+
+fn contrast_color(color: [u8; 4]) -> [u8; 4] {
+    let luma = u32::from(color[0]) * 299 + u32::from(color[1]) * 587 + u32::from(color[2]) * 114;
+    if luma >= 128_000 {
+        [16, 16, 20, 255]
+    } else {
+        [255, 255, 255, 255]
+    }
+}
+
+fn draw_sequence_marker(
+    buf: &mut [u8],
+    w: i32,
+    h: i32,
+    center: PixelPoint,
+    value: u32,
+    color: [u8; 4],
+    diameter: u32,
+) {
+    let diameter = diameter.clamp(20, 128);
+    let radius = f64::from(diameter) * 0.5;
+    let contrast = contrast_color(color);
+    stamp_disc(buf, w, h, center.x as f64, center.y as f64, radius, color);
+    let half = (diameter / 2) as i32;
+    draw_ellipse_outline(
+        buf,
+        w,
+        h,
+        PixelPoint::new(center.x - half, center.y - half),
+        PixelPoint::new(center.x + half, center.y + half),
+        contrast,
+        (diameter / 16).max(1),
+    );
+    draw_sequence_label(buf, w, h, center, value, diameter, contrast);
+}
+
+fn draw_sequence_label(
+    buf: &mut [u8],
+    w: i32,
+    h: i32,
+    center: PixelPoint,
+    value: u32,
+    diameter: u32,
+    color: [u8; 4],
+) {
+    const DIGITS: [[u8; 5]; 10] = [
+        [0b111, 0b101, 0b101, 0b101, 0b111],
+        [0b010, 0b110, 0b010, 0b010, 0b111],
+        [0b111, 0b001, 0b111, 0b100, 0b111],
+        [0b111, 0b001, 0b111, 0b001, 0b111],
+        [0b101, 0b101, 0b111, 0b001, 0b001],
+        [0b111, 0b100, 0b111, 0b001, 0b111],
+        [0b111, 0b100, 0b111, 0b101, 0b111],
+        [0b111, 0b001, 0b010, 0b010, 0b010],
+        [0b111, 0b101, 0b111, 0b101, 0b111],
+        [0b111, 0b101, 0b111, 0b001, 0b111],
+    ];
+
+    let text = value.to_string();
+    let digit_count = text.len() as u32;
+    let cells = digit_count.saturating_mul(4).saturating_sub(1).max(1);
+    let scale = (diameter.saturating_sub(10) / cells).clamp(1, 4) as i32;
+    let total_width = cells as i32 * scale;
+    let total_height = 5 * scale;
+    let start_x = center.x - total_width / 2;
+    let start_y = center.y - total_height / 2;
+
+    for (index, digit) in text.bytes().enumerate() {
+        let glyph = DIGITS[usize::from(digit - b'0')];
+        let glyph_x = start_x + index as i32 * 4 * scale;
+        for (row, mask) in glyph.iter().enumerate() {
+            for column in 0..3 {
+                if mask & (1 << (2 - column)) == 0 {
+                    continue;
+                }
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        blend_coverage(
+                            buf,
+                            w,
+                            h,
+                            glyph_x + column * scale + dx,
+                            start_y + row as i32 * scale + dy,
+                            color,
+                            1.0,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// 椭圆轮廓：用隐式方程距离近似做抗锯齿描边。
 fn draw_ellipse_outline(
     buf: &mut [u8],
@@ -953,6 +1142,110 @@ mod tests {
         s.drag(PixelPoint::new(40, 30));
         s.commit();
         assert_eq!(s.doc.len(), 1);
+    }
+
+    #[test]
+    fn line_session_requires_a_real_drag_and_commits_once() {
+        let mut session = AnnotateSession::new(100, 80);
+        session.tool = AnnotateTool::Line;
+        let initial = session.doc.revision();
+
+        session.begin(PixelPoint::new(10, 10));
+        session.drag(PixelPoint::new(11, 11));
+        session.commit();
+        assert!(session.doc.is_empty());
+        assert_eq!(session.doc.revision(), initial);
+
+        session.begin(PixelPoint::new(10, 10));
+        session.drag(PixelPoint::new(40, 30));
+        session.commit();
+        assert_eq!(session.doc.len(), 1);
+        assert_eq!(session.doc.revision(), initial.advance());
+        assert!(matches!(
+            session.doc.items(),
+            [Annotation::Line {
+                from,
+                to,
+                color: DEFAULT_STROKE,
+                stroke: DEFAULT_WIDTH,
+            }] if *from == PixelPoint::new(10, 10) && *to == PixelPoint::new(40, 30)
+        ));
+    }
+
+    #[test]
+    fn number_markers_are_monotonic_and_undo_does_not_rewrite_values() {
+        let mut session = AnnotateSession::new(100, 80);
+        session.tool = AnnotateTool::Number;
+        assert_eq!(session.set_sequence_start(12), 12);
+
+        session.begin(PixelPoint::new(10, 10));
+        session.begin(PixelPoint::new(30, 10));
+        assert_eq!(session.next_sequence_number(), Some(14));
+        assert!(matches!(
+            session.doc.items(),
+            [
+                Annotation::Number { value: 12, .. },
+                Annotation::Number { value: 13, .. },
+            ]
+        ));
+
+        assert!(session.doc.undo().is_some());
+        assert_eq!(session.next_sequence_number(), Some(14));
+        assert!(session.doc.redo().is_some());
+        assert_eq!(session.next_sequence_number(), Some(14));
+
+        session.begin(PixelPoint::new(50, 10));
+        assert!(matches!(
+            session.doc.items(),
+            [
+                Annotation::Number { value: 12, .. },
+                Annotation::Number { value: 13, .. },
+                Annotation::Number { value: 14, .. },
+            ]
+        ));
+    }
+
+    #[test]
+    fn number_marker_stops_after_the_configured_upper_bound() {
+        let mut session = AnnotateSession::new(100, 80);
+        session.tool = AnnotateTool::Number;
+        assert_eq!(session.set_sequence_start(u32::MAX), MAX_SEQUENCE_NUMBER);
+
+        session.begin(PixelPoint::new(10, 10));
+        assert_eq!(session.next_sequence_number(), None);
+        assert_eq!(session.doc.len(), 1);
+        session.begin(PixelPoint::new(30, 10));
+        assert_eq!(session.doc.len(), 1);
+        assert!(matches!(
+            session.doc.items(),
+            [Annotation::Number {
+                value: MAX_SEQUENCE_NUMBER,
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn line_and_number_render_without_mutating_the_source() {
+        let source = solid(96, 72);
+        let mut doc = AnnotationDoc::new();
+        doc.push(Annotation::Line {
+            from: PixelPoint::new(4, 4),
+            to: PixelPoint::new(70, 40),
+            color: [220, 40, 40, 255],
+            stroke: 3,
+        });
+        doc.push(Annotation::Number {
+            center: PixelPoint::new(60, 52),
+            value: 12,
+            color: [40, 120, 220, 255],
+            diameter: 30,
+        });
+
+        let baked = bake_annotations(&source, &doc);
+        assert_ne!(baked.pixels.bytes, source.pixels.bytes);
+        assert_eq!(source.pixels.bytes, solid(96, 72).pixels.bytes);
+        assert_eq!(baked.pixels.size, source.pixels.size);
     }
 
     #[test]
