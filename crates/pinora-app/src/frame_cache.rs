@@ -114,9 +114,43 @@ impl FrameCache {
         }
     }
 
+    /// 仅在缓存帧与当前显示器拓扑完全一致且仍新鲜时移交所有权。
+    ///
+    /// 目标显示器菜单可能在热插拔后过期；绝不把另一台屏幕或旧缩放的缓存帧交给
+    /// 新会话。未匹配时保留槽位，调用方可选择冷捕获或按当前暂停语义清理。
+    pub fn take_for_display_if_fresh(
+        &self,
+        display: &DisplayInfo,
+        max_age: Duration,
+    ) -> Option<CachedFrame> {
+        self.take_matching(display, |frame| frame.age() <= max_age)
+    }
+
     /// 有任意帧就移交（启动后第一帧可能略旧，仍远好于再等 0.5s）。
     pub fn take_any(&self) -> Option<CachedFrame> {
         self.state.lock().ok()?.latest.take()
+    }
+
+    /// 仅在缓存帧与当前显示器拓扑完全一致时移交所有权，不检查帧龄。
+    pub fn take_for_display(&self, display: &DisplayInfo) -> Option<CachedFrame> {
+        self.take_matching(display, |_| true)
+    }
+
+    fn take_matching(
+        &self,
+        display: &DisplayInfo,
+        predicate: impl FnOnce(&CachedFrame) -> bool,
+    ) -> Option<CachedFrame> {
+        let mut state = self.state.lock().ok()?;
+        if state
+            .latest
+            .as_ref()
+            .is_some_and(|frame| predicate(frame) && frame_matches_display(frame, display))
+        {
+            state.latest.take()
+        } else {
+            None
+        }
     }
 }
 
@@ -219,6 +253,14 @@ fn pick_display(displays: &[DisplayInfo]) -> Option<DisplayInfo> {
         .cloned()
 }
 
+fn frame_matches_display(frame: &CachedFrame, display: &DisplayInfo) -> bool {
+    frame.display_id == display.id
+        && frame.display_origin == display.bounds.origin
+        && frame.image.source_rect == display.bounds
+        && frame.image.metadata.display == display.id
+        && frame.image.metadata.scale == display.scale
+}
+
 /// 单遍：RGBA → XRGB。
 pub fn rgba_to_xrgb(bytes: &[u8]) -> Vec<u32> {
     let n = bytes.len() / 4;
@@ -275,6 +317,15 @@ mod tests {
         }
     }
 
+    fn sample_display() -> DisplayInfo {
+        DisplayInfo {
+            id: DisplayId::new("test-display"),
+            name: "Test display".into(),
+            bounds: PixelRect::new(0, 0, 2, 1),
+            scale: 1.0,
+        }
+    }
+
     fn cache_with(frame: Option<CachedFrame>) -> FrameCache {
         let (cmd_tx, _cmd_rx) = mpsc::channel();
         FrameCache {
@@ -314,6 +365,41 @@ mod tests {
 
         assert_eq!(frame.image.id, expected);
         assert!(!cache.is_ready());
+    }
+
+    #[test]
+    fn targeted_frame_requires_exact_display_topology() {
+        let cache = cache_with(Some(sample_frame()));
+        let display = sample_display();
+
+        let frame = cache
+            .take_for_display_if_fresh(&display, Duration::from_secs(1))
+            .expect("matching display frame");
+
+        assert_eq!(frame.display_id, display.id);
+        assert!(!cache.is_ready());
+    }
+
+    #[test]
+    fn every_display_topology_mismatch_keeps_cached_frame_out_of_the_wrong_session() {
+        let mut wrong_id = sample_display();
+        wrong_id.id = DisplayId::new("other-display");
+        let mut wrong_origin = sample_display();
+        wrong_origin.bounds = PixelRect::new(200, 0, 2, 1);
+        let mut wrong_size = sample_display();
+        wrong_size.bounds = PixelRect::new(0, 0, 3, 1);
+        let mut wrong_scale = sample_display();
+        wrong_scale.scale = 1.25;
+
+        for display in [wrong_id, wrong_origin, wrong_size, wrong_scale] {
+            let cache = cache_with(Some(sample_frame()));
+            assert!(
+                cache
+                    .take_for_display_if_fresh(&display, Duration::from_secs(1))
+                    .is_none()
+            );
+            assert!(cache.is_ready());
+        }
     }
 
     #[test]

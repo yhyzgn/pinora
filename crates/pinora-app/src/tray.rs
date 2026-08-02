@@ -5,14 +5,16 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use pinora_core::{DisplayId, DisplayInfo};
+use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 /// 托盘菜单动作。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayAction {
     Capture,
     CaptureFullDisplay,
+    CaptureDisplay(DisplayId),
     Settings,
     History,
     ShowAllPins,
@@ -26,6 +28,7 @@ pub struct AppTray {
     _tray: TrayIcon,
     capture_id: tray_icon::menu::MenuId,
     capture_full_display_id: tray_icon::menu::MenuId,
+    capture_display_ids: Vec<(MenuId, DisplayId)>,
     settings_id: tray_icon::menu::MenuId,
     history_id: tray_icon::menu::MenuId,
     show_all_pins_id: tray_icon::menu::MenuId,
@@ -36,9 +39,9 @@ pub struct AppTray {
 
 impl AppTray {
     /// 创建托盘图标；调用方决定失败是否允许启动。
-    pub fn try_new() -> Result<Self, String> {
+    pub fn try_new(displays: &[DisplayInfo]) -> Result<Self, String> {
         // tray-icon 内部可能 panic（未 gtk::init），必须 catch
-        match catch_unwind(AssertUnwindSafe(try_new_inner)) {
+        match catch_unwind(AssertUnwindSafe(|| try_new_inner(displays))) {
             Ok(r) => r,
             Err(_) => Err("tray panicked (often GTK not initialized or no display)".into()),
         }
@@ -65,6 +68,9 @@ impl AppTray {
             if ev.id == self.capture_full_display_id {
                 return Some(TrayAction::CaptureFullDisplay);
             }
+            if let Some(action) = display_capture_action(&ev.id, &self.capture_display_ids) {
+                return Some(action);
+            }
             if ev.id == self.settings_id {
                 return Some(TrayAction::Settings);
             }
@@ -88,7 +94,7 @@ impl AppTray {
     }
 }
 
-fn try_new_inner() -> Result<AppTray, String> {
+fn try_new_inner(displays: &[DisplayInfo]) -> Result<AppTray, String> {
     // Linux tray-icon → appindicator → GTK 菜单；GTK 不应进入其他 target。
     #[cfg(target_os = "linux")]
     if gtk::init().is_err() {
@@ -102,6 +108,7 @@ fn try_new_inner() -> Result<AppTray, String> {
     let menu = Menu::new();
     let capture = MenuItem::new("截图 (F2)", true, None);
     let capture_full_display = MenuItem::new("全屏截图 (F3)", true, None);
+    let mut capture_display_ids = Vec::new();
     let settings = MenuItem::new("设置", true, None);
     let history = MenuItem::new("历史", true, None);
     let show_all_pins = MenuItem::new("显示全部贴图", true, None);
@@ -112,6 +119,16 @@ fn try_new_inner() -> Result<AppTray, String> {
         .map_err(|e| format!("menu append capture: {e}"))?;
     menu.append(&capture_full_display)
         .map_err(|e| format!("menu append full-display capture: {e}"))?;
+    if displays.len() > 1 {
+        menu.append(&PredefinedMenuItem::separator())
+            .map_err(|e| format!("menu sep displays: {e}"))?;
+        for display in displays {
+            let capture_display = MenuItem::new(display_capture_label(display), true, None);
+            menu.append(&capture_display)
+                .map_err(|e| format!("menu append display capture: {e}"))?;
+            capture_display_ids.push((capture_display.id().clone(), display.id.clone()));
+        }
+    }
     menu.append(&settings)
         .map_err(|e| format!("menu append settings: {e}"))?;
     menu.append(&history)
@@ -149,6 +166,7 @@ fn try_new_inner() -> Result<AppTray, String> {
         _tray: tray,
         capture_id,
         capture_full_display_id,
+        capture_display_ids,
         settings_id,
         history_id,
         show_all_pins_id,
@@ -156,6 +174,28 @@ fn try_new_inner() -> Result<AppTray, String> {
         close_all_pins_id,
         quit_id,
     })
+}
+
+fn display_capture_label(display: &DisplayInfo) -> String {
+    format!(
+        "全屏截图：{} [{}, {}] {}x{} @ {:.2}x",
+        display.name,
+        display.bounds.origin.x,
+        display.bounds.origin.y,
+        display.bounds.size.width,
+        display.bounds.size.height,
+        display.scale
+    )
+}
+
+fn display_capture_action(
+    menu_id: &MenuId,
+    display_ids: &[(MenuId, DisplayId)],
+) -> Option<TrayAction> {
+    display_ids
+        .iter()
+        .find(|(id, _)| id == menu_id)
+        .map(|(_, display_id)| TrayAction::CaptureDisplay(display_id.clone()))
 }
 
 fn make_icon() -> Result<Icon, String> {
@@ -189,4 +229,42 @@ fn make_icon() -> Result<Icon, String> {
         }
     }
     Icon::from_rgba(rgba, w, h).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pinora_core::PixelRect;
+
+    fn display(id: &str, name: &str, x: i32, y: i32) -> DisplayInfo {
+        DisplayInfo {
+            id: DisplayId::new(id),
+            name: name.into(),
+            bounds: PixelRect::new(x, y, 2560, 1440),
+            scale: 1.25,
+        }
+    }
+
+    #[test]
+    fn per_display_action_preserves_the_selected_display_id() {
+        let menu_id = MenuId::new("capture-display-two");
+        let displays = vec![(menu_id.clone(), DisplayId::new("display-two"))];
+
+        assert_eq!(
+            display_capture_action(&menu_id, &displays),
+            Some(TrayAction::CaptureDisplay(DisplayId::new("display-two")))
+        );
+        assert!(display_capture_action(&MenuId::new("other"), &displays).is_none());
+    }
+
+    #[test]
+    fn per_display_label_exposes_physical_topology_without_leaking_internal_id() {
+        let label = display_capture_label(&display("private-backend-id", "Left", -2560, 0));
+
+        assert!(label.contains("Left"));
+        assert!(label.contains("-2560"));
+        assert!(label.contains("2560x1440"));
+        assert!(label.contains("1.25x"));
+        assert!(!label.contains("private-backend-id"));
+    }
 }

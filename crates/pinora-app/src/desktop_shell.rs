@@ -42,7 +42,7 @@ use crate::tray::{AppTray, TrayAction};
 use crate::window_policy::{self, AuxiliaryWindowKind};
 use pinora_core::{
     ActionId, AnnotateSession, AnnotateTool, AnnotationRevision, AssetGeneration, AssetRef,
-    CaptureImage, CaptureProvider, CaptureRequest, Command, CorrelationId, DisplayId,
+    CaptureImage, CaptureProvider, CaptureRequest, Command, CorrelationId, DisplayId, DisplayInfo,
     DomainEventKind, ErrorCode, HistoryEntry, HistoryIndex, ImageId, ImageSink, JobId, JobKind,
     JobOwner, JobSpec, OcrResult, OcrTextSelection, OcrWordRef, PinId, PinTransform, PinoraError,
     PixelPoint, PixelRect, SelectionSession, SessionId, bake_annotations, render_preview_rgba,
@@ -149,13 +149,20 @@ where
         println!("pinora: global hotkeys unavailable — use window focus keys or `pinora capture`");
     }
 
+    let tray_displays = match runtime.capture_provider().displays() {
+        Ok(displays) => displays,
+        Err(error) => {
+            eprintln!("pinora: tray display enumeration failed: {error}");
+            Vec::new()
+        }
+    };
+    let tray = require_tray(AppTray::try_new(&tray_displays))?;
+    println!("pinora: system tray ready (click / menu → capture)");
+
     // 后台预截屏：空闲时持续备帧，F2 时 overlay 瞬时弹出
     let provider = runtime.capture_provider().clone();
     let frame_cache = FrameCache::start(provider);
     println!("pinora: frame-cache started (pre-capture for instant overlay)");
-
-    let tray = require_tray(AppTray::try_new())?;
-    println!("pinora: system tray ready (click / menu → capture)");
     let settings = runtime.settings();
     let default_pin_opacity = opacity_from_settings_percent(settings.default_pin_opacity_percent);
     let history_store = HistoryStore::new(
@@ -202,6 +209,7 @@ where
         history_index,
         start_capture_wait: None,
         capture_mode: CaptureMode::Region,
+        capture_target: CaptureTarget::DefaultLargest,
         tray: Some(tray),
         default_pin_opacity,
     };
@@ -263,6 +271,13 @@ enum CaptureMode {
     FullDisplay,
 }
 
+/// 捕获会话的目标显示器。默认路径保持既有“最大面积显示器”语义。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CaptureTarget {
+    DefaultLargest,
+    Display(DisplayId),
+}
+
 impl CaptureMode {
     fn label(self) -> &'static str {
         match self {
@@ -283,6 +298,29 @@ fn initial_selection_for_capture(capture_mode: CaptureMode) -> OverlayInitialSel
     match capture_mode {
         CaptureMode::Region => OverlayInitialSelection::Manual,
         CaptureMode::FullDisplay => OverlayInitialSelection::FullImage,
+    }
+}
+
+fn resolve_capture_target(
+    displays: &[DisplayInfo],
+    target: &CaptureTarget,
+) -> Result<DisplayInfo, PinoraError> {
+    match target {
+        CaptureTarget::DefaultLargest => displays
+            .iter()
+            .max_by_key(|display| display.bounds.size.area())
+            .cloned()
+            .ok_or_else(|| PinoraError::new(ErrorCode::NotFound, "no display for capture")),
+        CaptureTarget::Display(display_id) => displays
+            .iter()
+            .find(|display| &display.id == display_id)
+            .cloned()
+            .ok_or_else(|| {
+                PinoraError::new(
+                    ErrorCode::NotFound,
+                    format!("selected display is no longer available: {}", display_id.0),
+                )
+            }),
     }
 }
 
@@ -569,6 +607,8 @@ struct DesktopApp<L, P, C, S> {
     start_capture_wait: Option<Instant>,
     /// 当前会话在 Overlay 打开后的初始选区；cold capture 必须保持这一意图。
     capture_mode: CaptureMode,
+    /// 本次截图的显示器目标；显式目标不能隐式降级为默认屏幕。
+    capture_target: CaptureTarget,
     tray: Option<AppTray>,
     /// 设置驱动的新建贴图默认不透明度；运行时手动调整后不再覆盖。
     default_pin_opacity: f64,
@@ -602,6 +642,10 @@ where
                 TrayAction::CaptureFullDisplay => {
                     println!("pinora: tray → full-display capture");
                     self.request_full_display_capture(event_loop);
+                }
+                TrayAction::CaptureDisplay(display_id) => {
+                    println!("pinora: tray → display capture ({})", display_id.0);
+                    self.request_display_capture(event_loop, display_id);
                 }
                 TrayAction::Settings => {
                     println!("pinora: tray → settings");
@@ -860,7 +904,12 @@ where
             self.start_capture_wait = None;
             return;
         }
-        let cache_ready = self.frame_cache.as_ref().is_some_and(FrameCache::is_ready);
+        let cache_ready = match &self.capture_target {
+            CaptureTarget::DefaultLargest => {
+                self.frame_cache.as_ref().is_some_and(FrameCache::is_ready)
+            }
+            CaptureTarget::Display(_) => true,
+        };
         if !cache_ready {
             if let Some(cache) = &self.frame_cache {
                 cache.resume();
@@ -877,8 +926,7 @@ where
         }
         self.start_capture_wait = None;
         if let Err(e) = self.begin_screen_grab(event_loop) {
-            self.error = Some(e);
-            event_loop.exit();
+            self.handle_capture_start_error(e);
         }
     }
 
@@ -886,12 +934,28 @@ where
     fn begin_screen_grab(&mut self, event_loop: &ActiveEventLoop) -> Result<(), PinoraError> {
         let capture_mode = self.capture_mode;
         let initial_selection = initial_selection_for_capture(capture_mode);
+        let explicit_display = match &self.capture_target {
+            CaptureTarget::DefaultLargest => None,
+            CaptureTarget::Display(_) => {
+                let runtime = self.runtime.as_ref().ok_or_else(|| {
+                    PinoraError::new(ErrorCode::InvalidState, "capture runtime is unavailable")
+                })?;
+                let displays = runtime.capture_provider().displays()?;
+                Some(resolve_capture_target(&displays, &self.capture_target)?)
+            }
+        };
         // 1) 缓存命中 → 立刻开 overlay（目标 < 16ms）
         // 允许最多 2s 龄的帧；后台约每 0.5s 刷新一轮
         let cached_frame = self.frame_cache.as_ref().and_then(|cache| {
-            cache
-                .take_if_fresh(Duration::from_secs(2))
-                .or_else(|| cache.take_any())
+            if let Some(display) = explicit_display.as_ref() {
+                cache
+                    .take_for_display_if_fresh(display, Duration::from_secs(2))
+                    .or_else(|| cache.take_for_display(display))
+            } else {
+                cache
+                    .take_if_fresh(Duration::from_secs(2))
+                    .or_else(|| cache.take_any())
+            }
         });
         // 截屏/选区期间暂停预截，避免截到自己的窗。暂停会清空任何竞态晚到帧。
         if let Some(cache) = &self.frame_cache {
@@ -928,14 +992,13 @@ where
 
         // 2) 缓存未就绪（刚启动）：同步等待路径
         let rt = self.runtime.as_ref().unwrap();
-        let displays = rt.capture_provider().displays()?;
-        let display = displays
-            .iter()
-            .max_by_key(|d| d.bounds.size.area())
-            .cloned()
-            .ok_or_else(|| {
-                PinoraError::new(ErrorCode::NotFound, "no display for region capture")
-            })?;
+        let display = match explicit_display {
+            Some(display) => display,
+            None => {
+                let displays = rt.capture_provider().displays()?;
+                resolve_capture_target(&displays, &self.capture_target)?
+            }
+        };
 
         let provider = rt.capture_provider().clone();
         let display_id = display.id.clone();
@@ -1646,15 +1709,36 @@ where
     }
 
     fn request_new_capture(&mut self, event_loop: &ActiveEventLoop) {
-        self.request_capture(event_loop, CaptureMode::Region);
+        self.request_capture(
+            event_loop,
+            CaptureMode::Region,
+            CaptureTarget::DefaultLargest,
+        );
     }
 
     fn request_full_display_capture(&mut self, event_loop: &ActiveEventLoop) {
-        self.request_capture(event_loop, CaptureMode::FullDisplay);
+        self.request_capture(
+            event_loop,
+            CaptureMode::FullDisplay,
+            CaptureTarget::DefaultLargest,
+        );
+    }
+
+    fn request_display_capture(&mut self, event_loop: &ActiveEventLoop, display_id: DisplayId) {
+        self.request_capture(
+            event_loop,
+            CaptureMode::FullDisplay,
+            CaptureTarget::Display(display_id),
+        );
     }
 
     /// 任意模式触发再截：立刻关 overlay/loading，开新一轮 grab。
-    fn request_capture(&mut self, event_loop: &ActiveEventLoop, capture_mode: CaptureMode) {
+    fn request_capture(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        capture_mode: CaptureMode,
+        capture_target: CaptureTarget,
+    ) {
         if let Some(ov) = self.overlay.take() {
             self.ocr_jobs.close_owner(JobOwner::Session(ov.session_id));
             self.export_jobs
@@ -1665,12 +1749,24 @@ where
         self.close_history();
         let _ = self.loading.take();
         self.capture_mode = capture_mode;
+        self.capture_target = capture_target;
         self.mode = Mode::StartCapture;
-        println!("pinora: new {} capture requested", capture_mode.label());
+        println!(
+            "pinora: new {} capture requested ({:?})",
+            capture_mode.label(),
+            self.capture_target
+        );
         if let Err(e) = self.begin_screen_grab(event_loop) {
-            self.error = Some(e);
-            event_loop.exit();
+            self.handle_capture_start_error(e);
         }
+    }
+
+    fn handle_capture_start_error(&mut self, error: PinoraError) {
+        eprintln!("pinora: capture start failed ({}) {error}", error.code);
+        self.error = Some(error);
+        self.mode = Mode::Idle;
+        self.start_capture_wait = None;
+        self.resume_frame_cache();
     }
 
     fn cancel_loading(&mut self) {
@@ -4067,6 +4163,58 @@ mod overlay_scale_tests {
             .unwrap(),
             Some(bounds)
         );
+    }
+
+    #[test]
+    fn explicit_capture_target_never_falls_back_to_another_display() {
+        let displays = vec![
+            DisplayInfo {
+                id: DisplayId::new("left"),
+                name: "Left".into(),
+                bounds: PixelRect::new(-1920, 0, 1920, 1080),
+                scale: 1.0,
+            },
+            DisplayInfo {
+                id: DisplayId::new("right"),
+                name: "Right".into(),
+                bounds: PixelRect::new(0, 0, 2560, 1440),
+                scale: 1.25,
+            },
+        ];
+
+        let selected =
+            resolve_capture_target(&displays, &CaptureTarget::Display(DisplayId::new("left")))
+                .expect("selected display");
+        assert_eq!(selected.id, DisplayId::new("left"));
+
+        let error = resolve_capture_target(
+            &displays,
+            &CaptureTarget::Display(DisplayId::new("unplugged")),
+        )
+        .expect_err("missing display must not fall back");
+        assert_eq!(error.code, ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn default_capture_target_keeps_largest_display_behavior() {
+        let displays = vec![
+            DisplayInfo {
+                id: DisplayId::new("small"),
+                name: "Small".into(),
+                bounds: PixelRect::new(0, 0, 1920, 1080),
+                scale: 1.0,
+            },
+            DisplayInfo {
+                id: DisplayId::new("large"),
+                name: "Large".into(),
+                bounds: PixelRect::new(1920, 0, 2560, 1440),
+                scale: 1.0,
+            },
+        ];
+
+        let selected = resolve_capture_target(&displays, &CaptureTarget::DefaultLargest)
+            .expect("largest display");
+        assert_eq!(selected.id, DisplayId::new("large"));
     }
 
     #[test]

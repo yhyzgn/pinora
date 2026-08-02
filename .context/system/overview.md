@@ -15,7 +15,7 @@
 | 能力 | 说明 |
 | --- | --- |
 | 截屏尝试 | KDE 优先 spectacle/KWin；否则 xcap；两者不可用时返回 `CapabilityUnavailable`，不生成 fake 图像 |
-| 区域与全屏 Overlay | F2/Ctrl+N 拖选；F3/托盘全屏自动确认当前完整图像；双击复制、中键/Enter 贴图；选区内标注/OCR |
+| 区域与全屏 Overlay | F2/Ctrl+N 拖选；F3/托盘默认全屏自动确认当前完整图像；多显示器 tray 可指定目标全屏；双击复制、中键/Enter 贴图；选区内标注/OCR |
 | 贴图窗口 | 无边框置顶、拖动、滚轮缩放、Esc 关闭；多贴图 |
 | 导出 | PNG 文件 + 内存剪贴板 + 系统剪贴板（wl-copy/xclip） |
 | 全局热键 | F2/Ctrl+N/Ctrl+Shift+S 区域、F3 单显示器全屏（注册成功时）+ `pinora capture` IPC |
@@ -32,7 +32,7 @@
 - 生产入口仍是 `src/main.rs`，但使用 `std::os::unix::net::UnixStream`；没有平台条件编译，因此 Windows target 无法完成 workspace 检查。
 - `crates/pinora-app/src/desktop_shell.rs` 当前约 3679 行，仍集中承载 winit/softbuffer 窗口事件、截图编排、Overlay 绘制、标注输入、贴图生命周期、OCR 触发、托盘和 IPC 轮询；045/046 已将历史和设置窗口的资源、草稿/预览缓存、resize、存储调用和呈现迁至专属适配器，但 Overlay/贴图仍在 shell 中，单体化风险保持开放。
 - 当前依赖树把 `gtk`/`tray-icon`、`xcap`/PipeWire、`winit`/`softbuffer` 和 Linux CLI 后端直接放入 `pinora-app`；没有 Windows/macOS/Linux 适配器边界。
-- `cargo fmt --check`、`cargo check --workspace` 和 `cargo clippy --workspace --all-targets -- -D warnings` 已于 2026-08-02 通过；当前 `PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace` 通过 app 138 个、core 55 个单元测试，另有 2 个真实桌面测试被忽略；仍没有 GUI 端到端测试。
+- `cargo fmt --check`、`cargo check --workspace` 和 `cargo clippy --workspace --all-targets -- -D warnings` 已于 2026-08-02 通过；当前 `PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace` 通过 app 144 个、core 55 个单元测试，另有 2 个真实桌面测试被忽略；仍没有 GUI 端到端测试。
 - `cargo check --workspace --target x86_64-pc-windows-msvc` 失败于 GTK 的 `gdk-pixbuf-sys`/`glib-sys` pkg-config 交叉编译，尚未进入应用代码编译阶段。
 - OCR 通过 `tesseract` 子进程和临时 PNG 工作；适配器已持有自身 `Child`，支持协作式取消、30 秒截止时间、16 MiB 输出上限和 RAII 临时文件清理，不再调用外部 `kill`。贴图与 Overlay UI 已经通过 `OcrJobService` 提交到 `JobSupervisor`，结果交付受 owner、终态和 `AssetRef` generation 门禁保护；worker 不触碰窗口或剪贴板。
 - 截图后端自动选择 KDE `spectacle` → xcap → `Unavailable`；两者不可用时保留后端失败摘要并由 provider 返回 `CapabilityUnavailable`，`fake` 只能通过显式测试/开发注入使用。
@@ -53,7 +53,7 @@
 - `pinora-core::ocr` 与贴图窗口已于 2026-08-02 新增 `OcrTextSelection`：Ctrl+左键拖拽将物理窗口坐标映射为图像坐标，按相交词框和 OCR 阅读顺序生成局部文本，选中词框高亮；文本复制经既有 `ExportJobService` 监督并绑定 pin owner/asset，未通过真实 GUI/系统剪贴板探针。
 - `pinora-app::FrameCache` 已于 2026-08-02 改为由单一状态锁维护预截帧、暂停标志和代际；缓存命中使用所有权移交而非克隆完整像素缓冲，暂停会清空槽位并使已在途抓取的发布失效。此事实由离线并发语义测试覆盖，不等价于真实桌面端到端延迟测量。
 - `desktop_shell` 的 `PinWin` 已于 2026-08-02 缓存当前窗口尺寸与有效不透明度匹配的基础 XRGB 帧；OCR 词框、文本拖选和锁定边框的重绘只复制该帧并叠加装饰，不再重复整图缩放/压暗。resize、缩放和不透明度改变会使缓存失效；真实连续 resize、HiDPI、输入延迟和原生窗口性能尚未验证。
-- 全屏截图入口已于 2026-08-02 接入：F3、托盘和 `CaptureFullDisplay` 会在当前捕获目标的完整图像上初始化有效 Overlay 选区；缓存命中与 cold capture 都显式传递该意图，区域模式不自动预选。多显示器联合画布、显示器选择、HiDPI 和真实窗口映射仍未验证。
+- 全屏截图入口已于 2026-08-02 接入：F3、托盘和 `CaptureFullDisplay` 会在当前捕获目标的完整图像上初始化有效 Overlay 选区；055 为多显示器 tray 增加带 `DisplayId` 的目标全屏项目，指定目标捕获前会重新枚举并拒绝失效 ID，缓存只在 ID、origin、尺寸和 scale 全部匹配时交付。区域模式不自动预选。多显示器联合画布、自动刷新显示器菜单、HiDPI 和真实窗口映射仍未验证。
 
 ## 2026-08-02 跨平台交付基线
 
