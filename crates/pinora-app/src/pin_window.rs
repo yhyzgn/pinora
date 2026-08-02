@@ -9,9 +9,11 @@ use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId, WindowLevel};
+
+use crate::window_policy::{self, AuxiliaryWindowKind};
 
 /// 贴图桌面会话结束原因。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,7 +55,7 @@ pub fn run_pin_session(pins: Vec<PinView>) -> Result<(PinSessionEnd, Vec<PinId>)
         return Ok((PinSessionEnd::AllClosed, Vec::new()));
     }
 
-    let event_loop = EventLoop::new()
+    let event_loop = window_policy::auxiliary_event_loop()
         .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("pin event loop: {e}")))?;
 
     let mut app = PinDesktopApp {
@@ -250,18 +252,25 @@ impl PinDesktopApp {
         let (w, h) = scaled_window_size(view.image.size(), view.scale);
         let pixels_xrgb = rgba_to_xrgb(&view.image.pixels.bytes);
 
-        let attrs = Window::default_attributes()
-            .with_title(format!("Pinora pin {}", view.pin_id))
-            .with_inner_size(PhysicalSize::new(w, h))
-            .with_position(PhysicalPosition::new(view.position.x, view.position.y))
-            .with_decorations(false)
-            .with_resizable(true)
-            .with_window_level(WindowLevel::AlwaysOnTop);
+        let title = format!("Pinora pin {}", view.pin_id);
+        let attrs = window_policy::auxiliary_window_attributes(
+            AuxiliaryWindowKind::Pin,
+            Window::default_attributes()
+                .with_title(title.clone())
+                .with_inner_size(PhysicalSize::new(w, h))
+                .with_position(PhysicalPosition::new(view.position.x, view.position.y))
+                .with_decorations(false)
+                .with_resizable(true)
+                .with_window_level(WindowLevel::AlwaysOnTop),
+        );
 
         let window = event_loop.create_window(attrs).map_err(|e| {
             PinoraError::new(ErrorCode::Internal, format!("create pin window: {e}"))
         })?;
         let window = Rc::new(window);
+        if crate::kwin_place::kwin_available() {
+            crate::kwin_place::mark_auxiliary_window_by_title(&title, 50);
+        }
 
         if self.context.is_none() {
             let ctx = Context::new(window.clone()).map_err(|e| {

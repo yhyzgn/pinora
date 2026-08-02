@@ -14,9 +14,11 @@ use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{CursorIcon, Fullscreen, Window, WindowId};
+
+use crate::window_policy::{self, AuxiliaryWindowKind};
 
 /// 帧间隔下限（约 60fps），避免 present 堆积造成卡顿。
 const MIN_FRAME_INTERVAL: Duration = Duration::from_micros(16_666);
@@ -36,7 +38,7 @@ pub fn run_region_selection(background: &CaptureImage) -> Result<Option<PixelRec
     let dimmed: Vec<u32> = base.iter().copied().map(darken).collect();
     let frame = dimmed.clone();
 
-    let event_loop = EventLoop::new()
+    let event_loop = window_policy::auxiliary_event_loop()
         .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("event loop: {e}")))?;
 
     let mut app = OverlayApp {
@@ -114,12 +116,16 @@ impl ApplicationHandler for OverlayApp {
             return;
         }
 
-        let attrs = Window::default_attributes()
-            .with_title("Pinora — 拖拽选区，Enter 确认，Esc 取消")
-            .with_inner_size(PhysicalSize::new(self.width, self.height))
-            .with_fullscreen(Some(Fullscreen::Borderless(None)))
-            .with_cursor(CursorIcon::Crosshair)
-            .with_decorations(false);
+        let title = "Pinora — 拖拽选区，Enter 确认，Esc 取消";
+        let attrs = window_policy::auxiliary_window_attributes(
+            AuxiliaryWindowKind::Overlay,
+            Window::default_attributes()
+                .with_title(title)
+                .with_inner_size(PhysicalSize::new(self.width, self.height))
+                .with_fullscreen(Some(Fullscreen::Borderless(None)))
+                .with_cursor(CursorIcon::Crosshair)
+                .with_decorations(false),
+        );
 
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Rc::new(w),
@@ -132,6 +138,9 @@ impl ApplicationHandler for OverlayApp {
                 return;
             }
         };
+        if crate::kwin_place::kwin_available() {
+            crate::kwin_place::mark_auxiliary_window_by_title(title, 50);
+        }
 
         let context = match Context::new(window.clone()) {
             Ok(c) => c,

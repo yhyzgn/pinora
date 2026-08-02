@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/048_full_display_capture.md`
-- 任务：`.context/tasks/048_full_display_capture.md`
+- 计划：`.context/plans/050_tray_only_windows.md`
+- 任务：`.context/tasks/050_tray_only_windows.md`
 
 ## 交付要求
 

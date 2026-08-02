@@ -23,6 +23,7 @@
 | 帧缓存 | 空闲预截；热键命中以所有权移交预处理帧，避免复制全屏图像与双 XRGB 缓冲；暂停以代际拒绝晚到帧 |
 | 基础标注 | Overlay 选区内：矩形/箭头/画笔/椭圆/马赛克/文本；C 颜色；+/- 线宽；`Ctrl+Z` 撤销，`Ctrl+Shift+Z`/`Ctrl+Y` 重做 |
 | 系统托盘 | 截图、设置、历史、显示/隐藏/关闭全部贴图、退出（tray-icon；真实跨平台菜单仍待探针） |
+| 后台驻留与窗口隔离 | 启动后只保留托盘、可用全局热键、IPC 与帧缓存，不自动截图；Overlay、贴图、历史、设置及兼容窗口统一请求跳过任务栏/Dock，真实桌面验证仍待完成 |
 | 贴图控制 | L 锁定，`[` `]` 透明度（压暗近似）；`O` 本地 OCR；`T` 词框 |
 | OCR | 系统 `tesseract` CLI；全文复制剪贴板；词框叠加；缺引擎可降级提示 |
 
@@ -31,11 +32,13 @@
 - 生产入口仍是 `src/main.rs`，但使用 `std::os::unix::net::UnixStream`；没有平台条件编译，因此 Windows target 无法完成 workspace 检查。
 - `crates/pinora-app/src/desktop_shell.rs` 当前约 3679 行，仍集中承载 winit/softbuffer 窗口事件、截图编排、Overlay 绘制、标注输入、贴图生命周期、OCR 触发、托盘和 IPC 轮询；045/046 已将历史和设置窗口的资源、草稿/预览缓存、resize、存储调用和呈现迁至专属适配器，但 Overlay/贴图仍在 shell 中，单体化风险保持开放。
 - 当前依赖树把 `gtk`/`tray-icon`、`xcap`/PipeWire、`winit`/`softbuffer` 和 Linux CLI 后端直接放入 `pinora-app`；没有 Windows/macOS/Linux 适配器边界。
-- `cargo fmt --check`、`cargo check --workspace` 和 `cargo clippy --workspace --all-targets -- -D warnings` 已于 2026-08-02 通过；当前 `cargo test --workspace` 通过 172 个可执行单元测试（117 app、55 core），另有 2 个真实桌面测试被忽略；仍没有 GUI 端到端测试。
+- `cargo fmt --check`、`cargo check --workspace` 和 `cargo clippy --workspace --all-targets -- -D warnings` 已于 2026-08-02 通过；当前 `PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace` 通过 app 120 个、core 55 个单元测试，另有 2 个真实桌面测试被忽略；仍没有 GUI 端到端测试。
 - `cargo check --workspace --target x86_64-pc-windows-msvc` 失败于 GTK 的 `gdk-pixbuf-sys`/`glib-sys` pkg-config 交叉编译，尚未进入应用代码编译阶段。
 - OCR 通过 `tesseract` 子进程和临时 PNG 工作；适配器已持有自身 `Child`，支持协作式取消、30 秒截止时间、16 MiB 输出上限和 RAII 临时文件清理，不再调用外部 `kill`。贴图与 Overlay UI 已经通过 `OcrJobService` 提交到 `JobSupervisor`，结果交付受 owner、终态和 `AssetRef` generation 门禁保护；worker 不触碰窗口或剪贴板。
 - 截图后端自动选择 KDE `spectacle` → xcap → `Unavailable`；两者不可用时保留后端失败摘要并由 provider 返回 `CapabilityUnavailable`，`fake` 只能通过显式测试/开发注入使用。
 - `docs/Pinora-开发设计文档.md` 已于 2026-08-01 更新为 v1.0 生产重构基线：明确当前实验实现、目标端口/适配器架构和待验证技术决策；文档不代表任何新功能已经交付。
+- 2026-08-02 的 049/050 本地实现将截图方式、Overlay 初始选区和窗口呈现方式分离：历史条目在完整性校验后通过普通编辑窗口进入全图标注，不重新捕获屏幕；失败保留历史窗口并恢复帧缓存。
+- 2026-08-02 的 050 本地实现移除了空闲控制窗口与启动自动截图；辅助窗口统一通过 `window_policy` 请求 Windows 跳过任务栏、X11 Utility、macOS Accessory/`LSUIElement`，KDE Wayland 映射后额外请求 `skipTaskbar`/`skipPager`。这只是实现与离线测试事实，不等于真实任务栏、Dock 或合成器验收。
 - `pinora-core::asset` 已于 2026-08-01 新增 `AssetGeneration` 和 `AssetRef` 领域契约；它只组合既有 `ImageId`，可判定陈旧结果，已用于桌面贴图及 Overlay OCR、复制、保存任务的结果门禁。
 - `pinora-core::job` 与 `pinora-app::JobSupervisor` 已于 2026-08-01 新增：任务元数据绑定 `JobId`、关联 ID、`AssetRef`、领域 owner、类型和截止时间；监督器可协作式取消、关闭 owner、标记超时并拒绝终态或陈旧版本结果。桌面 OCR、导出和剪贴板均已接入，但这不代表所有后台进程均已在真实桌面环境验证。
 - `pinora-app::OcrJobService` 已于 2026-08-01 接入 `desktop_shell`：可注入 runner 在 worker 中执行 OCR，主线程轮询通过 `JobSupervisor` 后才交付结果，覆盖失败、owner 关闭、超时和 generation 失效。贴图关闭、Overlay 取消/再截和应用退出均会取消对应任务；服务契约测试仍不等价于真实窗口 E2E。

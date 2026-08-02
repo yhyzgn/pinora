@@ -14,6 +14,7 @@ use winit::window::{Window, WindowId, WindowLevel};
 
 use crate::frame_cache::rgba_to_xrgb_and_dim;
 use crate::history_browser::{self, HistoryPanel, HistoryPreview};
+use crate::window_policy::{self, AuxiliaryWindowKind};
 
 struct HistoryPreviewCache {
     entry_image_id: ImageId,
@@ -38,19 +39,25 @@ impl HistoryWindow {
         context: &Context<Rc<Window>>,
         entries: Vec<HistoryEntry>,
     ) -> Result<Self, PinoraError> {
-        let attrs = Window::default_attributes()
-            .with_title("Pinora History")
-            .with_inner_size(PhysicalSize::new(
-                history_browser::PANEL_WIDTH,
-                history_browser::PANEL_HEIGHT,
-            ))
-            .with_resizable(false)
-            .with_window_level(WindowLevel::AlwaysOnTop)
-            .with_visible(true);
+        let attrs = window_policy::auxiliary_window_attributes(
+            AuxiliaryWindowKind::Panel,
+            Window::default_attributes()
+                .with_title("Pinora History")
+                .with_inner_size(PhysicalSize::new(
+                    history_browser::PANEL_WIDTH,
+                    history_browser::PANEL_HEIGHT,
+                ))
+                .with_resizable(false)
+                .with_window_level(WindowLevel::AlwaysOnTop)
+                .with_visible(true),
+        );
         let window = event_loop
             .create_window(attrs)
             .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("history window: {e}")))?;
         let window = Rc::new(window);
+        if crate::kwin_place::kwin_available() {
+            crate::kwin_place::mark_auxiliary_window_by_title("Pinora History", 50);
+        }
         let mut surface = Surface::new(context, window.clone())
             .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("history surface: {e}")))?;
         if let (Some(width), Some(height)) = (

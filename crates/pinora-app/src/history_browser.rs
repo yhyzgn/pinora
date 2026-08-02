@@ -18,13 +18,14 @@ const MAX_VISIBLE_ROWS: usize = 6;
 const SEARCH: PixelRect = PixelRect::new(24, 54, 410, 30);
 const PREVIEW: PixelRect = PixelRect::new(466, 96, 330, 336);
 const BUTTON_Y: i32 = 442;
-const BUTTON_W: u32 = 144;
+const BUTTON_W: u32 = 140;
 const BUTTON_H: u32 = 42;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryPanelAction {
     Select(usize),
     Reopen,
+    Edit,
     Delete,
     RequestClear,
     ConfirmClear,
@@ -37,6 +38,7 @@ pub enum HistoryPanelKey {
     Up,
     Down,
     Enter,
+    Edit,
     Delete,
     Backspace,
     Escape,
@@ -153,6 +155,7 @@ impl HistoryPanel {
                 None
             }
             HistoryPanelKey::Enter => self.selected.map(|_| HistoryPanelAction::Reopen),
+            HistoryPanelKey::Edit => self.selected.map(|_| HistoryPanelAction::Edit),
             HistoryPanelKey::Delete => self.selected.map(|_| HistoryPanelAction::Delete),
             HistoryPanelKey::Backspace => {
                 if self.query.pop().is_some() {
@@ -216,6 +219,9 @@ impl HistoryPanel {
         }
         if reopen_rect().contains_point(point) && self.selected.is_some() {
             return Some(HistoryPanelAction::Reopen);
+        }
+        if edit_rect().contains_point(point) && self.selected.is_some() {
+            return Some(HistoryPanelAction::Edit);
         }
         if delete_rect().contains_point(point) && self.selected.is_some() {
             return Some(HistoryPanelAction::Delete);
@@ -297,15 +303,19 @@ pub const fn row_rect(row: usize) -> PixelRect {
 }
 
 pub const fn reopen_rect() -> PixelRect {
-    PixelRect::new(466, BUTTON_Y, BUTTON_W, BUTTON_H)
+    PixelRect::new(492, BUTTON_Y, BUTTON_W, BUTTON_H)
+}
+
+pub const fn edit_rect() -> PixelRect {
+    PixelRect::new(336, BUTTON_Y, BUTTON_W, BUTTON_H)
 }
 
 pub const fn delete_rect() -> PixelRect {
-    PixelRect::new(626, BUTTON_Y, BUTTON_W, BUTTON_H)
+    PixelRect::new(648, BUTTON_Y, BUTTON_W, BUTTON_H)
 }
 
 pub const fn clear_rect() -> PixelRect {
-    PixelRect::new(186, BUTTON_Y, BUTTON_W, BUTTON_H)
+    PixelRect::new(180, BUTTON_Y, BUTTON_W, BUTTON_H)
 }
 
 pub const fn close_rect() -> PixelRect {
@@ -344,7 +354,7 @@ pub fn paint(
         "CLEAR ALL HISTORY?  ENTER CONFIRM  ESC CANCEL"
     } else {
         match panel.status() {
-            HistoryPanelStatus::Ready => "HISTORY  ENTER PIN  DELETE REMOVE",
+            HistoryPanelStatus::Ready => "HISTORY  ENTER PIN  E EDIT  DELETE REMOVE",
             HistoryPanelStatus::Empty => "HISTORY EMPTY  ESC CLOSE",
             HistoryPanelStatus::Error(_) => "HISTORY ACTION FAILED  RETRY OR CLOSE",
         }
@@ -432,6 +442,7 @@ pub fn paint(
     }
 
     fill(frame, stride, height, reopen_rect(), 0x002C6EA3);
+    fill(frame, stride, height, edit_rect(), 0x00467A50);
     fill(frame, stride, height, delete_rect(), 0x007A3B3B);
     fill(
         frame,
@@ -446,6 +457,7 @@ pub fn paint(
     );
     fill(frame, stride, height, close_rect(), 0x00434D59);
     draw_outline(frame, stride, height, reopen_rect(), 0x0096C8FF);
+    draw_outline(frame, stride, height, edit_rect(), 0x0090D79D);
     draw_outline(frame, stride, height, delete_rect(), 0x00E39A9A);
     draw_outline(frame, stride, height, clear_rect(), 0x00E3B18A);
     draw_outline(frame, stride, height, close_rect(), 0x007A8998);
@@ -453,9 +465,18 @@ pub fn paint(
         frame,
         stride,
         height,
-        reopen_rect().origin.x + 28,
+        reopen_rect().origin.x + 26,
         reopen_rect().origin.y + 17,
         "PIN",
+        0x00FFFFFF,
+    );
+    draw_text(
+        frame,
+        stride,
+        height,
+        edit_rect().origin.x + 27,
+        edit_rect().origin.y + 17,
+        "EDIT",
         0x00FFFFFF,
     );
     draw_text(
@@ -561,6 +582,10 @@ mod tests {
             Some(HistoryPanelAction::Reopen)
         );
         assert_eq!(
+            panel.handle_key(HistoryPanelKey::Edit),
+            Some(HistoryPanelAction::Edit)
+        );
+        assert_eq!(
             panel.handle_key(HistoryPanelKey::Delete),
             Some(HistoryPanelAction::Delete)
         );
@@ -578,6 +603,10 @@ mod tests {
         assert_eq!(
             panel.hit_test(PixelPoint::new(reopen_rect().origin.x + 4, BUTTON_Y + 4)),
             Some(HistoryPanelAction::Reopen)
+        );
+        assert_eq!(
+            panel.hit_test(PixelPoint::new(edit_rect().origin.x + 4, BUTTON_Y + 4)),
+            Some(HistoryPanelAction::Edit)
         );
         assert_eq!(
             panel.hit_test(PixelPoint::new(delete_rect().origin.x + 4, BUTTON_Y + 4)),

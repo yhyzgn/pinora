@@ -29,6 +29,7 @@ mod settings_store;
 mod settings_window;
 mod single_instance;
 mod tray;
+mod window_policy;
 mod worker_lifecycle;
 
 pub use capture_fake::FakeCaptureProvider;

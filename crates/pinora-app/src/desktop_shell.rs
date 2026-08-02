@@ -35,6 +35,7 @@ use crate::overlay_toolbar::{
 use crate::settings_panel::{SettingsPanelAction, SettingsPanelKey};
 use crate::settings_window::SettingsWindow;
 use crate::tray::{AppTray, TrayAction};
+use crate::window_policy::{self, AuxiliaryWindowKind};
 use pinora_core::{
     ActionId, AnnotateSession, AnnotateTool, AnnotationRevision, AssetGeneration, AssetRef,
     CaptureImage, CaptureProvider, CaptureRequest, Command, CorrelationId, DisplayId,
@@ -46,7 +47,7 @@ use softbuffer::{Context, Rect as DamageRect, Surface};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::{CursorIcon, Fullscreen, Window, WindowId, WindowLevel};
 
@@ -119,7 +120,7 @@ where
     C: CaptureProvider + Clone + Send + 'static,
     S: ImageSink + 'static,
 {
-    let event_loop = EventLoop::new()
+    let event_loop = window_policy::auxiliary_event_loop()
         .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("desktop event loop: {e}")))?;
 
     let hotkeys = GlobalHotkeyHub::start();
@@ -171,11 +172,10 @@ where
     let mut app = DesktopApp {
         runtime: Some(runtime),
         context: None,
-        // 先 Idle，等缓存出第一帧再自动截；若用户立刻 F2 也会走缓存/等待
-        mode: Mode::StartCapture,
+        // 常驻时只保留托盘入口。FrameCache 仍在后台预热，但绝不因启动而弹出窗口。
+        mode: Mode::Idle,
         loading: None,
         overlay: None,
-        control: None,
         settings: None,
         history: None,
         pins: HashMap::new(),
@@ -237,7 +237,7 @@ enum Mode {
     Idle,
 }
 
-/// 截图会话的初始选区模式。
+/// 新屏幕捕获会话的方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CaptureMode {
     Region,
@@ -253,13 +253,27 @@ impl CaptureMode {
     }
 }
 
-fn select_initial_capture_area(
-    session: &mut SelectionSession,
-    capture_mode: CaptureMode,
-) -> Result<Option<PixelRect>, PinoraError> {
+/// Overlay 打开时的初始选区，不等同于图像如何取得。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverlayInitialSelection {
+    Manual,
+    FullImage,
+}
+
+fn initial_selection_for_capture(capture_mode: CaptureMode) -> OverlayInitialSelection {
     match capture_mode {
-        CaptureMode::Region => Ok(None),
-        CaptureMode::FullDisplay => session.select_all().map(Some),
+        CaptureMode::Region => OverlayInitialSelection::Manual,
+        CaptureMode::FullDisplay => OverlayInitialSelection::FullImage,
+    }
+}
+
+fn apply_initial_selection(
+    session: &mut SelectionSession,
+    initial_selection: OverlayInitialSelection,
+) -> Result<Option<PixelRect>, PinoraError> {
+    match initial_selection {
+        OverlayInitialSelection::Manual => Ok(None),
+        OverlayInitialSelection::FullImage => session.select_all().map(Some),
     }
 }
 
@@ -268,6 +282,22 @@ struct PreparedPreview {
     image: CaptureImage,
     base: Vec<u32>,
     dimmed: Vec<u32>,
+}
+
+fn prepare_preview(image: CaptureImage) -> PreparedPreview {
+    let (base, dimmed) = rgba_to_xrgb_and_dim(&image.pixels.bytes);
+    PreparedPreview {
+        image,
+        base,
+        dimmed,
+    }
+}
+
+/// Overlay 的窗口呈现方式。历史编辑不能假装当前桌面仍是原始全屏捕获。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverlayPresentation {
+    ScreenCapture,
+    HistoryEditor,
 }
 
 /// 截屏中：后台抓当前屏（无全屏遮罩，避免截到自己）；完成后立刻开真实 overlay。
@@ -282,12 +312,22 @@ struct OverlayTarget {
     display_origin: PixelPoint,
     image_width: u32,
     image_height: u32,
-    capture_mode: CaptureMode,
+    initial_selection: OverlayInitialSelection,
+    presentation: OverlayPresentation,
+    min_selection_edge: u32,
 }
 
-/// Idle 时保持一个小控制窗，否则 Wayland 下无焦点窗口时 F2 永远收不到。
-struct ControlState {
-    window: Rc<Window>,
+fn history_edit_target(image: &CaptureImage) -> OverlayTarget {
+    OverlayTarget {
+        display_id: image.metadata.display.clone(),
+        // 输出保持历史图像原始来源坐标；窗口位置不假定旧显示器仍存在。
+        display_origin: image.source_rect.origin,
+        image_width: image.pixels.size.width,
+        image_height: image.pixels.size.height,
+        initial_selection: OverlayInitialSelection::FullImage,
+        presentation: OverlayPresentation::HistoryEditor,
+        min_selection_edge: 1,
+    }
 }
 
 /// Overlay 内阶段：框选中 / 已出选区（工具栏就绪）。
@@ -427,8 +467,6 @@ struct DesktopApp<L, P, C, S> {
     mode: Mode,
     loading: Option<LoadingState>,
     overlay: Option<OverlayState>,
-    /// 无选区/加载时的常驻控制窗（收 F2 / Ctrl+N / Ctrl+Q）。
-    control: Option<ControlState>,
     /// 显式设置窗口；草稿只在保存成功后应用到 runtime。
     settings: Option<SettingsWindow>,
     /// 受管历史浏览窗口；文件读取和删除必须经 history_export 安全边界。
@@ -464,7 +502,6 @@ where
 {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.ensure_context(event_loop);
-        self.try_start_capture(event_loop);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -576,25 +613,8 @@ where
             return;
         }
 
-        // Idle 且无贴图：必须有控制窗收 F2（有贴图时贴图窗自身收键）
-        if self.settings.is_none()
-            && self.history.is_none()
-            && matches!(self.mode, Mode::Idle)
-            && self.overlay.is_none()
-            && self.loading.is_none()
-            && self.pins.is_empty()
-        {
-            if let Err(e) = self.ensure_control_window(event_loop) {
-                self.error = Some(e);
-                event_loop.exit();
-                return;
-            }
-        } else if !self.pins.is_empty() {
-            // 有贴图时收起控制窗，避免抢焦点
-            self.hide_control();
-        }
-
-        // 短周期唤醒，以便 poll 全局热键 / 单实例 socket（Wait 不会因 channel 醒来）
+        // 短周期唤醒，以便轮询托盘、全局热键与单实例 socket。
+        // 未能注册全局热键的 Wayland 会话仍可使用托盘或 IPC，不能靠常驻窗口抢焦点。
         event_loop.set_control_flow(ControlFlow::WaitUntil(
             Instant::now() + Duration::from_millis(50),
         ));
@@ -616,12 +636,6 @@ where
             && settings.window_id() == window_id
         {
             self.handle_settings_event(event_loop, event);
-            return;
-        }
-        if let Some(control) = self.control.as_ref()
-            && control.window.id() == window_id
-        {
-            self.handle_control_event(event_loop, event);
             return;
         }
         if let Some(ov) = self.overlay.as_ref()
@@ -661,10 +675,13 @@ where
         if self.context.is_some() {
             return;
         }
-        // 先建一个隐藏占位窗以拿到 display handle（Wayland 需要）
-        let attrs = Window::default_attributes()
-            .with_visible(false)
-            .with_title("pinora-display-handle");
+        // 先建一个隐藏、跳过任务栏的占位窗以拿到 display handle（Wayland 需要）。
+        let attrs = window_policy::auxiliary_window_attributes(
+            AuxiliaryWindowKind::Panel,
+            Window::default_attributes()
+                .with_visible(false)
+                .with_title("pinora-display-handle"),
+        );
         if let Ok(w) = event_loop.create_window(attrs) {
             let w = Rc::new(w);
             if let Ok(ctx) = Context::new(w) {
@@ -784,8 +801,8 @@ where
 
     /// 弹出选区 overlay：优先用后台预截帧（瞬时），否则再等一次截屏。
     fn begin_screen_grab(&mut self, event_loop: &ActiveEventLoop) -> Result<(), PinoraError> {
-        self.hide_control();
         let capture_mode = self.capture_mode;
+        let initial_selection = initial_selection_for_capture(capture_mode);
         // 1) 缓存命中 → 立刻开 overlay（目标 < 16ms）
         // 允许最多 2s 龄的帧；后台约每 0.5s 刷新一轮
         let cached_frame = self.frame_cache.as_ref().and_then(|cache| {
@@ -819,7 +836,9 @@ where
                     display_origin: frame.display_origin,
                     image_width: img_w,
                     image_height: img_h,
-                    capture_mode,
+                    initial_selection,
+                    presentation: OverlayPresentation::ScreenCapture,
+                    min_selection_edge: 2,
                 },
             );
         }
@@ -872,7 +891,9 @@ where
                 display_origin: display.bounds.origin,
                 image_width: display.bounds.size.width,
                 image_height: display.bounds.size.height,
-                capture_mode,
+                initial_selection,
+                presentation: OverlayPresentation::ScreenCapture,
+                min_selection_edge: 2,
             },
         });
         self.mode = Mode::LoadingCapture;
@@ -883,31 +904,6 @@ where
         if let Some(cache) = &self.frame_cache {
             cache.resume();
         }
-    }
-
-    /// Idle 控制窗：Wayland 无全局热键时，必须有窗口持有键盘焦点才能收到 F2。
-    fn ensure_control_window(&mut self, event_loop: &ActiveEventLoop) -> Result<(), PinoraError> {
-        self.ensure_context(event_loop);
-        if let Some(control) = self.control.as_ref() {
-            control.window.set_visible(true);
-            control.window.focus_window();
-            return Ok(());
-        }
-        let attrs = Window::default_attributes()
-            .with_title("Pinora — F2 区域 · F3 全屏 · H 历史 · S 设置 · Ctrl+Q 退出")
-            .with_inner_size(PhysicalSize::new(420, 64))
-            .with_decorations(true)
-            .with_resizable(false)
-            .with_window_level(WindowLevel::AlwaysOnTop)
-            .with_visible(true);
-        let window = event_loop
-            .create_window(attrs)
-            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("control window: {e}")))?;
-        let window = Rc::new(window);
-        window.focus_window();
-        self.control = Some(ControlState { window });
-        println!("pinora: idle — focus control window, then F2/Ctrl+N to capture");
-        Ok(())
     }
 
     fn open_settings(&mut self, event_loop: &ActiveEventLoop) -> Result<(), PinoraError> {
@@ -927,7 +923,6 @@ where
             })?;
             SettingsWindow::open(event_loop, context, current)?
         };
-        self.hide_control();
         settings.focus();
         settings.request_redraw();
         self.settings = Some(settings);
@@ -1096,7 +1091,6 @@ where
             })?;
             HistoryWindow::open(event_loop, context, entries)?
         };
-        self.hide_control();
         history.focus();
         history.request_redraw();
         self.history = Some(history);
@@ -1180,6 +1174,7 @@ where
                     PhysicalKey::Code(KeyCode::ArrowUp) => Some(HistoryPanelKey::Up),
                     PhysicalKey::Code(KeyCode::ArrowDown) => Some(HistoryPanelKey::Down),
                     PhysicalKey::Code(KeyCode::Enter) => Some(HistoryPanelKey::Enter),
+                    PhysicalKey::Code(KeyCode::KeyE) => Some(HistoryPanelKey::Edit),
                     PhysicalKey::Code(KeyCode::Delete) => Some(HistoryPanelKey::Delete),
                     PhysicalKey::Code(KeyCode::Backspace) => Some(HistoryPanelKey::Backspace),
                     PhysicalKey::Code(KeyCode::Escape) => Some(HistoryPanelKey::Escape),
@@ -1247,6 +1242,7 @@ where
             }
             HistoryPanelAction::Close => self.close_history(),
             HistoryPanelAction::Reopen => self.reopen_history_entry(event_loop),
+            HistoryPanelAction::Edit => self.edit_history_entry(event_loop),
             HistoryPanelAction::Delete => self.delete_selected_history_entry(),
             HistoryPanelAction::RequestClear => {
                 if let Some(history) = self.history.as_mut() {
@@ -1327,6 +1323,49 @@ where
         }
     }
 
+    fn edit_history_entry(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(entry) = self
+            .history
+            .as_ref()
+            .and_then(|history| history.panel().selected_entry())
+            .cloned()
+        else {
+            return;
+        };
+        let Some(export_dir) = self.runtime.as_ref().map(|rt| rt.export_dir().clone()) else {
+            return;
+        };
+        let image = match load_history_image(&export_dir, &entry) {
+            Ok(image) => image,
+            Err(_) => {
+                if let Some(history) = self.history.as_mut() {
+                    history.panel_mut().mark_error("history_load_failed");
+                    history.clear_preview();
+                    history.request_redraw();
+                }
+                return;
+            }
+        };
+
+        // 历史编辑使用已验证的图像，既不能触发屏幕捕获，也不能复用旧显示器的全屏语义。
+        let target = history_edit_target(&image);
+        let preview = prepare_preview(image);
+        if let Some(cache) = &self.frame_cache {
+            cache.pause();
+        }
+        match self.open_overlay_with_preview(event_loop, preview, target) {
+            Ok(()) => self.close_history(),
+            Err(error) => {
+                self.resume_frame_cache();
+                eprintln!("pinora: history edit failed ({})", error.code);
+                if let Some(history) = self.history.as_mut() {
+                    history.panel_mut().mark_error("history_edit_failed");
+                    history.request_redraw();
+                }
+            }
+        }
+    }
+
     fn delete_selected_history_entry(&mut self) {
         let Some(image_id) = self
             .history
@@ -1372,54 +1411,6 @@ where
         history.paint()
     }
 
-    fn hide_control(&mut self) {
-        if let Some(control) = self.control.as_ref() {
-            control.window.set_visible(false);
-        }
-    }
-
-    fn handle_control_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
-        match event {
-            WindowEvent::CloseRequested => {
-                self.quit = true;
-                event_loop.exit();
-            }
-            WindowEvent::ModifiersChanged(m) => {
-                self.modifiers = m.state();
-            }
-            WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {
-                if self.is_quit_key(&event) {
-                    self.quit = true;
-                    event_loop.exit();
-                } else if self.handle_capture_shortcut(event_loop, &event) {
-                } else if matches!(event.logical_key, Key::Character(ref c) if c == "s" || c == "S")
-                    || (self.modifiers.control_key()
-                        && matches!(event.logical_key, Key::Character(ref c) if c == ","))
-                {
-                    if let Err(error) = self.open_settings(event_loop) {
-                        self.error = Some(error);
-                        event_loop.exit();
-                    }
-                } else if matches!(event.logical_key, Key::Character(ref c) if c == "h" || c == "H")
-                {
-                    if let Err(error) = self.open_history(event_loop) {
-                        self.error = Some(error);
-                        event_loop.exit();
-                    }
-                } else if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
-                    // Esc 在控制窗：若有贴图则聚焦贴图，否则退出
-                    if let Some(pin) = self.pins.values().next() {
-                        pin.window.focus_window();
-                    } else {
-                        self.quit = true;
-                        event_loop.exit();
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
     fn request_new_capture(&mut self, event_loop: &ActiveEventLoop) {
         self.request_capture(event_loop, CaptureMode::Region);
     }
@@ -1439,7 +1430,6 @@ where
         self.close_settings();
         self.close_history();
         let _ = self.loading.take();
-        self.hide_control();
         self.capture_mode = capture_mode;
         self.mode = Mode::StartCapture;
         println!("pinora: new {} capture requested", capture_mode.label());
@@ -1509,26 +1499,54 @@ where
             display_origin,
             image_width: img_w,
             image_height: img_h,
-            capture_mode,
+            initial_selection,
+            presentation,
+            min_selection_edge,
         } = target;
         self.ensure_context(event_loop);
         let context = self.context.as_ref().ok_or_else(|| {
             PinoraError::new(ErrorCode::Internal, "softbuffer context unavailable")
         })?;
 
-        let attrs = Window::default_attributes()
-            .with_title("Pinora — 拖选后工具栏 | 双击复制 中键贴图 Enter贴图 Esc取消")
-            .with_inner_size(PhysicalSize::new(img_w, img_h))
-            .with_fullscreen(Some(Fullscreen::Borderless(None)))
-            .with_cursor(CursorIcon::Crosshair)
-            .with_decorations(false)
-            .with_visible(true);
+        let (title, attrs) = match presentation {
+            OverlayPresentation::ScreenCapture => {
+                let title = "Pinora — 拖选后工具栏 | 双击复制 中键贴图 Enter贴图 Esc取消";
+                (
+                    title,
+                    Window::default_attributes()
+                        .with_title(title)
+                        .with_inner_size(PhysicalSize::new(img_w, img_h))
+                        .with_fullscreen(Some(Fullscreen::Borderless(None)))
+                        .with_cursor(CursorIcon::Crosshair)
+                        .with_decorations(false)
+                        .with_visible(true),
+                )
+            }
+            OverlayPresentation::HistoryEditor => {
+                let title = "Pinora History Edit";
+                (
+                    title,
+                    Window::default_attributes()
+                        .with_title(title)
+                        .with_inner_size(PhysicalSize::new(img_w, img_h))
+                        .with_cursor(CursorIcon::Crosshair)
+                        .with_decorations(true)
+                        .with_resizable(true)
+                        .with_window_level(WindowLevel::AlwaysOnTop)
+                        .with_visible(true),
+                )
+            }
+        };
+        let attrs = window_policy::auxiliary_window_attributes(AuxiliaryWindowKind::Overlay, attrs);
 
         let window = event_loop
             .create_window(attrs)
             .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("overlay window: {e}")))?;
         let window = Rc::new(window);
         window.focus_window();
+        if crate::kwin_place::kwin_available() {
+            crate::kwin_place::mark_auxiliary_window_by_title(title, 50);
+        }
 
         let mut surface = Surface::new(context, window.clone())
             .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("overlay surface: {e}")))?;
@@ -1566,7 +1584,7 @@ where
             frame,
             session: SelectionSession::new()
                 .with_bounds(PixelRect::new(0, 0, buf_w, buf_h))
-                .with_min_edge(2),
+                .with_min_edge(min_selection_edge),
             phase: OverlayPhase::Selecting,
             dragging: false,
             pending_reselect: false,
@@ -1603,19 +1621,19 @@ where
             session_id: SessionId::new(),
             annotation_asset: None,
         });
-        if let Some(selection) = select_initial_capture_area(
+        if let Some(selection) = apply_initial_selection(
             &mut self
                 .overlay
                 .as_mut()
                 .expect("overlay was just created")
                 .session,
-            capture_mode,
+            initial_selection,
         )? {
             let overlay = self.overlay.as_mut().expect("overlay was just created");
             overlay.phase = OverlayPhase::Ready;
             refresh_overlay_ready(overlay);
             println!(
-                "pinora: full-display selection ready {}x{}",
+                "pinora: initial selection ready {}x{}",
                 selection.size.width, selection.size.height
             );
         }
@@ -2512,13 +2530,16 @@ where
         let title = format!("Pinora-pin-{pin_id}");
         // 先 Normal 层级 + 不可见：建好、画完、钉位后，再 AlwaysOnTop。
         // 这样定位过程中不会盖过仍显示的 overlay（避免中央闪一下）。
-        let attrs = Window::default_attributes()
-            .with_title(title.clone())
-            .with_inner_size(PhysicalSize::new(w, h))
-            .with_position(PhysicalPosition::new(position.x, position.y))
-            .with_decorations(false)
-            .with_resizable(true)
-            .with_visible(false);
+        let attrs = window_policy::auxiliary_window_attributes(
+            AuxiliaryWindowKind::Pin,
+            Window::default_attributes()
+                .with_title(title.clone())
+                .with_inner_size(PhysicalSize::new(w, h))
+                .with_position(PhysicalPosition::new(position.x, position.y))
+                .with_decorations(false)
+                .with_resizable(true)
+                .with_visible(false),
+        );
 
         let window = event_loop
             .create_window(attrs)
@@ -2571,6 +2592,7 @@ where
             }
             crate::kwin_place::place_window_by_title(&title, position.x, position.y, w, h, 50);
             crate::kwin_place::place_window_by_title(&title, position.x, position.y, w, h, 150);
+            crate::kwin_place::mark_auxiliary_window_by_title(&title, 50);
         } else {
             window.set_outer_position(PhysicalPosition::new(position.x, position.y));
         }
@@ -3616,8 +3638,8 @@ mod overlay_scale_tests {
     use super::*;
     use crate::job_supervisor::{JobResultDisposition, JobSupervisor};
     use pinora_core::{
-        Annotation, AnnotationDoc, CaptureMetadata, DEFAULT_STROKE, DEFAULT_WIDTH, JobResultRef,
-        RgbaBuffer,
+        Annotation, AnnotationDoc, CaptureImage, CaptureMetadata, DEFAULT_STROKE, DEFAULT_WIDTH,
+        DisplayId, ImageId, JobResultRef, PixelSize, RgbaBuffer,
     };
 
     #[test]
@@ -3637,20 +3659,56 @@ mod overlay_scale_tests {
     }
 
     #[test]
-    fn capture_mode_preserves_region_or_preselects_the_full_image() {
+    fn capture_modes_map_to_their_overlay_initial_selection() {
         let bounds = PixelRect::new(-20, 15, 1920, 1080);
         let mut region = SelectionSession::new().with_bounds(bounds).with_min_edge(2);
         let mut full = SelectionSession::new().with_bounds(bounds).with_min_edge(2);
 
         assert_eq!(
-            select_initial_capture_area(&mut region, CaptureMode::Region).unwrap(),
+            initial_selection_for_capture(CaptureMode::Region),
+            OverlayInitialSelection::Manual
+        );
+        assert_eq!(
+            apply_initial_selection(
+                &mut region,
+                initial_selection_for_capture(CaptureMode::Region)
+            )
+            .unwrap(),
             None
         );
         assert_eq!(region.preview_rect(), None);
         assert_eq!(
-            select_initial_capture_area(&mut full, CaptureMode::FullDisplay).unwrap(),
+            initial_selection_for_capture(CaptureMode::FullDisplay),
+            OverlayInitialSelection::FullImage
+        );
+        assert_eq!(
+            apply_initial_selection(
+                &mut full,
+                initial_selection_for_capture(CaptureMode::FullDisplay)
+            )
+            .unwrap(),
             Some(bounds)
         );
+    }
+
+    #[test]
+    fn history_image_opens_an_ordinary_full_image_editor() {
+        let display = DisplayId::new("historic-display");
+        let image = CaptureImage::new(
+            ImageId::from_raw(33),
+            RgbaBuffer::solid(PixelSize::new(1, 1), [1, 2, 3, 255]),
+            PixelRect::new(240, -30, 1, 1),
+            CaptureMetadata::new(display.clone(), 1.5, 77),
+        )
+        .unwrap();
+
+        let target = history_edit_target(&image);
+
+        assert_eq!(target.display_id, display);
+        assert_eq!(target.display_origin, PixelPoint::new(240, -30));
+        assert_eq!(target.initial_selection, OverlayInitialSelection::FullImage);
+        assert_eq!(target.presentation, OverlayPresentation::HistoryEditor);
+        assert_eq!(target.min_selection_edge, 1);
     }
 
     #[test]

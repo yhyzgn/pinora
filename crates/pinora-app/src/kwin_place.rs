@@ -11,9 +11,14 @@ use std::path::PathBuf;
 #[cfg(target_os = "linux")]
 use std::process::Command;
 #[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_os = "linux")]
 use std::thread;
 #[cfg(target_os = "linux")]
 use std::time::Duration;
+
+#[cfg(target_os = "linux")]
+static SCRIPT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 /// 按窗口标题子串，把匹配到的第一个窗口放到 (x,y,w,h)。
 /// `delay_ms`：等待窗口映射进 KWin 的毫秒数。
@@ -40,6 +45,28 @@ pub fn place_window_by_title(
         thread::sleep(Duration::from_millis(80));
         let _ = place_once(&title, x, y, width, height);
     });
+}
+
+/// 在 KDE Wayland 上把已映射的 Pinora 辅助窗口从任务栏和分页器隐藏。
+///
+/// 标准 xdg-shell 没有 skip-taskbar 提示；这里只在检测到 KWin 时使用它公开的
+/// Scripting API。失败只记录，绝不阻塞窗口交互。
+#[cfg(target_os = "linux")]
+pub fn mark_auxiliary_window_by_title(title_substr: &str, delay_ms: u64) {
+    let title = title_substr.to_string();
+    thread::spawn(move || {
+        if delay_ms > 0 {
+            thread::sleep(Duration::from_millis(delay_ms));
+        }
+        if let Err(error) = mark_auxiliary_once(&title) {
+            eprintln!("pinora: KWin auxiliary window policy failed: {error}");
+        }
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn mark_auxiliary_window_by_title(title_substr: &str, delay_ms: u64) {
+    let _ = (title_substr, delay_ms);
 }
 
 /// 非 Linux 平台没有 KWin，不尝试运行 Linux 工具。
@@ -116,61 +143,90 @@ for (var i = 0; i < list.length; ++i) {{
         }};
         // 保持置顶
         try {{ c.keepAbove = true; }} catch (e) {{}}
+        try {{ c.skipTaskbar = true; }} catch (e) {{}}
+        try {{ c.skipPager = true; }} catch (e) {{}}
         break;
     }}
 }}
 "#
     );
 
-    let path = script_path();
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    fs::write(&path, script).map_err(|e| format!("write script: {e}"))?;
-
     // 唯一脚本名，避免并发 place 互相 unload
-    let name = format!(
-        "pinora-place-{}-{}",
-        std::process::id(),
-        now_ms() % 1_000_000
-    );
-    let _ = busctl(&[
-        "call",
-        "org.kde.KWin",
-        "/Scripting",
-        "org.kde.kwin.Scripting",
-        "unloadScript",
-        "s",
-        &name,
-    ]);
+    let name = next_script_name("pinora-place");
+    run_script(&name, script)
+}
 
-    let out = busctl(&[
-        "call",
-        "org.kde.KWin",
-        "/Scripting",
-        "org.kde.kwin.Scripting",
-        "loadScript",
-        "ss",
-        &path.to_string_lossy(),
-        &name,
-    ])?;
+#[cfg(target_os = "linux")]
+fn mark_auxiliary_once(title_substr: &str) -> Result<(), String> {
+    let title_js = escape_js(title_substr);
+    let script = auxiliary_policy_script(&title_js);
+    let name = next_script_name("pinora-window-policy");
+    run_script(&name, script)
+}
 
-    // 输出形如: i 3
-    let script_id = parse_script_id(&out).unwrap_or(0);
-    let obj = format!("/Scripting/Script{script_id}");
-    busctl(&["call", "org.kde.KWin", &obj, "org.kde.kwin.Script", "run"])?;
+#[cfg(any(target_os = "linux", test))]
+fn auxiliary_policy_script(title_js: &str) -> String {
+    format!(
+        r#"
+// pinora auxiliary window policy — generated
+var list = workspace.windowList();
+for (var i = 0; i < list.length; ++i) {{
+    var c = list[i];
+    var cap = "" + c.caption;
+    if (cap.indexOf("{title_js}") !== -1) {{
+        try {{ c.skipTaskbar = true; }} catch (e) {{}}
+        try {{ c.skipPager = true; }} catch (e) {{}}
+        break;
+    }}
+}}
+"#
+    )
+}
 
-    let _ = busctl(&[
-        "call",
-        "org.kde.KWin",
-        "/Scripting",
-        "org.kde.kwin.Scripting",
-        "unloadScript",
-        "s",
-        &name,
-    ]);
+#[cfg(target_os = "linux")]
+fn run_script(name: &str, script: String) -> Result<(), String> {
+    let path = script_path(name);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create script directory: {e}"))?;
+    }
+    if let Err(error) = fs::write(&path, script) {
+        let _ = fs::remove_file(&path);
+        return Err(format!("write script: {error}"));
+    }
+    let unload = || {
+        let _ = busctl(&[
+            "call",
+            "org.kde.KWin",
+            "/Scripting",
+            "org.kde.kwin.Scripting",
+            "unloadScript",
+            "s",
+            name,
+        ]);
+    };
+    unload();
+    let result = (|| {
+        let out = busctl(&[
+            "call",
+            "org.kde.KWin",
+            "/Scripting",
+            "org.kde.kwin.Scripting",
+            "loadScript",
+            "ss",
+            &path.to_string_lossy(),
+            name,
+        ])?;
 
-    Ok(())
+        // 输出形如: i 3。不能把无效响应误当作 Script0 执行。
+        let script_id = parse_script_id(&out)
+            .ok_or_else(|| format!("KWin loadScript returned no script id: {out}"))?;
+        let obj = format!("/Scripting/Script{script_id}");
+        busctl(&["call", "org.kde.KWin", &obj, "org.kde.kwin.Script", "run"])?;
+        Ok(())
+    })();
+    unload();
+    let _ = fs::remove_file(path);
+    result
 }
 
 #[cfg(target_os = "linux")]
@@ -183,11 +239,17 @@ fn now_ms() -> u128 {
 }
 
 #[cfg(target_os = "linux")]
-fn script_path() -> PathBuf {
+fn next_script_name(prefix: &str) -> String {
+    let sequence = SCRIPT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}-{}-{}-{sequence}", std::process::id(), now_ms())
+}
+
+#[cfg(target_os = "linux")]
+fn script_path(name: &str) -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_RUNTIME_DIR") {
-        return PathBuf::from(xdg).join("pinora/kwin-place.js");
+        return PathBuf::from(xdg).join("pinora").join(format!("{name}.js"));
     }
-    std::env::temp_dir().join("pinora-kwin-place.js")
+    std::env::temp_dir().join(format!("{name}.js"))
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -257,5 +319,22 @@ mod tests {
     fn parse_id() {
         assert_eq!(parse_script_id("i 7"), Some(7));
         assert_eq!(parse_script_id("i 0\n"), Some(0));
+    }
+
+    #[test]
+    fn auxiliary_policy_script_marks_matched_window_only() {
+        let script = auxiliary_policy_script(&escape_js("Pinora History"));
+        assert!(script.contains("cap.indexOf(\"Pinora History\")"));
+        assert!(script.contains("c.skipTaskbar = true"));
+        assert!(script.contains("c.skipPager = true"));
+        assert!(script.contains("break;"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn script_names_are_unique_within_the_same_millisecond() {
+        let first = next_script_name("pinora-test");
+        let second = next_script_name("pinora-test");
+        assert_ne!(first, second);
     }
 }

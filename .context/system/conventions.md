@@ -10,6 +10,8 @@
 - **区域选区**几何在 `pinora-core::selection`；交互 Overlay 在 `pinora-app::region_overlay`（阻塞事件循环），不嵌入 `AppRuntime::dispatch`。
 - 修改公共模块、类型或函数前，使用 `rg` 搜索全部引用，并运行 `cargo check --workspace` 与相关测试。
 - 外部 CLI 适配器必须持有自己创建的 `Child`；超时先对句柄执行 `kill` 再 `wait`，不得通过 PID 字符串或外部 `kill` 命令回收，也不得把 `wait_with_output` 放进脱离调用方生命周期的线程。
+- Pinora 空闲状态不创建控制窗口；托盘、已成功注册的全局热键与单实例 IPC 是后台入口。所有辅助 `WindowAttributes` 必须经 `window_policy::auxiliary_window_attributes`；新建事件循环必须使用 `window_policy::auxiliary_event_loop`，禁止绕开任务栏/Dock 策略。
+- KWin 特例仅允许在窗口映射后按 Pinora 自身标题调用 `kwin_place`；`busctl` 失败只能记录，不能阻塞事件循环或被当作其他 Wayland 合成器的支持证据。
 
 ## 系统依赖（Linux + xcap）
 

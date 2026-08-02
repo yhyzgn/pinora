@@ -89,6 +89,7 @@ else
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>${version}</string>
 <key>CFBundleVersion</key><string>${version//[^0-9.]/}</string>
+<key>LSUIElement</key><true/>
 </dict></plist>
 EOF
   ditto -c -k --sequesterRsrc --keepParent "$app" "$out/pinora-${version}-${platform_name}-${arch_name}.zip"
