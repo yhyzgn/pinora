@@ -1,10 +1,11 @@
 //! 版本化本地设置的纯领域模型。
 
 /// 当前设置 schema 版本。
-pub const SETTINGS_SCHEMA_VERSION: u16 = 3;
+pub const SETTINGS_SCHEMA_VERSION: u16 = 4;
 pub const DEFAULT_HISTORY_LIMIT: u32 = 100;
 pub const DEFAULT_PIN_LIMIT: u16 = 10;
 pub const DEFAULT_PIN_OPACITY_PERCENT: u8 = 100;
+pub const DEFAULT_PIN_ALWAYS_ON_TOP: bool = true;
 
 /// 被设置持久化支持的跨平台物理键。
 ///
@@ -359,6 +360,7 @@ pub struct AppSettings {
     pub history_limit: u32,
     pub pin_limit: u16,
     pub default_pin_opacity_percent: u8,
+    pub default_pin_always_on_top: bool,
     pub ocr_language: OcrLanguage,
     pub region_hotkey: HotkeyBinding,
     pub full_display_hotkey: HotkeyBinding,
@@ -372,6 +374,7 @@ impl Default for AppSettings {
             history_limit: DEFAULT_HISTORY_LIMIT,
             pin_limit: DEFAULT_PIN_LIMIT,
             default_pin_opacity_percent: DEFAULT_PIN_OPACITY_PERCENT,
+            default_pin_always_on_top: DEFAULT_PIN_ALWAYS_ON_TOP,
             ocr_language: OcrLanguage::Auto,
             region_hotkey: DEFAULT_REGION_HOTKEY,
             full_display_hotkey: DEFAULT_FULL_DISPLAY_HOTKEY,
@@ -384,8 +387,10 @@ impl Default for AppSettings {
 pub struct SettingsRepairs {
     /// v1 设置成功按默认新增后续字段；下次保存会原子替换为当前记录。
     pub migrated_from_v1: bool,
-    /// v2 设置成功按默认新增 v3 热键字段；下次保存会原子替换为 v3 记录。
+    /// v2 设置成功按默认新增 v3 热键字段；下次保存会原子替换为当前记录。
     pub migrated_from_v2: bool,
+    /// v3 设置成功按默认新增贴图默认置顶字段；下次保存会原子替换为当前记录。
+    pub migrated_from_v3: bool,
     pub history_limit: bool,
     pub pin_limit: bool,
     pub default_pin_opacity_percent: bool,
@@ -397,6 +402,7 @@ impl SettingsRepairs {
     pub const fn is_empty(self) -> bool {
         !self.migrated_from_v1
             && !self.migrated_from_v2
+            && !self.migrated_from_v3
             && !self.history_limit
             && !self.pin_limit
             && !self.default_pin_opacity_percent
@@ -461,6 +467,7 @@ mod tests {
             history_limit: 0,
             pin_limit: 101,
             default_pin_opacity_percent: 14,
+            default_pin_always_on_top: false,
             ocr_language: OcrLanguage::English,
             region_hotkey: HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::KeyA),
             full_display_hotkey: HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F2),

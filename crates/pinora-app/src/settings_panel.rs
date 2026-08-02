@@ -11,7 +11,7 @@ use pinora_core::{
 use crate::panel_theme::PanelTheme;
 
 pub const PANEL_WIDTH: u32 = 560;
-pub const PANEL_HEIGHT: u32 = 610;
+pub const PANEL_HEIGHT: u32 = 680;
 
 const ROW_X: i32 = 28;
 const ROW_W: u32 = PANEL_WIDTH - 56;
@@ -28,17 +28,19 @@ pub enum SettingField {
     HistoryLimit,
     PinLimit,
     PinOpacity,
+    DefaultPinAlwaysOnTop,
     OcrLanguage,
     RegionHotkey,
     FullDisplayHotkey,
 }
 
 impl SettingField {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Theme,
         Self::HistoryLimit,
         Self::PinLimit,
         Self::PinOpacity,
+        Self::DefaultPinAlwaysOnTop,
         Self::OcrLanguage,
         Self::RegionHotkey,
         Self::FullDisplayHotkey,
@@ -50,9 +52,10 @@ impl SettingField {
             Self::HistoryLimit => 1,
             Self::PinLimit => 2,
             Self::PinOpacity => 3,
-            Self::OcrLanguage => 4,
-            Self::RegionHotkey => 5,
-            Self::FullDisplayHotkey => 6,
+            Self::DefaultPinAlwaysOnTop => 4,
+            Self::OcrLanguage => 5,
+            Self::RegionHotkey => 6,
+            Self::FullDisplayHotkey => 7,
         }
     }
 
@@ -62,6 +65,7 @@ impl SettingField {
             Self::HistoryLimit => "HISTORY LIMIT",
             Self::PinLimit => "PIN LIMIT",
             Self::PinOpacity => "PIN OPACITY",
+            Self::DefaultPinAlwaysOnTop => "PIN ALWAYS ON TOP",
             Self::OcrLanguage => "OCR LANGUAGE",
             Self::RegionHotkey => "REGION HOTKEY",
             Self::FullDisplayHotkey => "FULL DISPLAY HOTKEY",
@@ -79,6 +83,10 @@ impl SettingField {
 
     pub const fn is_hotkey(self) -> bool {
         matches!(self, Self::RegionHotkey | Self::FullDisplayHotkey)
+    }
+
+    pub const fn is_binary_toggle(self) -> bool {
+        matches!(self, Self::DefaultPinAlwaysOnTop)
     }
 }
 
@@ -244,6 +252,9 @@ impl SettingsPanel {
                     5,
                 );
             }
+            SettingField::DefaultPinAlwaysOnTop => {
+                self.draft.default_pin_always_on_top = direction > 0;
+            }
             SettingField::OcrLanguage => {
                 const LANGUAGES: [OcrLanguage; 3] = [
                     OcrLanguage::Auto,
@@ -336,12 +347,18 @@ impl SettingsPanel {
         for field in SettingField::ALL {
             if field.row_rect().contains_point(point) {
                 let row = field.row_rect();
-                let minus = PixelRect::new(row.right() - 82, row.origin.y + 9, 30, 36);
-                let plus = PixelRect::new(row.right() - 42, row.origin.y + 9, 30, 36);
-                if !field.is_hotkey() && minus.contains_point(point) {
+                if field.is_binary_toggle() && toggle_off_rect(row).contains_point(point) {
                     return Some(SettingsPanelAction::Decrement);
                 }
-                if !field.is_hotkey() && plus.contains_point(point) {
+                if field.is_binary_toggle() && toggle_on_rect(row).contains_point(point) {
+                    return Some(SettingsPanelAction::Increment);
+                }
+                let minus = PixelRect::new(row.right() - 82, row.origin.y + 9, 30, 36);
+                let plus = PixelRect::new(row.right() - 42, row.origin.y + 9, 30, 36);
+                if !field.is_hotkey() && !field.is_binary_toggle() && minus.contains_point(point) {
+                    return Some(SettingsPanelAction::Decrement);
+                }
+                if !field.is_hotkey() && !field.is_binary_toggle() && plus.contains_point(point) {
                     return Some(SettingsPanelAction::Increment);
                 }
                 return Some(SettingsPanelAction::Select(field));
@@ -367,6 +384,13 @@ impl SettingsPanel {
             SettingField::HistoryLimit => format!("{} ITEMS", self.draft.history_limit),
             SettingField::PinLimit => format!("{} PINS", self.draft.pin_limit),
             SettingField::PinOpacity => format!("{}%", self.draft.default_pin_opacity_percent),
+            SettingField::DefaultPinAlwaysOnTop => {
+                if self.draft.default_pin_always_on_top {
+                    "ON".into()
+                } else {
+                    "OFF".into()
+                }
+            }
             SettingField::OcrLanguage => match self.draft.ocr_language {
                 OcrLanguage::Auto => "AUTO".into(),
                 OcrLanguage::English => "ENGLISH".into(),
@@ -376,6 +400,14 @@ impl SettingsPanel {
             SettingField::FullDisplayHotkey => self.draft.full_display_hotkey.to_string(),
         }
     }
+}
+
+fn toggle_off_rect(row: PixelRect) -> PixelRect {
+    PixelRect::new(row.right() - 112, row.origin.y + 9, 50, 36)
+}
+
+fn toggle_on_rect(row: PixelRect) -> PixelRect {
+    PixelRect::new(row.right() - 52, row.origin.y + 9, 40, 36)
 }
 
 pub const fn save_rect() -> PixelRect {
@@ -469,9 +501,54 @@ pub fn paint(
         };
         fill(frame, stride, height, row, bg);
         draw_outline(frame, stride, height, row, theme.control_border);
-        let minus = PixelRect::new(row.right() - 82, row.origin.y + 9, 30, 36);
-        let plus = PixelRect::new(row.right() - 42, row.origin.y + 9, 30, 36);
-        if !field.is_hotkey() {
+        if field.is_binary_toggle() {
+            let off = toggle_off_rect(row);
+            let on = toggle_on_rect(row);
+            let (off_color, off_border, off_text, on_color, on_border, on_text) =
+                if panel.draft().default_pin_always_on_top {
+                    (
+                        theme.control_surface,
+                        theme.control_border,
+                        theme.primary_text,
+                        theme.primary_action,
+                        theme.primary_action_border,
+                        theme.on_action_text,
+                    )
+                } else {
+                    (
+                        theme.primary_action,
+                        theme.primary_action_border,
+                        theme.on_action_text,
+                        theme.control_surface,
+                        theme.control_border,
+                        theme.primary_text,
+                    )
+                };
+            fill(frame, stride, height, off, off_color);
+            fill(frame, stride, height, on, on_color);
+            draw_outline(frame, stride, height, off, off_border);
+            draw_outline(frame, stride, height, on, on_border);
+            draw_text(
+                frame,
+                stride,
+                height,
+                off.origin.x + 15,
+                off.origin.y + 15,
+                "OFF",
+                off_text,
+            );
+            draw_text(
+                frame,
+                stride,
+                height,
+                on.origin.x + 11,
+                on.origin.y + 15,
+                "ON",
+                on_text,
+            );
+        } else if !field.is_hotkey() {
+            let minus = PixelRect::new(row.right() - 82, row.origin.y + 9, 30, 36);
+            let plus = PixelRect::new(row.right() - 42, row.origin.y + 9, 30, 36);
             fill(frame, stride, height, minus, theme.control_surface);
             fill(frame, stride, height, plus, theme.control_surface);
             draw_outline(frame, stride, height, minus, theme.control_border);
@@ -495,7 +572,9 @@ pub fn paint(
             &panel.value_label(field),
             theme.secondary_text,
         );
-        if !field.is_hotkey() {
+        if !field.is_hotkey() && !field.is_binary_toggle() {
+            let minus = PixelRect::new(row.right() - 82, row.origin.y + 9, 30, 36);
+            let plus = PixelRect::new(row.right() - 42, row.origin.y + 9, 30, 36);
             draw_text(
                 frame,
                 stride,
@@ -822,6 +901,59 @@ mod tests {
             panel.value_label(SettingField::OcrLanguage),
             "AUTO".to_string()
         );
+    }
+
+    #[test]
+    fn default_pin_level_uses_explicit_on_off_controls_and_arrow_keys() {
+        let mut panel = SettingsPanel::new(AppSettings::default());
+        let row = SettingField::DefaultPinAlwaysOnTop.row_rect();
+        panel.select(SettingField::DefaultPinAlwaysOnTop);
+
+        assert_eq!(
+            SettingsPanel::hit_test(PixelPoint::new(
+                toggle_off_rect(row).origin.x + 4,
+                toggle_off_rect(row).origin.y + 4,
+            )),
+            Some(SettingsPanelAction::Decrement)
+        );
+        assert_eq!(
+            SettingsPanel::hit_test(PixelPoint::new(
+                toggle_on_rect(row).origin.x + 4,
+                toggle_on_rect(row).origin.y + 4,
+            )),
+            Some(SettingsPanelAction::Increment)
+        );
+
+        panel.handle_key(SettingsPanelKey::Left);
+        assert!(!panel.draft().default_pin_always_on_top);
+        assert_eq!(
+            panel.value_label(SettingField::DefaultPinAlwaysOnTop),
+            "OFF"
+        );
+        panel.handle_key(SettingsPanelKey::Right);
+        assert!(panel.draft().default_pin_always_on_top);
+        assert_eq!(panel.value_label(SettingField::DefaultPinAlwaysOnTop), "ON");
+    }
+
+    #[test]
+    fn default_pin_level_save_failure_keeps_the_draft_and_cancel_restores_it() {
+        let mut panel = SettingsPanel::new(AppSettings::default());
+        panel.select(SettingField::DefaultPinAlwaysOnTop);
+        panel.apply_action(SettingsPanelAction::Decrement);
+        assert!(!panel.draft().default_pin_always_on_top);
+
+        panel.mark_save_failed("settings_save_failed");
+        assert!(!panel.draft().default_pin_always_on_top);
+        panel.cancel();
+
+        assert!(panel.draft().default_pin_always_on_top);
+        assert_eq!(panel.draft(), panel.original());
+    }
+
+    #[test]
+    fn expanded_panel_keeps_default_pin_level_row_above_the_action_buttons() {
+        assert!(SettingField::DefaultPinAlwaysOnTop.row_rect().bottom() <= save_rect().origin.y);
+        assert!(SettingField::FullDisplayHotkey.row_rect().bottom() <= save_rect().origin.y);
     }
 
     #[test]

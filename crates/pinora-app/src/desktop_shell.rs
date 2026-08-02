@@ -215,6 +215,7 @@ where
     let frame_cache = FrameCache::start(provider);
     println!("pinora: frame-cache started (pre-capture for instant overlay)");
     let default_pin_opacity = opacity_from_settings_percent(settings.default_pin_opacity_percent);
+    let default_pin_always_on_top = settings.default_pin_always_on_top;
     let history_store = HistoryStore::new(
         default_history_path(),
         usize::try_from(settings.history_limit).expect("history limit fits usize"),
@@ -228,10 +229,11 @@ where
         }
     };
     println!(
-        "pinora: settings policy history-limit={} pin-limit={} default-opacity={}% theme={:?}",
+        "pinora: settings policy history-limit={} pin-limit={} default-opacity={}% default-always-on-top={} theme={:?}",
         settings.history_limit,
         settings.pin_limit,
         settings.default_pin_opacity_percent,
+        settings.default_pin_always_on_top,
         settings.theme,
     );
 
@@ -271,6 +273,7 @@ where
         tray: Some(tray),
         tray_feedback: TrayFeedback::Ready,
         default_pin_opacity,
+        default_pin_always_on_top,
     };
 
     event_loop
@@ -839,6 +842,7 @@ struct PinPresentation {
     position: PixelPoint,
     scale: f64,
     opacity: f64,
+    always_on_top: bool,
     pixels_xrgb: Option<Vec<u32>>,
 }
 
@@ -895,6 +899,8 @@ struct DesktopApp<L, P, C, S> {
     tray_feedback: TrayFeedback,
     /// 设置驱动的新建贴图默认不透明度；运行时手动调整后不再覆盖。
     default_pin_opacity: f64,
+    /// 仅由原子保存成功的设置更新；只影响之后创建的贴图。
+    default_pin_always_on_top: bool,
 }
 
 impl<L, P, C, S> ApplicationHandler for DesktopApp<L, P, C, S>
@@ -1820,6 +1826,7 @@ where
                 }
                 self.default_pin_opacity =
                     opacity_from_settings_percent(draft.default_pin_opacity_percent);
+                self.default_pin_always_on_top = draft.default_pin_always_on_top;
                 let max_bytes = self.history_store.max_bytes();
                 self.history_store
                     .set_limits(draft.history_limit as usize, max_bytes);
@@ -3902,6 +3909,7 @@ where
         position: PixelPoint,
         export_after_open: bool,
     ) -> Result<(), PinoraError> {
+        let default_pin_always_on_top = self.default_pin_always_on_top;
         let rt = self
             .runtime
             .as_mut()
@@ -3915,6 +3923,10 @@ where
                 _ => None,
             })
             .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "missing PinCreated"))?;
+        rt.dispatch(Command::set_pin_always_on_top(
+            pin_id,
+            default_pin_always_on_top,
+        ))?;
         let asset = AssetRef::initial(image.id);
         let export_image = image.clone();
 
@@ -3938,6 +3950,7 @@ where
                 position,
                 scale: 1.0,
                 opacity: self.default_pin_opacity,
+                always_on_top: default_pin_always_on_top,
                 pixels_xrgb,
             },
         )?;
@@ -4012,6 +4025,7 @@ where
             position,
             scale,
             opacity,
+            always_on_top,
             pixels_xrgb: prepared_pixels_xrgb,
         } = presentation;
         self.ensure_context(event_loop);
@@ -4035,7 +4049,7 @@ where
 
         // 唯一标题，便于 KWin 脚本精确匹配
         let title = format!("Pinora-pin-{pin_id}");
-        // 先 Normal 层级 + 不可见：建好、画完、钉位后，再 AlwaysOnTop。
+        // 先 Normal 层级 + 不可见：建好、画完、钉位后，再应用持久化的层级请求。
         // 这样定位过程中不会盖过仍显示的 overlay（避免中央闪一下）。
         let attrs = Window::default_attributes()
             .with_title(title.clone())
@@ -4074,7 +4088,7 @@ where
                 window_size: pinora_core::PixelSize::new(w, h),
                 opacity: opacity.clamp(0.15, 1.0),
                 locked: false,
-                always_on_top: true,
+                always_on_top,
                 context_menu: None,
                 visible: true,
                 window: window.clone(),
@@ -4108,8 +4122,8 @@ where
             window.set_outer_position(PhysicalPosition::new(position.x, position.y));
         }
 
-        // 钉位后再置顶，准备在 overlay 撤掉后露出来
-        window.set_window_level(WindowLevel::AlwaysOnTop);
+        // 钉位后再应用层级，准备在 overlay 撤掉后露出来。
+        window.set_window_level(pin_window_level(always_on_top));
         window.focus_window();
         window.request_redraw();
 
@@ -4738,11 +4752,7 @@ where
         }
         if let Some(pin) = self.pins.get_mut(&window_id) {
             pin.always_on_top = always_on_top;
-            pin.window.set_window_level(if always_on_top {
-                WindowLevel::AlwaysOnTop
-            } else {
-                WindowLevel::Normal
-            });
+            pin.window.set_window_level(pin_window_level(always_on_top));
             pin.window.request_redraw();
         }
     }
@@ -4946,6 +4956,7 @@ where
         let Some(snapshot) = self.recent_closed_pin.clone() else {
             return;
         };
+        let always_on_top = snapshot.always_on_top;
         let create = self
             .runtime
             .as_mut()
@@ -4973,6 +4984,20 @@ where
             eprintln!("pinora: restore closed pin missing PinCreated event");
             return;
         };
+        let restore_level = self
+            .runtime
+            .as_mut()
+            .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "runtime missing"))
+            .and_then(|runtime| {
+                runtime.dispatch(Command::set_pin_always_on_top(pin_id, always_on_top))
+            });
+        if let Err(error) = restore_level {
+            if let Some(runtime) = self.runtime.as_mut() {
+                let _ = runtime.dispatch(Command::close_pin(pin_id));
+            }
+            eprintln!("pinora: restore closed pin level failed: {error}");
+            return;
+        }
         if let Err(error) = self.spawn_pin(
             event_loop,
             pin_id,
@@ -4981,6 +5006,7 @@ where
                 position: snapshot.position,
                 scale: snapshot.scale,
                 opacity: snapshot.opacity,
+                always_on_top,
                 pixels_xrgb: None,
             },
         ) {
@@ -4998,12 +5024,6 @@ where
             && let Some(pin) = self.pins.get_mut(&window_id)
         {
             pin.locked = snapshot.locked;
-            pin.always_on_top = snapshot.always_on_top;
-            pin.window.set_window_level(if snapshot.always_on_top {
-                WindowLevel::AlwaysOnTop
-            } else {
-                WindowLevel::Normal
-            });
             pin.window.request_redraw();
         }
         if let Some(window_id) = restored_window_id {
@@ -5011,10 +5031,6 @@ where
         }
         if let Some(runtime) = self.runtime.as_mut() {
             let _ = runtime.dispatch(Command::set_pin_locked(pin_id, snapshot.locked));
-            let _ = runtime.dispatch(Command::set_pin_always_on_top(
-                pin_id,
-                snapshot.always_on_top,
-            ));
         }
         self.set_recent_closed_pin(None);
         println!("pinora: restored closed pin as {pin_id}");
@@ -6079,6 +6095,14 @@ fn opacity_from_settings_percent(percent: u8) -> f64 {
     f64::from(percent.clamp(15, 100)) / 100.0
 }
 
+fn pin_window_level(always_on_top: bool) -> WindowLevel {
+    if always_on_top {
+        WindowLevel::AlwaysOnTop
+    } else {
+        WindowLevel::Normal
+    }
+}
+
 fn blit_rect(dst: &mut [u32], src: &[u32], stride: usize, height: usize, rect: PixelRect) {
     let x0 = rect.origin.x.max(0) as usize;
     let y0 = rect.origin.y.max(0) as usize;
@@ -6689,6 +6713,12 @@ mod overlay_scale_tests {
         assert!((opacity_from_settings_percent(72) - 0.72).abs() < f64::EPSILON);
         assert!((opacity_from_settings_percent(0) - 0.15).abs() < f64::EPSILON);
         assert!((opacity_from_settings_percent(255) - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn default_pin_level_maps_to_the_requested_window_level() {
+        assert!(matches!(pin_window_level(true), WindowLevel::AlwaysOnTop));
+        assert!(matches!(pin_window_level(false), WindowLevel::Normal));
     }
 
     #[test]

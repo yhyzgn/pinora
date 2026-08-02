@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/087_auxiliary_panel_theme.md`
-- 任务：`.context/tasks/087_auxiliary_panel_theme.md`
+- 计划：`.context/plans/088_default_pin_always_on_top.md`
+- 任务：`.context/tasks/088_default_pin_always_on_top.md`
 
 ## 交付要求
 

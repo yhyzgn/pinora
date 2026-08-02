@@ -432,6 +432,15 @@
 - 回滚或隔离动作：移除诊断 tray 入口及 `diagnostics_*` 内部模块；现有 tray 反馈、能力摘要、窗口策略、截图、贴图、OCR、设置、历史与 IPC 不变。
 - 负责人和状态：Neo；离线内容、tray action、window policy、workspace 门禁与 Windows target 已验证，原生桌面证据和完整诊断范围开放。
 
+## R-047：默认贴图置顶的原生窗口层级与 tray-only 隔离尚未验证（中）
+
+- 证据和影响范围：088 将 `default_pin_always_on_top` 写入 schema v4，并在设置原子回读成功后仅影响后续新贴图的领域状态和 `WindowLevel` 请求；v1/v2/v3 迁移保持既有默认置顶，关闭后恢复贴图保留快照层级。设置窗口仍由既有 `window_policy` 隐藏创建和唯一展示入口管理。
+- 触发条件：Windows、macOS、X11、KDE Wayland 或其他 Wayland 合成器忽略、延迟处理或重排 `WindowLevel::Normal`/`AlwaysOnTop`；窗口映射、KWin 定位、焦点转移、缩放或任务栏/Dock/分页器策略与离线模型不同。
+- 失败模式：用户保存 `OFF` 后新贴图仍可能被窗口管理器提升，保存 `ON` 后也可能无法保持置顶；辅助窗口还可能短暂或持续出现在任务栏、Dock 或分页器。codec、target 编译和单元测试不能证明真实窗口层级或交互流畅性。
+- 缓解措施和必需验证：保持层级只在成功保存后的新建路径请求，避免改动既有贴图或新增窗口；在 Windows、macOS、Linux X11、KDE Wayland 的 100%/200% 缩放下分别验证 `OFF`/`ON` 保存、重启、连续创建、手动层级切换、关闭恢复、Overlay 过渡、焦点、tray 空闲和任务栏/Dock/分页器。
+- 回滚或隔离动作：保留 v4 decoder，忽略 `default_pin_always_on_top` 并恢复新贴图固定置顶；不改变已打开贴图、手动层级菜单、设置原子写入、tray 生命周期、截图、历史、OCR 或窗口策略。
+- 负责人和状态：Neo；离线 codec、面板、状态传播、窗口策略、workspace 严格门禁与 Windows target 编译已验证，原生桌面证据开放。
+
 ## 风险一：上下文漂移
 
 - 触发条件：代码、配置或工作流变化后，没有同步更新对应上下文文件。
