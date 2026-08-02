@@ -46,7 +46,7 @@ use pinora_core::{
     DisplayId, DisplayInfo, DomainEventKind, ErrorCode, HistoryEntry, HistoryIndex, ImageId,
     ImageSink, JobId, JobKind, JobOwner, JobSpec, OcrResult, OcrTextSelection, OcrWordRef, PinId,
     PinTransform, PinoraError, PixelPoint, PixelRect, SelectionSession, SessionId,
-    bake_annotations, render_preview_rgba, resolve_all_displays_rect,
+    bake_annotations, color_to_hex, render_preview_rgba, resolve_all_displays_rect, sample_rgba_at,
 };
 use softbuffer::{Context, Rect as DamageRect, Surface};
 use winit::application::ApplicationHandler;
@@ -615,6 +615,8 @@ struct OverlayState {
     /// 在选区内画标注。
     annotate_dragging: bool,
     annotate: AnnotateSession,
+    /// 进入取色器前的绘图工具；采样后立即恢复，避免下次点击误进入取色模式。
+    last_drawing_tool: AnnotateTool,
     /// 标注预览缓存（选区在缓冲分辨率下的 XRGB）。
     annotate_cache: Option<Vec<u32>>,
     annotate_cache_wh: (u32, u32),
@@ -2352,6 +2354,7 @@ where
             drag_anchor: PixelPoint::new(0, 0),
             annotate_dragging: false,
             annotate: AnnotateSession::new(1, 1),
+            last_drawing_tool: AnnotateTool::Rect,
             annotate_cache: None,
             annotate_cache_wh: (0, 0),
             annotate_dirty: false,
@@ -2583,6 +2586,22 @@ where
     fn handle_overlay_left(&mut self, event_loop: &ActiveEventLoop, state: ElementState) {
         match state {
             ElementState::Pressed => {
+                if let Some(sample) = self.take_overlay_color_sample() {
+                    match sample {
+                        Some((owner, asset, hex)) => {
+                            if let Err(error) = self.submit_export_job(
+                                owner,
+                                asset,
+                                ExportJobInput::CopyText { text: hex },
+                                PendingExportAction::CopyText,
+                            ) {
+                                eprintln!("pinora: color clipboard submit failed: {error}");
+                            }
+                        }
+                        None => eprintln!("pinora: color picker source pixel unavailable"),
+                    }
+                    return;
+                }
                 let Some(ov) = self.overlay.as_mut() else {
                     return;
                 };
@@ -2756,9 +2775,9 @@ where
                 self.overlay_ocr();
             }
             ToolbarAction::Tool(tool) => {
-                // 切换工具：零重绘（高亮可延后；点击必须瞬时）
+                // 工具高亮和色块仅重绘工具栏，不重新烘焙选区。
                 if let Some(ov) = self.overlay.as_mut() {
-                    ov.annotate.tool = tool;
+                    set_overlay_tool(ov, tool);
                     println!("pinora: tool = {tool:?}");
                 }
             }
@@ -2980,7 +2999,7 @@ where
                             action: PendingExportAction::CopyText,
                             ..
                         }) => {
-                            println!("pinora: copied OCR text for {}", job.asset.image_id);
+                            println!("pinora: copied text for {}", job.asset.image_id);
                         }
                         None => println!("pinora: export job {} completed", job.id),
                     }
@@ -3042,6 +3061,34 @@ where
             ov.annotate_dirty = true;
             ov.needs_redraw = true;
         }
+    }
+
+    /// 若当前工具是取色器且光标位于已确认选区，采样原始像素并返回要复制的颜色文本。
+    /// 外层在可变借用结束后才提交异步剪贴板任务。
+    fn take_overlay_color_sample(&mut self) -> Option<Option<(JobOwner, AssetRef, String)>> {
+        let ov = self.overlay.as_mut()?;
+        if ov.phase != OverlayPhase::Ready || ov.annotate.tool != AnnotateTool::ColorPicker {
+            return None;
+        }
+        let local = overlay_annotate_local(ov, ov.last_cursor)?;
+        let Some(source_rect) = ov.active_src_rect else {
+            return Some(None);
+        };
+        let Some(color) = sample_overlay_source_color(&ov.full_image, source_rect, local) else {
+            return Some(None);
+        };
+        ov.annotate.set_color(color);
+        ov.annotate.tool = ov.last_drawing_tool;
+        ov.toolbar_chrome_dirty = true;
+        ov.needs_redraw = true;
+        let Some(asset) = overlay_current_asset(ov) else {
+            return Some(None);
+        };
+        Some(Some((
+            JobOwner::Session(ov.session_id),
+            asset,
+            color_to_hex(color),
+        )))
     }
 
     /// 从当前 overlay 选区裁剪**原图像素**，可选烧录标注。
@@ -4260,31 +4307,44 @@ fn handle_overlay_key(
             ov.needs_redraw = true;
         }
         Key::Character(c) if c == "1" || c == "r" || c == "R" => {
-            ov.annotate.tool = AnnotateTool::Rect;
+            set_overlay_tool(ov, AnnotateTool::Rect);
             println!("pinora: tool = Rect");
         }
         Key::Character(c) if c == "2" || c == "a" || c == "A" => {
-            ov.annotate.tool = AnnotateTool::Arrow;
+            set_overlay_tool(ov, AnnotateTool::Arrow);
             println!("pinora: tool = Arrow");
         }
         Key::Character(c) if c == "3" => {
-            ov.annotate.tool = AnnotateTool::Pen;
+            set_overlay_tool(ov, AnnotateTool::Pen);
             println!("pinora: tool = Pen");
         }
         Key::Character(c) if c == "4" || c == "e" || c == "E" => {
-            ov.annotate.tool = AnnotateTool::Ellipse;
+            set_overlay_tool(ov, AnnotateTool::Ellipse);
             println!("pinora: tool = Ellipse");
         }
         Key::Character(c) if c == "5" || c == "m" || c == "M" => {
-            ov.annotate.tool = AnnotateTool::Mosaic;
+            set_overlay_tool(ov, AnnotateTool::Mosaic);
             println!("pinora: tool = Mosaic");
         }
         Key::Character(c) if c == "6" || c == "t" || c == "T" => {
-            ov.annotate.tool = AnnotateTool::Text;
+            set_overlay_tool(ov, AnnotateTool::Text);
             println!("pinora: tool = Text");
+        }
+        Key::Character(c) if c == "i" || c == "I" => {
+            set_overlay_tool(ov, AnnotateTool::ColorPicker);
+            println!("pinora: tool = ColorPicker");
         }
         _ => {}
     }
+}
+
+fn set_overlay_tool(ov: &mut OverlayState, tool: AnnotateTool) {
+    if tool != AnnotateTool::ColorPicker {
+        ov.last_drawing_tool = tool;
+    }
+    ov.annotate.tool = tool;
+    ov.toolbar_chrome_dirty = true;
+    ov.needs_redraw = true;
 }
 
 fn refresh_overlay_ready(ov: &mut OverlayState) {
@@ -4340,7 +4400,14 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
         if let Some(tb) = ov.last_toolbar_bounds.or(new_tb) {
             blit_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, tb);
             if ov.phase == OverlayPhase::Ready && !ov.toolbar.is_empty() {
-                paint_toolbar(&mut ov.frame, img_w, img_h, &ov.toolbar, ov.annotate.tool);
+                paint_toolbar(
+                    &mut ov.frame,
+                    img_w,
+                    img_h,
+                    &ov.toolbar,
+                    ov.annotate.tool,
+                    ov.annotate.color,
+                );
             }
             damage.push(tb);
         }
@@ -4386,7 +4453,14 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
         }
 
         if ov.phase == OverlayPhase::Ready && !ov.toolbar.is_empty() {
-            paint_toolbar(&mut ov.frame, img_w, img_h, &ov.toolbar, ov.annotate.tool);
+            paint_toolbar(
+                &mut ov.frame,
+                img_w,
+                img_h,
+                &ov.toolbar,
+                ov.annotate.tool,
+                ov.annotate.color,
+            );
             if let Some(tb) = new_tb {
                 damage.push(tb);
             }
@@ -4543,6 +4617,27 @@ fn overlay_annotate_local(ov: &OverlayState, buf_cursor: PixelPoint) -> Option<P
         (i64::from(lx) * sw / dw) as i32,
         (i64::from(ly) * sh / dh) as i32,
     ))
+}
+
+/// 从选区局部坐标映射到不可变原始截图后采样。取色不读取已烘焙的标注预览，
+/// 因而不会在鼠标点击路径同步分配或重绘整张图。
+fn sample_overlay_source_color(
+    image: &CaptureImage,
+    source_rect: PixelRect,
+    local: PixelPoint,
+) -> Option<[u8; 4]> {
+    if local.x < 0
+        || local.y < 0
+        || local.x >= source_rect.size.width as i32
+        || local.y >= source_rect.size.height as i32
+    {
+        return None;
+    }
+    let source = PixelPoint::new(
+        source_rect.origin.x.checked_add(local.x)?,
+        source_rect.origin.y.checked_add(local.y)?,
+    );
+    sample_rgba_at(image, source)
 }
 
 fn blit_xrgb_block(
@@ -4871,6 +4966,28 @@ mod overlay_scale_tests {
         let r = buf_rect_to_src(PixelRect::new(0, 0, 1920, 1080), 1920, 1080, 3840, 2160);
         assert_eq!(r.size.width, 3840);
         assert_eq!(r.size.height, 2160);
+    }
+
+    #[test]
+    fn color_picker_samples_the_original_pixel_from_selection_local_coordinates() {
+        let mut image = CaptureImage::new(
+            ImageId::from_raw(29),
+            RgbaBuffer::solid(PixelSize::new(5, 4), [1, 2, 3, 255]),
+            PixelRect::new(0, 0, 5, 4),
+            CaptureMetadata::new(DisplayId::new("picker"), 1.0, 0),
+        )
+        .expect("image");
+        let index = (2 * 5 + 3) * 4;
+        image.pixels.bytes[index..index + 4].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0x80]);
+
+        assert_eq!(
+            sample_overlay_source_color(&image, PixelRect::new(2, 1, 2, 2), PixelPoint::new(1, 1),),
+            Some([0xAA, 0xBB, 0xCC, 0x80])
+        );
+        assert_eq!(
+            sample_overlay_source_color(&image, PixelRect::new(2, 1, 2, 2), PixelPoint::new(2, 1),),
+            None
+        );
     }
 
     #[test]

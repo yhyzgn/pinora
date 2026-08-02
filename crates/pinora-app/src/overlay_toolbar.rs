@@ -41,10 +41,20 @@ pub fn layout_toolbar(selection: PixelRect, img_w: u32, img_h: u32) -> Vec<Toolb
         (ToolbarAction::Tool(AnnotateTool::Ellipse), "椭圆"),
         (ToolbarAction::Tool(AnnotateTool::Mosaic), "马赛克"),
         (ToolbarAction::Tool(AnnotateTool::Text), "文本"),
+        (ToolbarAction::Tool(AnnotateTool::ColorPicker), "取色"),
     ];
     let n = specs.len() as u32;
-    let bar_w = PAD * 2 + n * BTN_W + n.saturating_sub(1) * GAP;
-    let bar_h = PAD * 2 + BTN_H;
+    if img_w < BTN_W + PAD * 2 || img_h < BTN_H + PAD * 2 {
+        return Vec::new();
+    }
+    let available_width = img_w.saturating_sub(PAD * 2).max(1);
+    let columns = ((available_width + GAP) / (BTN_W + GAP)).max(1).min(n);
+    let rows = n.div_ceil(columns);
+    let bar_w = PAD * 2 + columns * BTN_W + columns.saturating_sub(1) * GAP;
+    let bar_h = PAD * 2 + rows * BTN_H + rows.saturating_sub(1) * GAP;
+    if bar_h > img_h {
+        return Vec::new();
+    }
 
     let mut x = selection.origin.x + (selection.size.width as i32 - bar_w as i32) / 2;
     x = x.clamp(0, (img_w as i32 - bar_w as i32).max(0));
@@ -61,15 +71,17 @@ pub fn layout_toolbar(selection: PixelRect, img_w: u32, img_h: u32) -> Vec<Toolb
     };
 
     let mut buttons = Vec::with_capacity(specs.len());
-    let mut bx = x + PAD as i32;
-    let by = y + PAD as i32;
-    for (action, label) in specs {
+    for (index, (action, label)) in specs.iter().enumerate() {
+        let index = index as u32;
+        let column = index % columns;
+        let row = index / columns;
+        let bx = x + PAD as i32 + (column * (BTN_W + GAP)) as i32;
+        let by = y + PAD as i32 + (row * (BTN_H + GAP)) as i32;
         buttons.push(ToolbarButton {
             action: *action,
             label,
             rect: PixelRect::new(bx, by, BTN_W, BTN_H),
         });
-        bx += (BTN_W + GAP) as i32;
     }
     buttons
 }
@@ -121,6 +133,7 @@ pub fn paint_toolbar(
     height: usize,
     buttons: &[ToolbarButton],
     active_tool: AnnotateTool,
+    current_color: [u8; 4],
 ) {
     let Some(bounds) = toolbar_bounds(buttons) else {
         return;
@@ -144,9 +157,13 @@ pub fn paint_toolbar(
         };
         fill_rect(frame, stride, height, b.rect, bg);
         draw_rect_outline(frame, stride, height, b.rect, 0x00_C0_C0_D0);
-        // 简易点阵文字（首字/英文）
-        let mark = button_mark(b);
-        draw_mark(frame, stride, height, b.rect, mark, 0x00_FF_FF_FF);
+        if b.action == ToolbarAction::Tool(AnnotateTool::ColorPicker) {
+            draw_color_picker_icon(frame, stride, height, b.rect, current_color);
+        } else {
+            // 简易点阵文字（首字/英文）
+            let mark = button_mark(b);
+            draw_mark(frame, stride, height, b.rect, mark, 0x00_FF_FF_FF);
+        }
     }
 }
 
@@ -162,6 +179,56 @@ fn button_mark(b: &ToolbarButton) -> &'static str {
         ToolbarAction::Tool(AnnotateTool::Ellipse) => "E",
         ToolbarAction::Tool(AnnotateTool::Mosaic) => "M",
         ToolbarAction::Tool(AnnotateTool::Text) => "T",
+        ToolbarAction::Tool(AnnotateTool::ColorPicker) => "",
+    }
+}
+
+/// 取色器使用简洁滴管和当前颜色色块，避免再依赖语言文字宽度。
+fn draw_color_picker_icon(
+    frame: &mut [u32],
+    stride: usize,
+    height: usize,
+    rect: PixelRect,
+    color: [u8; 4],
+) {
+    let center_x = rect.origin.x + rect.size.width as i32 / 2 - 4;
+    let center_y = rect.origin.y + rect.size.height as i32 / 2 - 2;
+    for step in 0..9 {
+        set_pixel(
+            frame,
+            stride,
+            height,
+            center_x + step,
+            center_y - step,
+            0x00_FF_FF_FF,
+        );
+        set_pixel(
+            frame,
+            stride,
+            height,
+            center_x + step,
+            center_y - step + 1,
+            0x00_FF_FF_FF,
+        );
+    }
+    let swatch = PixelRect::new(rect.right() - 15, rect.bottom() - 15, 10, 10);
+    fill_rect(
+        frame,
+        stride,
+        height,
+        swatch,
+        (u32::from(color[0]) << 16) | (u32::from(color[1]) << 8) | u32::from(color[2]),
+    );
+    draw_rect_outline(frame, stride, height, swatch, 0x00_FF_FF_FF);
+}
+
+fn set_pixel(frame: &mut [u32], stride: usize, height: usize, x: i32, y: i32, color: u32) {
+    if x < 0 || y < 0 || x as usize >= stride || y as usize >= height {
+        return;
+    }
+    let index = y as usize * stride + x as usize;
+    if let Some(pixel) = frame.get_mut(index) {
+        *pixel = color;
     }
 }
 
@@ -292,5 +359,34 @@ mod tests {
             hit_test(&buttons, p),
             Some(ToolbarAction::Tool(AnnotateTool::Rect))
         );
+    }
+
+    #[test]
+    fn narrow_canvas_wraps_buttons_without_leaving_the_canvas() {
+        let buttons = layout_toolbar(PixelRect::new(20, 20, 200, 100), 300, 200);
+        assert!(
+            buttons
+                .iter()
+                .any(|button| { button.action == ToolbarAction::Tool(AnnotateTool::ColorPicker) })
+        );
+        assert!(
+            buttons
+                .iter()
+                .any(|button| button.rect.origin.y > buttons[0].rect.origin.y)
+        );
+        for button in &buttons {
+            assert!(button.rect.origin.x >= 0);
+            assert!(button.rect.origin.y >= 0);
+            assert!(button.rect.right() <= 300);
+            assert!(button.rect.bottom() <= 200);
+            let point = PixelPoint::new(button.rect.origin.x + 1, button.rect.origin.y + 1);
+            assert_eq!(hit_test(&buttons, point), Some(button.action));
+        }
+    }
+
+    #[test]
+    fn toolbar_hides_instead_of_rendering_clipped_controls() {
+        assert!(layout_toolbar(PixelRect::new(0, 0, 50, 50), 70, 200).is_empty());
+        assert!(layout_toolbar(PixelRect::new(0, 0, 50, 50), 300, 100).is_empty());
     }
 }

@@ -17,6 +17,8 @@ pub enum AnnotateTool {
     Ellipse,
     Mosaic,
     Text,
+    /// 从当前截图像素采样后续标注颜色；不生成标注事务。
+    ColorPicker,
 }
 
 /// 单条标注（已提交）。
@@ -213,6 +215,17 @@ impl AnnotateSession {
         self.color = STROKE_PALETTE[self.color_index];
     }
 
+    /// 设置后续标注颜色。取色本身不改变文档或其 revision。
+    pub fn set_color(&mut self, color: [u8; 4]) {
+        self.color = color;
+        if let Some(index) = STROKE_PALETTE
+            .iter()
+            .position(|candidate| *candidate == color)
+        {
+            self.color_index = index;
+        }
+    }
+
     pub fn stroke_up(&mut self) {
         self.stroke = (self.stroke + 1).min(MAX_STROKE);
     }
@@ -228,6 +241,9 @@ impl AnnotateSession {
 
     pub fn begin(&mut self, p: PixelPoint) {
         let p = self.clamp_point(p);
+        if self.tool == AnnotateTool::ColorPicker {
+            return;
+        }
         // 文本：若已在编辑中则先提交再在新位置开始
         if self.tool == AnnotateTool::Text {
             if self.is_text_editing() {
@@ -246,6 +262,7 @@ impl AnnotateSession {
             AnnotateTool::Ellipse => DraftShape::Ellipse { a: p, b: p },
             AnnotateTool::Mosaic => DraftShape::Mosaic { a: p, b: p },
             AnnotateTool::Text => unreachable!(),
+            AnnotateTool::ColorPicker => return,
         });
     }
 
@@ -372,6 +389,32 @@ impl AnnotateSession {
     pub fn cancel_draft(&mut self) {
         self.draft = None;
     }
+}
+
+/// 读取一张截图中单个像素的 RGBA 分量。无效坐标或不完整缓冲返回 `None`。
+pub fn sample_rgba_at(image: &CaptureImage, point: PixelPoint) -> Option<[u8; 4]> {
+    if point.x < 0 || point.y < 0 {
+        return None;
+    }
+    let x = usize::try_from(point.x).ok()?;
+    let y = usize::try_from(point.y).ok()?;
+    let width = image.pixels.size.width as usize;
+    let height = image.pixels.size.height as usize;
+    if x >= width || y >= height {
+        return None;
+    }
+    let index = y.checked_mul(width)?.checked_add(x)?.checked_mul(4)?;
+    Some([
+        *image.pixels.bytes.get(index)?,
+        *image.pixels.bytes.get(index + 1)?,
+        *image.pixels.bytes.get(index + 2)?,
+        *image.pixels.bytes.get(index + 3)?,
+    ])
+}
+
+/// 取色器复制给用户的稳定不透明颜色文本。Alpha 只用于后续绘制，不进入 HEX 文本。
+pub fn color_to_hex(color: [u8; 4]) -> String {
+    format!("#{:02X}{:02X}{:02X}", color[0], color[1], color[2])
 }
 
 /// 将标注烧录到新图像（不修改源图）。
@@ -967,6 +1010,26 @@ mod tests {
         assert!(s.stroke > w0);
         s.stroke_down();
         assert_eq!(s.stroke, w0);
+    }
+
+    #[test]
+    fn pixel_sampling_and_hex_format_are_stable_without_a_document_mutation() {
+        let mut image = solid(3, 2);
+        image.pixels.bytes[4..8].copy_from_slice(&[0x12, 0xA0, 0xFE, 0x80]);
+        let color = sample_rgba_at(&image, PixelPoint::new(1, 0));
+        assert_eq!(color, Some([0x12, 0xA0, 0xFE, 0x80]));
+        assert_eq!(color.map(color_to_hex).as_deref(), Some("#12A0FE"));
+        assert_eq!(sample_rgba_at(&image, PixelPoint::new(-1, 0)), None);
+        assert_eq!(sample_rgba_at(&image, PixelPoint::new(3, 0)), None);
+
+        let mut session = AnnotateSession::new(3, 2);
+        let revision = session.doc.revision();
+        session.tool = AnnotateTool::ColorPicker;
+        session.begin(PixelPoint::new(1, 0));
+        session.set_color(color.expect("sampled color"));
+        assert!(session.draft.is_none());
+        assert_eq!(session.doc.revision(), revision);
+        assert_eq!(session.color, [0x12, 0xA0, 0xFE, 0x80]);
     }
 
     #[test]
