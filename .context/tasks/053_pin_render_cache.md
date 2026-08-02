@@ -1,6 +1,6 @@
 # 任务 053：贴图渲染缓存与无关重绘隔离
 
-- 状态：进行中
+- 状态：已完成
 - 计划：`.context/plans/053_pin_render_cache.md`
 - 规模：中
 - 依赖：`.context/tasks/036_ocr_text_selection.md`、`.context/tasks/047_frame_cache_handoff.md`、`.context/tasks/052_history_render_preprocessing.md`
@@ -58,4 +58,4 @@
 
 - 2026-08-02：已实现贴图基础帧缓存。命中缓存时 `paint_pin` 只复制帧和绘制 OCR/拖选/边框；窗口尺寸、缩放和不透明度改变时使缓存失效后重建，保持原有缩放后压暗的像素顺序与 `.999` 近不透明边界语义。
 - 已新增缓存的缩放、压暗、身份匹配与近不透明像素测试；本地通过 `desktop_shell::overlay_scale_tests`、`pin_window::tests`、fmt、workspace check、严格 Clippy、全量 workspace 测试（app 137 通过、2 个真实桌面测试忽略；core 55 通过）与 `git diff --check`。
-- ctx validate 与 GitHub 三平台 CI 尚待本次提交后执行，因此任务仍为进行中；未将离线缓存测试描述为真实 GUI 帧率或跨平台窗口性能验证。
+- `ctx validate` 通过；提交 `7207591` 的 GitHub CI `30734583848` 已在 Linux、macOS、Windows 原生 runner 通过格式、workspace 编译、严格 Clippy 和单元测试。未将离线缓存测试描述为真实 GUI 帧率或跨平台窗口性能验证。
