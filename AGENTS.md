@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/065_shape_fill_annotations.md`
-- 任务：`.context/tasks/065_shape_fill_annotations.md`
+- 计划：`.context/plans/066_auxiliary_window_visibility_policy.md`
+- 任务：`.context/tasks/066_auxiliary_window_visibility_policy.md`
 
 ## 交付要求
 

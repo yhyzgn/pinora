@@ -661,6 +661,7 @@ struct OverlayState {
 
 struct PinWin {
     pin_id: PinId,
+    title: String,
     image: CaptureImage,
     asset: AssetRef,
     pixels_xrgb: Vec<u32>,
@@ -952,7 +953,15 @@ where
     fn set_pins_visible(&mut self, window_ids: &[WindowId], visible: bool) {
         for window_id in window_ids {
             if let Some(pin) = self.pins.get_mut(window_id) {
-                pin.window.set_visible(visible);
+                if visible {
+                    window_policy::show_auxiliary_window(
+                        AuxiliaryWindowKind::Pin,
+                        &pin.window,
+                        &pin.title,
+                    );
+                } else {
+                    pin.window.set_visible(false);
+                }
                 pin.visible = visible;
             }
         }
@@ -2241,7 +2250,7 @@ where
                         .with_fullscreen(Some(Fullscreen::Borderless(None)))
                         .with_cursor(CursorIcon::Crosshair)
                         .with_decorations(false)
-                        .with_visible(true),
+                        .with_visible(false),
                 )
             }
             OverlayPresentation::VirtualDesktop => {
@@ -2256,7 +2265,7 @@ where
                         .with_decorations(false)
                         .with_resizable(false)
                         .with_window_level(WindowLevel::AlwaysOnTop)
-                        .with_visible(true),
+                        .with_visible(false),
                 )
             }
             OverlayPresentation::WindowCapture => {
@@ -2270,7 +2279,7 @@ where
                         .with_decorations(true)
                         .with_resizable(true)
                         .with_window_level(WindowLevel::AlwaysOnTop)
-                        .with_visible(true),
+                        .with_visible(false),
                 )
             }
             OverlayPresentation::HistoryEditor => {
@@ -2284,7 +2293,7 @@ where
                         .with_decorations(true)
                         .with_resizable(true)
                         .with_window_level(WindowLevel::AlwaysOnTop)
-                        .with_visible(true),
+                        .with_visible(false),
                 )
             }
             OverlayPresentation::PinEditor => {
@@ -2298,7 +2307,7 @@ where
                         .with_decorations(true)
                         .with_resizable(true)
                         .with_window_level(WindowLevel::AlwaysOnTop)
-                        .with_visible(true),
+                        .with_visible(false),
                 )
             }
         };
@@ -2308,8 +2317,6 @@ where
                     PinoraError::new(ErrorCode::Internal, format!("overlay window: {e}"))
                 })?;
         let window = Rc::new(window);
-        window.focus_window();
-        window_policy::apply_post_map_policy(AuxiliaryWindowKind::Overlay, title);
 
         let mut surface = Surface::new(context, window.clone())
             .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("overlay surface: {e}")))?;
@@ -2403,6 +2410,8 @@ where
             );
         }
         self.mode = Mode::Idle;
+        window_policy::show_auxiliary_window(AuxiliaryWindowKind::Overlay, &window, title);
+        window.focus_window();
         window.request_redraw();
         Ok(())
     }
@@ -3482,6 +3491,7 @@ where
             id,
             PinWin {
                 pin_id,
+                title: title.clone(),
                 image,
                 asset,
                 pixels_xrgb,
@@ -3508,8 +3518,7 @@ where
         }
 
         // map 进合成器以便 KWin 能找到（仍在 overlay 下面）
-        window.set_visible(true);
-        window_policy::apply_post_map_policy(AuxiliaryWindowKind::Pin, &title);
+        window_policy::show_auxiliary_window(AuxiliaryWindowKind::Pin, &window, &title);
         if crate::kwin_place::kwin_available() {
             if let Err(e) =
                 crate::kwin_place::place_window_by_title_sync(&title, position.x, position.y, w, h)
@@ -3937,7 +3946,7 @@ where
     fn restore_pin_visibility(&mut self, pin_id: PinId) {
         if let Some(pin) = self.pins.values_mut().find(|pin| pin.pin_id == pin_id) {
             pin.visible = true;
-            pin.window.set_visible(true);
+            window_policy::show_auxiliary_window(AuxiliaryWindowKind::Pin, &pin.window, &pin.title);
             pin.window.request_redraw();
         }
     }
@@ -3989,7 +3998,7 @@ where
             let _ = pin.surface.resize(width, height);
         }
         pin.visible = true;
-        pin.window.set_visible(true);
+        window_policy::show_auxiliary_window(AuxiliaryWindowKind::Pin, &pin.window, &pin.title);
         pin.window.request_redraw();
         Ok(asset)
     }

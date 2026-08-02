@@ -41,7 +41,7 @@ impl SettingsWindow {
             ))
             .with_resizable(false)
             .with_window_level(WindowLevel::AlwaysOnTop)
-            .with_visible(true);
+            .with_visible(false);
         let window = window_policy::create_auxiliary_window(
             event_loop,
             AuxiliaryWindowKind::Panel,
@@ -49,7 +49,6 @@ impl SettingsWindow {
         )
         .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("settings window: {e}")))?;
         let window = Rc::new(window);
-        window_policy::apply_post_map_policy(AuxiliaryWindowKind::Panel, "Pinora Settings");
         let mut surface = Surface::new(context, window.clone())
             .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("settings surface: {e}")))?;
         if let (Some(width), Some(height)) = (
@@ -60,7 +59,7 @@ impl SettingsWindow {
                 PinoraError::new(ErrorCode::Internal, format!("settings resize: {e}"))
             })?;
         }
-        Ok(Self {
+        let settings = Self {
             window,
             surface,
             panel: SettingsPanel::new(current),
@@ -68,7 +67,13 @@ impl SettingsWindow {
             cursor: PixelPoint::new(0, 0),
             width: settings_panel::PANEL_WIDTH,
             height: settings_panel::PANEL_HEIGHT,
-        })
+        };
+        window_policy::show_auxiliary_window(
+            AuxiliaryWindowKind::Panel,
+            &settings.window,
+            "Pinora Settings",
+        );
+        Ok(settings)
     }
 
     pub(crate) fn window_id(&self) -> WindowId {

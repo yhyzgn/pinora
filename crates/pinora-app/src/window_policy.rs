@@ -32,10 +32,10 @@ impl AuxiliaryWindowKind {
     }
 }
 
-/// 创建辅助窗口，并在创建前统一应用平台任务栏/Dock 隔离策略。
+/// 创建保持隐藏的辅助窗口，并在创建前统一应用平台任务栏/Dock 隔离策略。
 ///
-/// 所有窗口必须由此入口创建；可见窗口在映射后还必须调用
-/// [`apply_post_map_policy`] 以完成 KDE Wayland 的补充策略。
+/// 所有窗口必须由此入口创建，并通过 [`show_auxiliary_window`] 映射为可见；这样
+/// KWin 的映射后隔离不会依赖调用方记忆。
 pub(crate) fn create_auxiliary_window(
     event_loop: &ActiveEventLoop,
     kind: AuxiliaryWindowKind,
@@ -44,11 +44,21 @@ pub(crate) fn create_auxiliary_window(
     event_loop.create_window(auxiliary_window_attributes(kind, attributes))
 }
 
-/// 窗口映射后完成仅 KWin 可提供的任务栏/分页器隔离。
+/// 映射可见辅助窗口，并完成仅 KWin 可提供的任务栏/分页器隔离。
 ///
-/// 调用方必须在窗口实际可见后调用。标准 Wayland 没有等价协议，因此只有检测到
-/// KWin 时才执行脚本；失败只记录，不影响用户的当前操作。
-pub(crate) fn apply_post_map_policy(kind: AuxiliaryWindowKind, title: &str) {
+/// 标准 Wayland 没有等价协议，因此只有检测到 KWin 时才执行脚本；失败只记录，
+/// 不影响用户当前操作。隐藏 display handle 不允许经此入口映射。
+pub(crate) fn show_auxiliary_window(kind: AuxiliaryWindowKind, window: &Window, title: &str) {
+    assert!(
+        kind.requires_post_map_policy(),
+        "display handle must remain hidden"
+    );
+    window.set_visible(true);
+    apply_post_map_policy(kind, title);
+}
+
+/// 窗口映射后完成仅 KWin 可提供的任务栏/分页器隔离。
+fn apply_post_map_policy(kind: AuxiliaryWindowKind, title: &str) {
     if kind.requires_post_map_policy() && crate::kwin_place::kwin_available() {
         crate::kwin_place::mark_auxiliary_window_by_title(title, 50);
     }
@@ -59,7 +69,7 @@ fn auxiliary_window_attributes(
     attributes: WindowAttributes,
 ) -> WindowAttributes {
     debug_assert!(kind.hides_from_taskbar());
-    apply_platform_taskbar_policy(attributes)
+    apply_platform_taskbar_policy(attributes).with_visible(false)
 }
 
 #[cfg(target_os = "windows")]
@@ -97,7 +107,7 @@ pub(crate) fn auxiliary_event_loop() -> Result<EventLoop<()>, EventLoopError> {
 mod tests {
     use super::*;
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn every_auxiliary_window_kind_requests_taskbar_isolation() {
@@ -124,19 +134,48 @@ mod tests {
     }
 
     #[test]
-    fn only_window_policy_may_construct_event_loops_or_windows() {
+    fn factory_forces_all_auxiliary_windows_to_start_hidden() {
+        for kind in [
+            AuxiliaryWindowKind::Overlay,
+            AuxiliaryWindowKind::Pin,
+            AuxiliaryWindowKind::Panel,
+            AuxiliaryWindowKind::DisplayHandle,
+        ] {
+            let attrs =
+                auxiliary_window_attributes(kind, Window::default_attributes().with_visible(true));
+            assert!(!attrs.visible);
+        }
+    }
+
+    #[test]
+    fn only_window_policy_may_construct_or_show_windows() {
         let source_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let sources = fs::read_dir(&source_dir).expect("read application source directory");
-        for entry in sources {
-            let entry = entry.expect("read application source entry");
-            let path = entry.path();
-            if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
-                continue;
-            }
+        let policy_path = source_dir.join("window_policy.rs");
+        for path in rust_sources(&source_dir) {
             let source = fs::read_to_string(&path).expect("read application source file");
-            let file_name = path.file_name().and_then(|name| name.to_str());
-            if source.contains("EventLoop::builder") || source.contains(".create_window(") {
-                assert_eq!(file_name, Some("window_policy.rs"), "{path:?}");
+            if source.contains("EventLoop::builder")
+                || source.contains(".create_window(")
+                || source.contains(".with_visible(true)")
+                || source.contains(".set_visible(true)")
+            {
+                assert_eq!(path, policy_path, "{path:?}");
+            }
+        }
+    }
+
+    fn rust_sources(dir: &Path) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        collect_rust_sources(dir, &mut paths);
+        paths
+    }
+
+    fn collect_rust_sources(dir: &Path, paths: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).expect("read application source directory") {
+            let path = entry.expect("read application source entry").path();
+            if path.is_dir() {
+                collect_rust_sources(&path, paths);
+            } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+                paths.push(path);
             }
         }
     }

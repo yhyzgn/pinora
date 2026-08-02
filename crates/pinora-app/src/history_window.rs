@@ -46,7 +46,7 @@ impl HistoryWindow {
             ))
             .with_resizable(false)
             .with_window_level(WindowLevel::AlwaysOnTop)
-            .with_visible(true);
+            .with_visible(false);
         let window = window_policy::create_auxiliary_window(
             event_loop,
             AuxiliaryWindowKind::Panel,
@@ -54,7 +54,6 @@ impl HistoryWindow {
         )
         .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("history window: {e}")))?;
         let window = Rc::new(window);
-        window_policy::apply_post_map_policy(AuxiliaryWindowKind::Panel, "Pinora History");
         let mut surface = Surface::new(context, window.clone())
             .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("history surface: {e}")))?;
         if let (Some(width), Some(height)) = (
@@ -65,7 +64,7 @@ impl HistoryWindow {
                 PinoraError::new(ErrorCode::Internal, format!("history resize: {e}"))
             })?;
         }
-        Ok(Self {
+        let history = Self {
             window,
             surface,
             panel: HistoryPanel::new(entries),
@@ -73,7 +72,13 @@ impl HistoryWindow {
             width: history_browser::PANEL_WIDTH,
             height: history_browser::PANEL_HEIGHT,
             preview: None,
-        })
+        };
+        window_policy::show_auxiliary_window(
+            AuxiliaryWindowKind::Panel,
+            &history.window,
+            "Pinora History",
+        );
+        Ok(history)
     }
 
     pub(crate) fn window_id(&self) -> WindowId {
