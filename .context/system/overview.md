@@ -56,7 +56,7 @@
 - `packaging/package-unix.sh` 生成 Linux raw binary、`.tar.gz`、可用时 `.deb`/`.rpm`；macOS 生成 raw binary、`.app` `.zip` `.dmg`。`package-windows.ps1` 生成 raw binary、`.zip`，检测到 NSIS 时额外生成 setup `.exe`。每个平台生成来源 `SHA256SUMS.txt`，release job 再生成覆盖全部上传资产的合并清单。
 - `.github/workflows/ci.yml`、`package.yml`、`runtime-verify.yml` 已建立三平台原生 runner 矩阵；runtime smoke 只证明包可解包/安装和 `--version` 启动，不等价于 GUI、屏幕捕获、剪贴板、权限或多显示器验证。
 
-2026-08-02 预发布交付证据：`v0.1.0-preview.5` 的 CI run `30719637865`、package run `30719649724`、发布 job `91421507686`、runtime-verify run `30719791965` 均成功；Release 含 Linux raw/tar/deb/rpm、macOS raw/zip/dmg、Windows raw/zip/setup 与合并 SHA256 清单共 11 个资产，下载后按 `SHA256SUMS.txt` 逐项复核通过。该证据只覆盖构建、分发、安装/卸载和 `--version` 启动探针，不扩展真实桌面能力声明。
+2026-08-02 预发布交付证据：`v0.1.0-preview.6` 的 CI run `30720088334`、package run `30720098823`、发布 job `91422696939`、runtime-verify run `30720250257` 均成功；Release 含 Linux raw/tar/deb/rpm、macOS raw/zip/dmg、Windows raw/zip/setup 与合并 SHA256 清单共 11 个资产，下载后按 `SHA256SUMS.txt` 逐项复核通过。该证据只覆盖构建、分发、安装/卸载和 `--version` 启动探针，不扩展真实桌面能力声明。
 
 ## 主流程
 
