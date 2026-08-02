@@ -32,8 +32,8 @@ use crate::overlay_toolbar::{
     ToolbarAction, ToolbarButton, hit_test as toolbar_hit, layout_toolbar, paint_toolbar,
     toolbar_bounds,
 };
-use crate::settings_panel::{self, SettingsPanel, SettingsPanelAction, SettingsPanelKey};
-use crate::settings_store::{SettingsStore, default_settings_path};
+use crate::settings_panel::{SettingsPanelAction, SettingsPanelKey};
+use crate::settings_window::SettingsWindow;
 use crate::tray::{AppTray, TrayAction};
 use pinora_core::{
     ActionId, AnnotateSession, AnnotateTool, AnnotationRevision, AssetGeneration, AssetRef,
@@ -253,16 +253,6 @@ struct ControlState {
     window: Rc<Window>,
 }
 
-struct SettingsState {
-    window: Rc<Window>,
-    surface: Surface<Rc<Window>, Rc<Window>>,
-    panel: SettingsPanel,
-    store: SettingsStore,
-    cursor: PixelPoint,
-    width: u32,
-    height: u32,
-}
-
 /// Overlay 内阶段：框选中 / 已出选区（工具栏就绪）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OverlayPhase {
@@ -403,7 +393,7 @@ struct DesktopApp<L, P, C, S> {
     /// 无选区/加载时的常驻控制窗（收 F2 / Ctrl+N / Ctrl+Q）。
     control: Option<ControlState>,
     /// 显式设置窗口；草稿只在保存成功后应用到 runtime。
-    settings: Option<SettingsState>,
+    settings: Option<SettingsWindow>,
     /// 受管历史浏览窗口；文件读取和删除必须经 history_export 安全边界。
     history: Option<HistoryWindow>,
     pins: HashMap<WindowId, PinWin>,
@@ -580,7 +570,7 @@ where
             return;
         }
         if let Some(settings) = self.settings.as_ref()
-            && settings.window.id() == window_id
+            && settings.window_id() == window_id
         {
             self.handle_settings_event(event_loop, event);
             return;
@@ -865,61 +855,32 @@ where
 
     fn open_settings(&mut self, event_loop: &ActiveEventLoop) -> Result<(), PinoraError> {
         if let Some(settings) = self.settings.as_ref() {
-            settings.window.focus_window();
+            settings.focus();
             return Ok(());
         }
         self.ensure_context(event_loop);
-        let context = self.context.as_ref().ok_or_else(|| {
-            PinoraError::new(ErrorCode::Internal, "softbuffer context unavailable")
-        })?;
-        let attrs = Window::default_attributes()
-            .with_title("Pinora Settings")
-            .with_inner_size(PhysicalSize::new(
-                settings_panel::PANEL_WIDTH,
-                settings_panel::PANEL_HEIGHT,
-            ))
-            .with_resizable(false)
-            .with_window_level(WindowLevel::AlwaysOnTop)
-            .with_visible(true);
-        let window = event_loop
-            .create_window(attrs)
-            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("settings window: {e}")))?;
-        let window = Rc::new(window);
-        let mut surface = Surface::new(context, window.clone())
-            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("settings surface: {e}")))?;
-        if let (Some(w), Some(h)) = (
-            NonZeroU32::new(settings_panel::PANEL_WIDTH),
-            NonZeroU32::new(settings_panel::PANEL_HEIGHT),
-        ) {
-            surface.resize(w, h).map_err(|e| {
-                PinoraError::new(ErrorCode::Internal, format!("settings resize: {e}"))
-            })?;
-        }
         let current = self
             .runtime
             .as_ref()
             .map(AppRuntime::settings)
             .unwrap_or_default();
-        let panel = SettingsPanel::new(current);
-        window.focus_window();
+        let settings = {
+            let context = self.context.as_ref().ok_or_else(|| {
+                PinoraError::new(ErrorCode::Internal, "softbuffer context unavailable")
+            })?;
+            SettingsWindow::open(event_loop, context, current)?
+        };
         self.hide_control();
-        self.settings = Some(SettingsState {
-            window: window.clone(),
-            surface,
-            panel,
-            store: SettingsStore::new(default_settings_path()),
-            cursor: PixelPoint::new(0, 0),
-            width: settings_panel::PANEL_WIDTH,
-            height: settings_panel::PANEL_HEIGHT,
-        });
-        window.request_redraw();
+        settings.focus();
+        settings.request_redraw();
+        self.settings = Some(settings);
         println!("pinora: settings opened (arrows edit, Enter save, Esc cancel)");
         Ok(())
     }
 
     fn close_settings(&mut self) {
         if let Some(settings) = self.settings.take() {
-            settings.window.set_visible(false);
+            settings.close();
         }
     }
 
@@ -929,8 +890,10 @@ where
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(settings) = self.settings.as_mut() {
-                    settings.cursor =
-                        PixelPoint::new(position.x.round() as i32, position.y.round() as i32);
+                    settings.set_cursor(PixelPoint::new(
+                        position.x.round() as i32,
+                        position.y.round() as i32,
+                    ));
                 }
             }
             WindowEvent::MouseInput {
@@ -938,10 +901,7 @@ where
                 button: MouseButton::Left,
                 ..
             } => {
-                let action = self
-                    .settings
-                    .as_ref()
-                    .and_then(|settings| SettingsPanel::hit_test(settings.cursor));
+                let action = self.settings.as_ref().and_then(SettingsWindow::hit_test);
                 if let Some(action) = action {
                     self.apply_settings_action(event_loop, action);
                 }
@@ -970,11 +930,11 @@ where
                 let action = self
                     .settings
                     .as_mut()
-                    .and_then(|settings| settings.panel.handle_key(key));
+                    .and_then(|settings| settings.handle_key(key));
                 if let Some(action) = action {
                     self.apply_settings_action(event_loop, action);
                 } else if let Some(settings) = self.settings.as_ref() {
-                    settings.window.request_redraw();
+                    settings.request_redraw();
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -985,15 +945,7 @@ where
             }
             WindowEvent::Resized(size) => {
                 if let Some(settings) = self.settings.as_mut() {
-                    settings.width = size.width.max(1);
-                    settings.height = size.height.max(1);
-                    if let (Some(w), Some(h)) = (
-                        NonZeroU32::new(settings.width),
-                        NonZeroU32::new(settings.height),
-                    ) {
-                        let _ = settings.surface.resize(w, h);
-                    }
-                    settings.window.request_redraw();
+                    settings.resize(size.width, size.height);
                 }
             }
             _ => {}
@@ -1010,8 +962,8 @@ where
             | SettingsPanelAction::Decrement
             | SettingsPanelAction::Increment => {
                 if let Some(settings) = self.settings.as_mut() {
-                    settings.panel.apply_action(action);
-                    settings.window.request_redraw();
+                    settings.apply_action(action);
+                    settings.request_redraw();
                 }
             }
             SettingsPanelAction::Cancel => self.close_settings(),
@@ -1020,17 +972,10 @@ where
     }
 
     fn save_settings(&mut self) {
-        let Some((draft, window)) = self
-            .settings
-            .as_ref()
-            .map(|settings| (settings.panel.draft(), settings.window.clone()))
-        else {
+        let Some(draft) = self.settings.as_ref().map(SettingsWindow::draft) else {
             return;
         };
-        let save_result = self
-            .settings
-            .as_ref()
-            .map(|settings| settings.store.save(draft));
+        let save_result = self.settings.as_ref().map(|settings| settings.save(draft));
         match save_result {
             Some(Ok(())) => {
                 if let Some(rt) = self.runtime.as_mut() {
@@ -1059,17 +1004,17 @@ where
                     }
                 }
                 if let Some(settings) = self.settings.as_mut() {
-                    settings.panel.mark_saved();
+                    settings.mark_saved();
+                    settings.request_redraw();
                 }
                 println!("pinora: settings saved (theme={:?})", draft.theme);
-                window.request_redraw();
             }
             Some(Err(_)) => {
                 if let Some(settings) = self.settings.as_mut() {
-                    settings.panel.mark_save_failed("settings_save_failed");
+                    settings.mark_save_failed("settings_save_failed");
+                    settings.request_redraw();
                 }
                 eprintln!("pinora: settings save failed; runtime values unchanged");
-                window.request_redraw();
             }
             None => {}
         }
@@ -1079,35 +1024,7 @@ where
         let Some(settings) = self.settings.as_mut() else {
             return Ok(());
         };
-        let size = settings.window.inner_size();
-        let width = size.width.max(1);
-        let height = size.height.max(1);
-        settings.width = width;
-        settings.height = height;
-        if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
-            settings.surface.resize(w, h).map_err(|e| {
-                PinoraError::new(ErrorCode::Internal, format!("settings surface resize: {e}"))
-            })?;
-        }
-        let mut buffer = settings
-            .surface
-            .buffer_mut()
-            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("settings buffer: {e}")))?;
-        let width = width as usize;
-        let height = height as usize;
-        if buffer.len() < width.saturating_mul(height) {
-            return Ok(());
-        }
-        settings_panel::paint(
-            &settings.panel,
-            &mut buffer[..width * height],
-            width,
-            height,
-        );
-        buffer
-            .present()
-            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("settings present: {e}")))?;
-        Ok(())
+        settings.paint()
     }
 
     fn open_history(&mut self, event_loop: &ActiveEventLoop) -> Result<(), PinoraError> {
@@ -1117,11 +1034,13 @@ where
         }
         self.ensure_context(event_loop);
         let entries = self.history_index.active_entries().cloned().collect();
+        let history = {
+            let context = self.context.as_ref().ok_or_else(|| {
+                PinoraError::new(ErrorCode::Internal, "softbuffer context unavailable")
+            })?;
+            HistoryWindow::open(event_loop, context, entries)?
+        };
         self.hide_control();
-        let context = self.context.as_ref().ok_or_else(|| {
-            PinoraError::new(ErrorCode::Internal, "softbuffer context unavailable")
-        })?;
-        let history = HistoryWindow::open(event_loop, context, entries)?;
         history.focus();
         history.request_redraw();
         self.history = Some(history);

@@ -26,6 +26,7 @@ mod region_workflow;
 mod runtime;
 mod settings_panel;
 mod settings_store;
+mod settings_window;
 mod single_instance;
 mod tray;
 mod worker_lifecycle;
