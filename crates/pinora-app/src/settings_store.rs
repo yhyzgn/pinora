@@ -5,10 +5,11 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use pinora_core::{AppSettings, SETTINGS_SCHEMA_VERSION, SettingsRepairs, ThemeMode};
+use pinora_core::{AppSettings, OcrLanguage, SETTINGS_SCHEMA_VERSION, SettingsRepairs, ThemeMode};
 
 const MAGIC: [u8; 8] = *b"PINORA\0\0";
-const RECORD_LEN: usize = 18;
+const V1_RECORD_LEN: usize = 18;
+const RECORD_LEN: usize = 19;
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,32 +105,65 @@ fn encode(settings: AppSettings) -> Result<[u8; RECORD_LEN], String> {
     bytes[11..15].copy_from_slice(&repaired.history_limit.to_le_bytes());
     bytes[15..17].copy_from_slice(&repaired.pin_limit.to_le_bytes());
     bytes[17] = repaired.default_pin_opacity_percent;
+    bytes[18] = repaired.ocr_language.to_wire();
     Ok(bytes)
 }
 
 fn decode(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
-    if bytes.len() != RECORD_LEN {
-        return Err("settings record length is invalid".into());
+    match bytes.len() {
+        V1_RECORD_LEN => decode_v1(bytes),
+        RECORD_LEN => decode_v2(bytes),
+        _ => Err("settings record length is invalid".into()),
     }
-    if bytes[..8] != MAGIC {
-        return Err("settings magic is invalid".into());
-    }
-    let schema_version = u16::from_le_bytes([bytes[8], bytes[9]]);
-    if schema_version != SETTINGS_SCHEMA_VERSION {
-        return Err("settings schema version is unsupported".into());
-    }
+}
+
+fn decode_v1(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
+    validate_magic_and_schema(bytes, 1)?;
     let theme =
         ThemeMode::from_wire(bytes[10]).ok_or_else(|| "settings theme is invalid".to_string())?;
     let history_limit = u32::from_le_bytes([bytes[11], bytes[12], bytes[13], bytes[14]]);
     let pin_limit = u16::from_le_bytes([bytes[15], bytes[16]]);
-    Ok(AppSettings {
-        schema_version,
+    let (settings, mut repairs) = AppSettings {
+        schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
         history_limit,
         pin_limit,
         default_pin_opacity_percent: bytes[17],
+        ocr_language: OcrLanguage::Auto,
+    }
+    .with_repaired_values();
+    repairs.migrated_from_v1 = true;
+    Ok((settings, repairs))
+}
+
+fn decode_v2(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
+    validate_magic_and_schema(bytes, SETTINGS_SCHEMA_VERSION)?;
+    let theme =
+        ThemeMode::from_wire(bytes[10]).ok_or_else(|| "settings theme is invalid".to_string())?;
+    let ocr_language = OcrLanguage::from_wire(bytes[18])
+        .ok_or_else(|| "settings OCR language is invalid".to_string())?;
+    let history_limit = u32::from_le_bytes([bytes[11], bytes[12], bytes[13], bytes[14]]);
+    let pin_limit = u16::from_le_bytes([bytes[15], bytes[16]]);
+    Ok(AppSettings {
+        schema_version: SETTINGS_SCHEMA_VERSION,
+        theme,
+        history_limit,
+        pin_limit,
+        default_pin_opacity_percent: bytes[17],
+        ocr_language,
     }
     .with_repaired_values())
+}
+
+fn validate_magic_and_schema(bytes: &[u8], expected_schema: u16) -> Result<(), String> {
+    if bytes[..8] != MAGIC {
+        return Err("settings magic is invalid".into());
+    }
+    let schema_version = u16::from_le_bytes([bytes[8], bytes[9]]);
+    if schema_version != expected_schema {
+        return Err("settings schema version is unsupported".into());
+    }
+    Ok(())
 }
 
 struct AtomicSettingsTemp {
@@ -228,10 +262,49 @@ mod tests {
     #[test]
     fn unknown_schema_is_rejected() {
         let mut bytes = encode(AppSettings::default()).expect("encode");
-        bytes[8] = 2;
+        bytes[8] = 3;
         assert_eq!(
             decode(&bytes),
             Err("settings schema version is unsupported".into())
+        );
+    }
+
+    #[test]
+    fn v1_settings_migrate_without_losing_existing_fields() {
+        let bytes = legacy_v1_bytes(ThemeMode::Dark, 88, 8, 75);
+
+        let (settings, repairs) = decode(&bytes).expect("migrate v1");
+
+        assert_eq!(settings.schema_version, SETTINGS_SCHEMA_VERSION);
+        assert_eq!(settings.theme, ThemeMode::Dark);
+        assert_eq!(settings.history_limit, 88);
+        assert_eq!(settings.pin_limit, 8);
+        assert_eq!(settings.default_pin_opacity_percent, 75);
+        assert_eq!(settings.ocr_language, OcrLanguage::Auto);
+        assert!(repairs.migrated_from_v1);
+    }
+
+    #[test]
+    fn v2_round_trip_preserves_ocr_language() {
+        let settings = AppSettings {
+            ocr_language: OcrLanguage::SimplifiedChinese,
+            ..AppSettings::default()
+        };
+
+        let (decoded, repairs) = decode(&encode(settings).expect("encode v2")).expect("decode v2");
+
+        assert_eq!(decoded, settings);
+        assert!(repairs.is_empty());
+    }
+
+    #[test]
+    fn invalid_v2_ocr_language_is_rejected() {
+        let mut bytes = encode(AppSettings::default()).expect("encode");
+        bytes[18] = u8::MAX;
+
+        assert_eq!(
+            decode(&bytes),
+            Err("settings OCR language is invalid".into())
         );
     }
 
@@ -241,5 +314,21 @@ mod tests {
             default_settings_path().file_name(),
             Some(std::ffi::OsStr::new("settings.bin"))
         );
+    }
+
+    fn legacy_v1_bytes(
+        theme: ThemeMode,
+        history_limit: u32,
+        pin_limit: u16,
+        opacity: u8,
+    ) -> [u8; V1_RECORD_LEN] {
+        let mut bytes = [0u8; V1_RECORD_LEN];
+        bytes[..8].copy_from_slice(&MAGIC);
+        bytes[8..10].copy_from_slice(&1u16.to_le_bytes());
+        bytes[10] = theme.to_wire();
+        bytes[11..15].copy_from_slice(&history_limit.to_le_bytes());
+        bytes[15..17].copy_from_slice(&pin_limit.to_le_bytes());
+        bytes[17] = opacity;
+        bytes
     }
 }

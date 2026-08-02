@@ -25,7 +25,7 @@
 | 系统托盘 | 截图、1/3/5 秒延时区域截图及取消、显示器指定全屏、可用 xcap 后端的最多 20 个经清洗窗口截图候选、设置、历史、显示/隐藏/关闭全部贴图、退出；菜单禁用状态项与图标 tooltip 显示最近一次受控截图/OCR/导出状态，另有本次启动的截图/热键/图像剪贴板/OCR 能力摘要（tray-icon；真实跨平台菜单与窗口枚举仍待探针） |
 | 后台驻留与窗口隔离 | 启动后只保留托盘、可用全局热键、IPC 与帧缓存，不自动截图；无法创建托盘时以 `CapabilityUnavailable` 退出；所有辅助窗口必须由 `window_policy` 工厂创建并请求跳过任务栏/Dock，真实桌面验证仍待完成 |
 | 贴图控制 | L 锁定，`[` `]` 透明度（压暗近似）；`O` 本地 OCR；`T` 词框 |
-| OCR | 系统 `tesseract` CLI；全文复制剪贴板；词框叠加；缺引擎可降级提示 |
+| OCR | 系统 `tesseract` CLI；可持久化选择 Auto、English、SimplifiedChinese；全文复制剪贴板；词框叠加；缺引擎或指定本机模型时受控降级 |
 
 ## 2026-08-01 接管审计事实
 
@@ -64,6 +64,7 @@
 - 2026-08-02 的 079 为已有 tray 增加本次启动的能力摘要：截图和系统图像剪贴板复用 bootstrap `CapabilitySnapshot`，全局热键以 `GlobalHotkeyHub` 的实际注册结果覆盖平台猜测，本地 OCR 仅执行无进程的 PATH 检查。禁用菜单项由固定中文标签生成，不读取 runtime notes、路径、后端错误、OCR 文本或剪贴板内容；没有新窗口、事件循环、worker、外部进程、通知或网络路径，tray-only 与 `window_policy` 边界不变。真实 tray 可见性、读屏、权限和窗口管理器行为仍未验证。
 - 2026-08-02 的 080 为桌面异步 PNG 保存增加 UTC 可读命名：分配器使用固定 `Pinora_YYYYMMDD_HHMMSS[_NNN].png` 格式，跳过同秒与已存在的候选；Overlay、贴图编辑、贴图自动保存和贴图菜单保存均在提交既有导出 worker 前使用它。没有改变编码、原子写入、历史、任务身份、窗口或 tray 生命周期；普通跨进程文件系统竞态仍未消除，真实桌面验证也未完成。
 - 2026-08-02 的 081 将 `GlobalHotkeyHub` 改为在 `winit` GUI 事件循环线程持有并释放 `GlobalHotKeyManager`，不再用仅 Linux 的应用侧线程转发事件。F2/Ctrl+N 是核心注册，Ctrl+Shift+S/F3 保持可选且状态说明来自实际注册结果；Windows/macOS 不再因应用编译期开关被直接禁用，Linux 仍只声明 X11，纯 Wayland 使用 tray 或 IPC 降级。Pinora 没有新增 `winit` 窗口；Windows 依赖后端会使用隐藏 `WS_EX_TOOLWINDOW` 消息窗口，源码请求跳过任务栏但尚缺实机证据。离线事件过滤、不可用降级、window policy、严格 workspace 门禁和 Windows target 编译已通过；真实 Windows/macOS/X11 热键、Wayland Portal、冲突、权限与睡眠恢复尚未验证。
+- 2026-08-02 的 082 将设置 schema 升级为 v2：18 字节 v1 记录保留既有字段并以 `Auto` 迁移，后续原子保存写入 19 字节 v2。设置窗口可选择 Auto、English、SimplifiedChinese；桌面壳在提交 OCR worker 前冻结 runtime 中的预设。自动模式仅组合本机 `chi_sim`/`eng`，指定模式缺模型时返回 `CapabilityUnavailable`，不下载模型、不回退；OCR 失败日志只写稳定错误码。离线 codec、面板、模型选择、worker 冻结和 workspace 门禁已通过，真实模型安装、设置输入、剪贴板与桌面体验仍未验证。
 - GitHub Actions CI `30732620836`、`30732765136`、`30732906042`、`30733684203`、`30734154282`、`30734583848`、`30734867309` 与 `30735354166` 已于 2026-08-02 在 Linux、macOS、Windows 原生 runner 通过格式、workspace 编译、严格 Clippy 和单元测试；这些运行未创建 GUI 会话，不能作为任务栏、Dock、窗口交互、KWin 行为、真实多显示器或渲染延迟的证据。
 - `pinora-core::asset` 已于 2026-08-01 新增 `AssetGeneration` 和 `AssetRef` 领域契约；它只组合既有 `ImageId`，可判定陈旧结果，已用于桌面贴图及 Overlay OCR、复制、保存任务的结果门禁。
 - `pinora-core::job` 与 `pinora-app::JobSupervisor` 已于 2026-08-01 新增：任务元数据绑定 `JobId`、关联 ID、`AssetRef`、领域 owner、类型和截止时间；监督器可协作式取消、关闭 owner、标记超时并拒绝终态或陈旧版本结果。桌面 OCR、导出和剪贴板均已接入，但这不代表所有后台进程均已在真实桌面环境验证。
@@ -73,7 +74,7 @@
 - `pinora-app::save_png_file` 已于 2026-08-01 使用同目录临时文件、文件 `sync_all`、rename 发布和目标可读性校验；未提交临时文件由 RAII 删除。该事实只在 Linux 本地文件系统测试，未证明跨平台覆盖或断电后目录持久性。
 - `OcrJobService` 与 `ExportJobService` 已于 2026-08-01 保存自己创建的 worker 句柄，正常轮询会回收结束线程；桌面退出先取消、最多等待 2 秒并输出取消/join/panic/残留计数。协作式 worker 若不响应取消会被如实报告为残留，不能视为已回收。
 - `pinora-core::annotate` 已于 2026-08-01 新增 `AnnotationRevision`：新文档从非零版本开始，有效提交、非空撤销和非空重做均单调推进且在 `u64::MAX` 饱和；标注集合与 redo 栈只暴露只读查询。Overlay 已为确认选区建立稳定派生 `ImageId`，将 revision 映射为 `AssetRef.generation` 并用于 OCR、复制和保存；有效编辑、撤销、重做或重选会拒绝晚到结果。贴图尚无标注回编辑。
-- `pinora-core::settings` 与 `pinora-app::SettingsStore` 已于 2026-08-02 建立版本化设置与原子文件基础：格式有 magic、schema 与长度校验，非法数值逐字段修复，损坏/未知版本保留源文件并回退内存默认。035 已将 `pin_limit` 和新贴图默认不透明度接入 runtime/desktop shell；041 新增独立自绘设置窗口，支持主题、历史上限、贴图上限和默认不透明度的键盘/鼠标编辑、取消、原子保存和失败回滚，并在保存成功后应用运行时策略；系统主题跟随、原生控件无障碍和跨平台目录策略仍未验证。
+- `pinora-core::settings` 与 `pinora-app::SettingsStore` 已于 2026-08-02 建立版本化设置与原子文件基础：格式有 magic、schema 与长度校验，非法数值逐字段修复，损坏/未知版本保留源文件并回退内存默认。035 已将 `pin_limit` 和新贴图默认不透明度接入 runtime/desktop shell；041 新增独立自绘设置窗口，支持主题、历史上限、贴图上限和默认不透明度的键盘/鼠标编辑、取消、原子保存和失败回滚，并在保存成功后应用运行时策略；082 将 schema v1/v2 迁移和 OCR 语言预设纳入同一事务。系统主题跟随、原生控件无障碍和跨平台目录策略仍未验证。
 - `pinora-core::history` 与 `pinora-app::HistoryStore` 已于 2026-08-02 建立历史索引基础，并由桌面壳接入受监督 PNG 导出与受管文件清理：条目包含不可变图像/代际引用、显示器与选区元数据、受管目录单文件名、SHA-256 内容摘要、OCR 状态和 tombstone 状态；索引 codec 有 magic/schema/长度/CRC 校验，保存使用同目录临时文件、`sync_all`、rename 与读取校验。只有通过 owner、generation 和截止时间门禁的 `SavePng` 完成事件才会写入历史；损坏索引启动时保留原文件并使用空内存索引，保存失败恢复本次内存插入。领域层按摘要和大小去重并按条数/字节配额将旧条目标记为 tombstone；清理器仅删除直属受管 PNG，在活动同名保护、删除失败或索引保存失败时保留 tombstone 供重试；041 的设置配额变更、042 的单条删除和 043 的全量清空复用相同的索引落盘与清理事务。042/043/049 提供历史预览、重新贴图、再次编辑、搜索与删除/清空；051 将受管 PNG 读取、摘要校验和解码移到单 worker，并按条目 generation、当前选择与意图拒绝陈旧结果；052 继续在该 worker 内按意图生成预览 XRGB、贴图 XRGB 或编辑 base/dimmed，历史完成分支不再进行这些整图转换。真实桌面探针尚未运行。
 - `pinora-core::ocr` 与贴图窗口已于 2026-08-02 新增 `OcrTextSelection`：Ctrl+左键拖拽将物理窗口坐标映射为图像坐标，按相交词框和 OCR 阅读顺序生成局部文本，选中词框高亮；文本复制经既有 `ExportJobService` 监督并绑定 pin owner/asset，未通过真实 GUI/系统剪贴板探针。
 - `pinora-app::FrameCache` 已于 2026-08-02 改为由单一状态锁维护预截帧、暂停标志和代际；缓存命中使用所有权移交而非克隆完整像素缓冲，暂停会清空槽位并使已在途抓取的发布失效。此事实由离线并发语义测试覆盖，不等价于真实桌面端到端延迟测量。

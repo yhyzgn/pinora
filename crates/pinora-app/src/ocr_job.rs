@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use pinora_core::{
     AssetRef, CaptureImage, ErrorCode, JobId, JobKind, JobOwner, JobResultRef, JobSpec,
-    JobTerminalState, OcrResult, PinoraError,
+    JobTerminalState, OcrLanguage, OcrResult, PinoraError,
 };
 
 use crate::job_supervisor::{
@@ -29,6 +29,17 @@ pub trait OcrRunner: Send + Sync + 'static {
         image: &CaptureImage,
         cancellation: &JobCancellation,
     ) -> Result<OcrResult, PinoraError>;
+
+    /// 接收提交时冻结的预设。既有 runner 未覆盖时维持自动语言行为。
+    fn recognize_with_language(
+        &self,
+        image: &CaptureImage,
+        language: OcrLanguage,
+        cancellation: &JobCancellation,
+    ) -> Result<OcrResult, PinoraError> {
+        let _ = language;
+        self.recognize(image, cancellation)
+    }
 }
 
 /// 默认的本地 OCR runner。
@@ -42,6 +53,15 @@ impl OcrRunner for LocalOcrRunner {
         cancellation: &JobCancellation,
     ) -> Result<OcrResult, PinoraError> {
         recognize_image_with_cancellation(image, cancellation)
+    }
+
+    fn recognize_with_language(
+        &self,
+        image: &CaptureImage,
+        language: OcrLanguage,
+        cancellation: &JobCancellation,
+    ) -> Result<OcrResult, PinoraError> {
+        crate::ocr::recognize_image_with_language(image, language, cancellation)
     }
 }
 
@@ -107,6 +127,19 @@ where
 
     /// 提交并启动一个 OCR worker。worker 的输出不会直接触碰 UI 或应用状态。
     pub fn start(&mut self, spec: JobSpec, image: CaptureImage) -> Result<JobTicket, PinoraError> {
+        self.start_with_language(spec, image, OcrLanguage::Auto)
+    }
+
+    /// 提交并启动一个使用提交时语言预设的 OCR worker。
+    ///
+    /// `language` 是 Copy 枚举，在线程创建前捕获，运行中的 worker 不会读取
+    /// 之后保存到运行时设置的值。
+    pub fn start_with_language(
+        &mut self,
+        spec: JobSpec,
+        image: CaptureImage,
+        language: OcrLanguage,
+    ) -> Result<JobTicket, PinoraError> {
         if spec.kind != JobKind::Ocr {
             return Err(PinoraError::new(
                 ErrorCode::CommandRejected,
@@ -121,7 +154,7 @@ where
         let worker = thread::Builder::new()
             .name(format!("pinora-ocr-{}", ticket.id.raw()))
             .spawn(move || {
-                let result = runner.recognize(&image, &cancellation);
+                let result = runner.recognize_with_language(&image, language, &cancellation);
                 let _ = sender.send(WorkerResult { reference, result });
             });
         let worker = worker.map_err(|error| {
@@ -256,6 +289,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use super::*;
@@ -307,6 +341,41 @@ mod tests {
                 thread::yield_now();
             }
             Err(PinoraError::new(ErrorCode::Cancelled, "fake ocr cancelled"))
+        }
+    }
+
+    #[derive(Debug)]
+    struct LanguageRecordingRunner {
+        received: Arc<Mutex<Vec<OcrLanguage>>>,
+    }
+
+    impl OcrRunner for LanguageRecordingRunner {
+        fn recognize(
+            &self,
+            _image: &CaptureImage,
+            _cancellation: &JobCancellation,
+        ) -> Result<OcrResult, PinoraError> {
+            Err(PinoraError::new(
+                ErrorCode::Internal,
+                "language-aware runner must receive a frozen language",
+            ))
+        }
+
+        fn recognize_with_language(
+            &self,
+            _image: &CaptureImage,
+            language: OcrLanguage,
+            _cancellation: &JobCancellation,
+        ) -> Result<OcrResult, PinoraError> {
+            self.received
+                .lock()
+                .expect("language recording mutex")
+                .push(language);
+            Ok(OcrResult::from_lines(
+                Vec::new(),
+                Vec::new(),
+                "language-fake",
+            ))
         }
     }
 
@@ -366,6 +435,35 @@ mod tests {
         assert_eq!(
             service.state(ticket.id),
             Some(JobState::Finished(JobTerminalState::Completed))
+        );
+    }
+
+    #[test]
+    fn start_with_language_freezes_language_for_the_worker() {
+        let image = sample_image(9);
+        let asset = AssetRef::initial(image.id);
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let runner = LanguageRecordingRunner {
+            received: received.clone(),
+        };
+        let mut service = OcrJobService::with_runner(runner);
+
+        let ticket = service
+            .start_with_language(spec(9, asset, 100), image, OcrLanguage::English)
+            .expect("start language-aware job");
+        let completions = poll_until(&mut service, 1, |_| Some(asset));
+
+        assert!(matches!(
+            completions.as_slice(),
+            [OcrJobCompletion::Completed { job, result }]
+                if job.id == ticket.id && result.engine == "language-fake"
+        ));
+        assert_eq!(
+            received
+                .lock()
+                .expect("language recording mutex")
+                .as_slice(),
+            [OcrLanguage::English]
         );
     }
 

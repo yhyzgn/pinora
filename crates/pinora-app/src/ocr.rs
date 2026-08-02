@@ -13,7 +13,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use pinora_core::{
-    CaptureImage, ErrorCode, OcrLine, OcrResult, OcrWord, PinoraError, PixelRect, union_bboxes,
+    CaptureImage, ErrorCode, OcrLanguage, OcrLine, OcrResult, OcrWord, PinoraError, PixelRect,
+    union_bboxes,
 };
 
 use crate::job_supervisor::JobCancellation;
@@ -28,15 +29,24 @@ pub fn tesseract_available() -> bool {
     which("tesseract").is_some()
 }
 
-/// 对截图做 OCR。优先 `eng`，有 `chi_sim` 时用 `chi_sim+eng`。
+/// 对截图做 OCR，使用默认的自动语言预设。
 pub fn recognize_image(image: &CaptureImage) -> Result<OcrResult, PinoraError> {
     let cancellation = JobCancellation::standalone();
-    recognize_image_with_cancellation(image, &cancellation)
+    recognize_image_with_language(image, OcrLanguage::Auto, &cancellation)
 }
 
-/// 可被任务监督器取消的 OCR 入口。
+/// 可被任务监督器取消的 OCR 入口，保留默认自动语言以兼容既有调用方。
 pub fn recognize_image_with_cancellation(
     image: &CaptureImage,
+    cancellation: &JobCancellation,
+) -> Result<OcrResult, PinoraError> {
+    recognize_image_with_language(image, OcrLanguage::Auto, cancellation)
+}
+
+/// 可被任务监督器取消且已冻结语言预设的 OCR 入口。
+pub(crate) fn recognize_image_with_language(
+    image: &CaptureImage,
+    language: OcrLanguage,
     cancellation: &JobCancellation,
 ) -> Result<OcrResult, PinoraError> {
     if cancellation.is_cancelled() {
@@ -52,7 +62,7 @@ pub fn recognize_image_with_cancellation(
         )
     })?;
 
-    let langs = detect_languages();
+    let langs = resolve_languages(language, &list_tesseract_langs())?;
     let lang_arg = langs.join("+");
 
     let png = encode_png_bytes(image)?;
@@ -68,24 +78,38 @@ pub fn recognize_image_with_cancellation(
     ))
 }
 
-fn detect_languages() -> Vec<String> {
-    // 优先中英；仅装 eng 时退回 eng
-    let listed = list_tesseract_langs();
-    let mut langs = Vec::new();
-    if listed.iter().any(|l| l == "chi_sim") {
-        langs.push("chi_sim".into());
-    }
-    if listed.iter().any(|l| l == "eng") || langs.is_empty() {
-        langs.push("eng".into());
-    }
-    // 去重保持顺序
-    let mut out = Vec::new();
-    for l in langs {
-        if !out.contains(&l) {
-            out.push(l);
+fn resolve_languages(language: OcrLanguage, listed: &[String]) -> Result<Vec<String>, PinoraError> {
+    let has_english = listed.iter().any(|item| item == "eng");
+    let has_simplified_chinese = listed.iter().any(|item| item == "chi_sim");
+
+    match language {
+        OcrLanguage::Auto => {
+            let mut languages = Vec::new();
+            if has_simplified_chinese {
+                languages.push("chi_sim".into());
+            }
+            if has_english {
+                languages.push("eng".into());
+            }
+            if languages.is_empty() {
+                return Err(PinoraError::new(
+                    ErrorCode::CapabilityUnavailable,
+                    "OCR 自动语言需要本机安装 eng 或 chi_sim 模型",
+                ));
+            }
+            Ok(languages)
         }
+        OcrLanguage::English if has_english => Ok(vec!["eng".into()]),
+        OcrLanguage::SimplifiedChinese if has_simplified_chinese => Ok(vec!["chi_sim".into()]),
+        OcrLanguage::English => Err(PinoraError::new(
+            ErrorCode::CapabilityUnavailable,
+            "OCR English 预设需要本机安装 eng 模型",
+        )),
+        OcrLanguage::SimplifiedChinese => Err(PinoraError::new(
+            ErrorCode::CapabilityUnavailable,
+            "OCR SimplifiedChinese 预设需要本机安装 chi_sim 模型",
+        )),
     }
-    out
 }
 
 fn list_tesseract_langs() -> Vec<String> {
@@ -548,6 +572,32 @@ level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theigh
     }
 
     #[test]
+    fn auto_language_uses_only_supported_local_models_in_stable_order() {
+        let languages = resolve_languages(
+            OcrLanguage::Auto,
+            &["eng".into(), "deu".into(), "chi_sim".into()],
+        )
+        .expect("supported local models");
+
+        assert_eq!(languages, vec!["chi_sim", "eng"]);
+    }
+
+    #[test]
+    fn explicit_language_requires_its_exact_local_model() {
+        let english_missing = resolve_languages(OcrLanguage::English, &["chi_sim".into()])
+            .expect_err("English must not fall back to Chinese");
+        assert_eq!(english_missing.code, ErrorCode::CapabilityUnavailable);
+
+        let chinese_missing = resolve_languages(OcrLanguage::SimplifiedChinese, &["eng".into()])
+            .expect_err("SimplifiedChinese must not fall back to English");
+        assert_eq!(chinese_missing.code, ErrorCode::CapabilityUnavailable);
+
+        let automatic_missing =
+            resolve_languages(OcrLanguage::Auto, &["deu".into()]).expect_err("no supported model");
+        assert_eq!(automatic_missing.code, ErrorCode::CapabilityUnavailable);
+    }
+
+    #[test]
     fn tesseract_probe_does_not_panic() {
         let _ = tesseract_available();
         let _ = list_tesseract_langs();
@@ -558,13 +608,13 @@ level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theigh
         if !tesseract_available() {
             return;
         }
-        let langs = detect_languages();
+        let listed = list_tesseract_langs();
+        let langs = resolve_languages(OcrLanguage::Auto, &listed).unwrap_or_default();
         assert!(
             langs.iter().any(|l| l == "eng"),
             "expected eng in {langs:?}"
         );
         // 本机已装 chi_sim 时应优先中英
-        let listed = list_tesseract_langs();
         if listed.iter().any(|l| l == "chi_sim") {
             assert!(
                 langs.iter().any(|l| l == "chi_sim"),

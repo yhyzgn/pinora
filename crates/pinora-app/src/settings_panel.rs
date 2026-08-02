@@ -3,10 +3,10 @@
 //! 该模块不依赖 winit 或文件系统。桌面壳只负责把窗口事件转换为
 //! [`SettingsPanelAction`]，并在确认保存后调用 `SettingsStore`。
 
-use pinora_core::{AppSettings, PixelPoint, PixelRect, ThemeMode};
+use pinora_core::{AppSettings, OcrLanguage, PixelPoint, PixelRect, ThemeMode};
 
 pub const PANEL_WIDTH: u32 = 560;
-pub const PANEL_HEIGHT: u32 = 420;
+pub const PANEL_HEIGHT: u32 = 482;
 
 const ROW_X: i32 = 28;
 const ROW_W: u32 = PANEL_WIDTH - 56;
@@ -23,14 +23,16 @@ pub enum SettingField {
     HistoryLimit,
     PinLimit,
     PinOpacity,
+    OcrLanguage,
 }
 
 impl SettingField {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Theme,
         Self::HistoryLimit,
         Self::PinLimit,
         Self::PinOpacity,
+        Self::OcrLanguage,
     ];
 
     pub const fn index(self) -> usize {
@@ -39,6 +41,7 @@ impl SettingField {
             Self::HistoryLimit => 1,
             Self::PinLimit => 2,
             Self::PinOpacity => 3,
+            Self::OcrLanguage => 4,
         }
     }
 
@@ -48,6 +51,7 @@ impl SettingField {
             Self::HistoryLimit => "HISTORY LIMIT",
             Self::PinLimit => "PIN LIMIT",
             Self::PinOpacity => "PIN OPACITY",
+            Self::OcrLanguage => "OCR LANGUAGE",
         }
     }
 
@@ -203,6 +207,19 @@ impl SettingsPanel {
                     5,
                 );
             }
+            SettingField::OcrLanguage => {
+                const LANGUAGES: [OcrLanguage; 3] = [
+                    OcrLanguage::Auto,
+                    OcrLanguage::English,
+                    OcrLanguage::SimplifiedChinese,
+                ];
+                let current = LANGUAGES
+                    .iter()
+                    .position(|language| *language == self.draft.ocr_language)
+                    .unwrap_or(0) as i32;
+                let next = (current + direction).rem_euclid(LANGUAGES.len() as i32) as usize;
+                self.draft.ocr_language = LANGUAGES[next];
+            }
         }
         self.status = SettingsPanelStatus::Editing;
     }
@@ -256,6 +273,11 @@ impl SettingsPanel {
             SettingField::HistoryLimit => format!("{} ITEMS", self.draft.history_limit),
             SettingField::PinLimit => format!("{} PINS", self.draft.pin_limit),
             SettingField::PinOpacity => format!("{}%", self.draft.default_pin_opacity_percent),
+            SettingField::OcrLanguage => match self.draft.ocr_language {
+                OcrLanguage::Auto => "AUTO".into(),
+                OcrLanguage::English => "ENGLISH".into(),
+                OcrLanguage::SimplifiedChinese => "SIMPLIFIED CHINESE".into(),
+            },
         }
     }
 }
@@ -559,11 +581,11 @@ mod tests {
     fn keyboard_navigation_wraps_and_steps_with_bounds() {
         let mut panel = SettingsPanel::new(AppSettings::default());
         panel.handle_key(SettingsPanelKey::Up);
-        assert_eq!(panel.selected(), SettingField::PinOpacity);
+        assert_eq!(panel.selected(), SettingField::OcrLanguage);
         panel.handle_key(SettingsPanelKey::Right);
-        assert_eq!(panel.draft().default_pin_opacity_percent, 100);
+        assert_eq!(panel.draft().ocr_language, OcrLanguage::English);
         panel.handle_key(SettingsPanelKey::Left);
-        assert_eq!(panel.draft().default_pin_opacity_percent, 95);
+        assert_eq!(panel.draft().ocr_language, OcrLanguage::Auto);
     }
 
     #[test]
@@ -620,5 +642,19 @@ mod tests {
         panel.cancel();
         assert_eq!(panel.draft(), panel.original());
         assert!(!panel.is_dirty());
+    }
+
+    #[test]
+    fn language_cycles_across_the_supported_presets() {
+        let mut panel = SettingsPanel::new(AppSettings::default());
+        panel.select(SettingField::OcrLanguage);
+        panel.step(-1);
+        assert_eq!(panel.draft().ocr_language, OcrLanguage::SimplifiedChinese);
+        panel.step(1);
+        assert_eq!(panel.draft().ocr_language, OcrLanguage::Auto);
+        assert_eq!(
+            panel.value_label(SettingField::OcrLanguage),
+            "AUTO".to_string()
+        );
     }
 }

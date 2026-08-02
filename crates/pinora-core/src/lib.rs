@@ -56,6 +56,6 @@ pub use selection::{
 };
 pub use settings::{
     AppSettings, DEFAULT_HISTORY_LIMIT, DEFAULT_PIN_LIMIT, DEFAULT_PIN_OPACITY_PERCENT,
-    SETTINGS_SCHEMA_VERSION, SettingsRepairs, ThemeMode,
+    OcrLanguage, SETTINGS_SCHEMA_VERSION, SettingsRepairs, ThemeMode,
 };
 pub use state::{AppPhase, AppState, CapabilitySnapshot};

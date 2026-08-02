@@ -51,10 +51,10 @@ use pinora_core::{
     ActionId, AnnotateSession, AnnotateTool, Annotation, AnnotationRevision, AssetGeneration,
     AssetRef, CaptureImage, CaptureProvider, CaptureRequest, CaptureWindowInfo, Command,
     CorrelationId, DisplayId, DisplayInfo, DomainEventKind, ErrorCode, HistoryEntry, HistoryIndex,
-    ImageId, ImageSink, JobId, JobKind, JobOwner, JobSpec, OcrResult, OcrTextSelection, OcrWordRef,
-    PinId, PinTransform, PinoraError, PixelPoint, PixelRect, SelectionHandle, SelectionSession,
-    SessionId, bake_annotations, color_to_hex, render_preview_rgba, resolve_all_displays_rect,
-    sample_rgba_at,
+    ImageId, ImageSink, JobId, JobKind, JobOwner, JobSpec, OcrLanguage, OcrResult,
+    OcrTextSelection, OcrWordRef, PinId, PinTransform, PinoraError, PixelPoint, PixelRect,
+    SelectionHandle, SelectionSession, SessionId, bake_annotations, color_to_hex,
+    render_preview_rgba, resolve_all_displays_rect, sample_rgba_at,
 };
 use softbuffer::{Context, Rect as DamageRect, Surface};
 use winit::application::ApplicationHandler;
@@ -3085,6 +3085,11 @@ where
 
     fn submit_ocr_job(&mut self, owner: JobOwner, image: CaptureImage, asset: AssetRef) {
         let size = image.size();
+        let language = self
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.settings().ocr_language)
+            .unwrap_or(OcrLanguage::Auto);
         let spec = JobSpec::new(
             JobId::new(),
             CorrelationId::new(),
@@ -3093,7 +3098,7 @@ where
             JobKind::Ocr,
             monotonic_ms().saturating_add(OCR_JOB_TIMEOUT_MS),
         );
-        match self.ocr_jobs.start(spec, image) {
+        match self.ocr_jobs.start_with_language(spec, image, language) {
             Ok(ticket) => {
                 self.set_tray_feedback(TrayFeedback::OcrRunning);
                 println!(
@@ -3103,7 +3108,7 @@ where
             }
             Err(error) => {
                 self.set_tray_feedback(TrayFeedback::OcrFailed(error.code));
-                eprintln!("pinora: OCR submit failed: {error}");
+                eprintln!("pinora: OCR submit failed code={}", error.code);
             }
         }
     }
@@ -3187,7 +3192,7 @@ where
                             ExportJobInput::CopyText { text },
                             PendingExportAction::CopyText,
                         ) {
-                            eprintln!("pinora: text clipboard submit failed: {error}");
+                            eprintln!("pinora: text clipboard submit failed code={}", error.code);
                         }
                     }
                     if let JobOwner::Pin(pin_id) = job.owner
@@ -3207,7 +3212,10 @@ where
                     error,
                 } => {
                     self.set_tray_feedback(TrayFeedback::OcrFailed(error.code));
-                    eprintln!("pinora: OCR job {job_id} failed owner={owner:?}: {error}");
+                    eprintln!(
+                        "pinora: OCR job {job_id} failed owner={owner:?} code={}",
+                        error.code
+                    );
                 }
                 OcrJobCompletion::Discarded { job_id, terminal } => {
                     println!("pinora: OCR job {job_id} discarded ({terminal:?})");
@@ -3988,7 +3996,10 @@ where
                             PendingExportAction::CopyText,
                         )
                     {
-                        eprintln!("pinora: selected OCR text submit failed: {error}");
+                        eprintln!(
+                            "pinora: selected OCR text submit failed code={}",
+                            error.code
+                        );
                     }
                     return;
                 }
