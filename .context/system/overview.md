@@ -7,7 +7,7 @@
 - Linux xcap 需 `pipewire-devel`、`mesa-libgbm-devel`（**仅 xcap/portal 兜底路径**）。
 - **当前截图后端（Linux/KDE 实验路径）**：`kde-spectacle`（KWin，~0.5s）→ `xcap`/portal（慢）→ 受限能力状态；`FakeCaptureProvider` 仅由显式测试/开发注入使用，不能是生产截图成功的降级结果。
 - **不要默认 portal**：portal/PipeWire 是通用 Wayland 兜底，不是 Snipaste 级体验。
-- **全局热键**：`global-hotkey`（F2/Ctrl+N/Ctrl+Shift+S）+ 单实例 IPC `pinora capture`；启动时写入 `~/.local/share/applications/pinora.desktop`。
+- **全局热键**：`global-hotkey`（F2/Ctrl+N/Ctrl+Shift+S 区域、F3 单显示器全屏，注册受桌面环境限制）+ 单实例 IPC `pinora capture`；启动时写入 `~/.local/share/applications/pinora.desktop`。
 - **系统剪贴板**：Linux 优先 `wl-copy`，回退 `xclip`；同步 `LocalImageSink` 先保留内存副本，系统写入失败返回 `ClipboardFailed` 而不发布成功，适配器直接持有子进程并在截止时间后回收；桌面异步复制仍由 `ExportJobService` 监督，真实读回和跨平台原生后端未验证。
 
 ## 当前可运行的实验能力（未达到生产声明）
@@ -15,10 +15,10 @@
 | 能力 | 说明 |
 | --- | --- |
 | 截屏尝试 | KDE 优先 spectacle/KWin；否则 xcap；两者不可用时返回 `CapabilityUnavailable`，不生成 fake 图像 |
-| 区域选区 Overlay | 拖选后工具栏；双击复制、中键/Enter 贴图；选区内标注/OCR |
+| 区域与全屏 Overlay | F2/Ctrl+N 拖选；F3/托盘全屏自动确认当前完整图像；双击复制、中键/Enter 贴图；选区内标注/OCR |
 | 贴图窗口 | 无边框置顶、拖动、滚轮缩放、Esc 关闭；多贴图 |
 | 导出 | PNG 文件 + 内存剪贴板 + 系统剪贴板（wl-copy/xclip） |
-| 全局热键 | F2/Ctrl+N/Ctrl+Shift+S + `pinora capture` IPC |
+| 全局热键 | F2/Ctrl+N/Ctrl+Shift+S 区域、F3 单显示器全屏（注册成功时）+ `pinora capture` IPC |
 | 单实例 | flock + Unix socket Activate/CAPTURE/QUIT |
 | 帧缓存 | 空闲预截；热键命中以所有权移交预处理帧，避免复制全屏图像与双 XRGB 缓冲；暂停以代际拒绝晚到帧 |
 | 基础标注 | Overlay 选区内：矩形/箭头/画笔/椭圆/马赛克/文本；C 颜色；+/- 线宽；`Ctrl+Z` 撤销，`Ctrl+Shift+Z`/`Ctrl+Y` 重做 |
@@ -31,7 +31,7 @@
 - 生产入口仍是 `src/main.rs`，但使用 `std::os::unix::net::UnixStream`；没有平台条件编译，因此 Windows target 无法完成 workspace 检查。
 - `crates/pinora-app/src/desktop_shell.rs` 当前约 3679 行，仍集中承载 winit/softbuffer 窗口事件、截图编排、Overlay 绘制、标注输入、贴图生命周期、OCR 触发、托盘和 IPC 轮询；045/046 已将历史和设置窗口的资源、草稿/预览缓存、resize、存储调用和呈现迁至专属适配器，但 Overlay/贴图仍在 shell 中，单体化风险保持开放。
 - 当前依赖树把 `gtk`/`tray-icon`、`xcap`/PipeWire、`winit`/`softbuffer` 和 Linux CLI 后端直接放入 `pinora-app`；没有 Windows/macOS/Linux 适配器边界。
-- `cargo fmt --check`、`cargo check --workspace` 和 `cargo clippy --workspace --all-targets -- -D warnings` 已于 2026-08-02 通过；当前 `cargo test --workspace` 通过 169 个可执行单元测试（115 app、54 core），另有 2 个真实桌面测试被忽略；仍没有 GUI 端到端测试。
+- `cargo fmt --check`、`cargo check --workspace` 和 `cargo clippy --workspace --all-targets -- -D warnings` 已于 2026-08-02 通过；当前 `cargo test --workspace` 通过 172 个可执行单元测试（117 app、55 core），另有 2 个真实桌面测试被忽略；仍没有 GUI 端到端测试。
 - `cargo check --workspace --target x86_64-pc-windows-msvc` 失败于 GTK 的 `gdk-pixbuf-sys`/`glib-sys` pkg-config 交叉编译，尚未进入应用代码编译阶段。
 - OCR 通过 `tesseract` 子进程和临时 PNG 工作；适配器已持有自身 `Child`，支持协作式取消、30 秒截止时间、16 MiB 输出上限和 RAII 临时文件清理，不再调用外部 `kill`。贴图与 Overlay UI 已经通过 `OcrJobService` 提交到 `JobSupervisor`，结果交付受 owner、终态和 `AssetRef` generation 门禁保护；worker 不触碰窗口或剪贴板。
 - 截图后端自动选择 KDE `spectacle` → xcap → `Unavailable`；两者不可用时保留后端失败摘要并由 provider 返回 `CapabilityUnavailable`，`fake` 只能通过显式测试/开发注入使用。
@@ -48,6 +48,7 @@
 - `pinora-core::history` 与 `pinora-app::HistoryStore` 已于 2026-08-02 建立历史索引基础，并由桌面壳接入受监督 PNG 导出与受管文件清理：条目包含不可变图像/代际引用、显示器与选区元数据、受管目录单文件名、SHA-256 内容摘要、OCR 状态和 tombstone 状态；索引 codec 有 magic/schema/长度/CRC 校验，保存使用同目录临时文件、`sync_all`、rename 与读取校验。只有通过 owner、generation 和截止时间门禁的 `SavePng` 完成事件才会写入历史；损坏索引启动时保留原文件并使用空内存索引，保存失败恢复本次内存插入。领域层按摘要和大小去重并按条数/字节配额将旧条目标记为 tombstone；清理器仅删除直属受管 PNG，在活动同名保护、删除失败或索引保存失败时保留 tombstone 供重试；041 的设置配额变更、042 的单条删除和 043 的全量清空复用相同的索引落盘与清理事务。042 新增 H 历史窗口、受管 PNG 长度/摘要/格式/尺寸校验、预览、重新贴图（新 ImageId）和单条删除；043 再增搜索过滤与确认清空；尚未接入标签、再次编辑和真实桌面探针。
 - `pinora-core::ocr` 与贴图窗口已于 2026-08-02 新增 `OcrTextSelection`：Ctrl+左键拖拽将物理窗口坐标映射为图像坐标，按相交词框和 OCR 阅读顺序生成局部文本，选中词框高亮；文本复制经既有 `ExportJobService` 监督并绑定 pin owner/asset，未通过真实 GUI/系统剪贴板探针。
 - `pinora-app::FrameCache` 已于 2026-08-02 改为由单一状态锁维护预截帧、暂停标志和代际；缓存命中使用所有权移交而非克隆完整像素缓冲，暂停会清空槽位并使已在途抓取的发布失效。此事实由离线并发语义测试覆盖，不等价于真实桌面端到端延迟测量。
+- 全屏截图入口已于 2026-08-02 接入：F3、托盘和 `CaptureFullDisplay` 会在当前捕获目标的完整图像上初始化有效 Overlay 选区；缓存命中与 cold capture 都显式传递该意图，区域模式不自动预选。多显示器联合画布、显示器选择、HiDPI 和真实窗口映射仍未验证。
 
 ## 2026-08-02 跨平台交付基线
 

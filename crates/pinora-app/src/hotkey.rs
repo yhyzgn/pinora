@@ -80,7 +80,7 @@ pub struct GlobalHotkeyHub {
 }
 
 impl GlobalHotkeyHub {
-    /// 尝试启动 OS 级全局热键（F2 → 截图，Ctrl+N → 截图）。
+    /// 尝试启动 OS 级全局热键（F2/Ctrl+N → 区域，F3 → 全屏）。
     pub fn start() -> Self {
         let (tx, rx) = mpsc::channel();
         let stop = std::sync::Arc::new(AtomicBool::new(false));
@@ -89,7 +89,7 @@ impl GlobalHotkeyHub {
         match spawn_global_hotkey_thread(tx.clone(), std::sync::Arc::clone(&stop)) {
             Ok(join) => {
                 notes.push(
-                    "global-hotkey: F2 + Ctrl+N registered (X11/XWayland path; may not fire for pure Wayland-focused apps)".into(),
+                    "global-hotkey: F2 + Ctrl+N registered; F3 full-display registration attempted (X11/XWayland path; may not fire for pure Wayland-focused apps)".into(),
                 );
                 notes.push(
                     "also: `pinora capture` over single-instance socket works from KDE System Settings".into(),
@@ -178,6 +178,13 @@ fn spawn_global_hotkey_thread(
         .register(ctrl_n)
         .map_err(|e| format!("register Ctrl+N: {e}"))?;
 
+    // F3：当前目标显示器全屏截图；注册失败不影响区域截图。
+    let f3 = HotKey::new(None, Code::F3);
+    let f3_id = f3.id();
+    if let Err(e) = manager.register(f3) {
+        eprintln!("pinora: optional F3 full-display hotkey skipped: {e}");
+    }
+
     // 可选：Ctrl+Shift+S 作为更不易冲突的备选
     let ctrl_shift_s = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyS);
     let ctrl_shift_s_id = ctrl_shift_s.id();
@@ -195,7 +202,9 @@ fn spawn_global_hotkey_thread(
                 match receiver.try_recv() {
                     Ok(event) if event.state() == HotKeyState::Pressed => {
                         let id = event.id();
-                        if id == f2_id || id == ctrl_n_id || id == ctrl_shift_s_id {
+                        if id == f3_id {
+                            let _ = tx.send(ActionId::CaptureFullDisplay);
+                        } else if id == f2_id || id == ctrl_n_id || id == ctrl_shift_s_id {
                             let _ = tx.send(ActionId::CaptureRegionAndPin);
                         }
                     }

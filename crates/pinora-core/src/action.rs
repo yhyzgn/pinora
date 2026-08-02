@@ -7,6 +7,8 @@ use std::fmt;
 pub enum ActionId {
     /// 区域捕获并贴图（默认演示动作用固定区域）。
     CaptureRegionAndPin,
+    /// 捕获当前目标显示器的完整图像。
+    CaptureFullDisplay,
     /// 将最近一次捕获保存为 PNG。
     SaveLastCapture,
     /// 将最近一次捕获复制到剪贴板端口。
@@ -19,6 +21,7 @@ impl ActionId {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::CaptureRegionAndPin => "capture_region_and_pin",
+            Self::CaptureFullDisplay => "capture_full_display",
             Self::SaveLastCapture => "save_last_capture",
             Self::CopyLastCapture => "copy_last_capture",
             Self::Quit => "quit",
@@ -59,6 +62,10 @@ mod tests {
         assert_eq!(
             ActionId::CaptureRegionAndPin.as_str(),
             "capture_region_and_pin"
+        );
+        assert_eq!(
+            ActionId::CaptureFullDisplay.as_str(),
+            "capture_full_display"
         );
     }
 }

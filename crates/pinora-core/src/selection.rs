@@ -58,6 +58,25 @@ impl SelectionSession {
         self.cursor = None;
     }
 
+    /// 选中整个受限区域，返回经过最小尺寸校验的矩形。
+    pub fn select_all(&mut self) -> Result<PixelRect, PinoraError> {
+        let bounds = self.bounds.ok_or_else(|| {
+            PinoraError::new(ErrorCode::CommandRejected, "selection bounds are required")
+        })?;
+        if bounds.size.is_empty() {
+            return Err(PinoraError::new(
+                ErrorCode::CommandRejected,
+                "selection bounds are empty",
+            ));
+        }
+        self.begin_drag(bounds.origin);
+        self.update_cursor(PixelPoint::new(
+            bounds.right().saturating_sub(1),
+            bounds.bottom().saturating_sub(1),
+        ));
+        self.try_confirm()
+    }
+
     pub fn has_anchor(&self) -> bool {
         self.anchor.is_some()
     }
@@ -195,6 +214,17 @@ mod tests {
         s.nudge(5, -3);
         let r = s.preview_rect().unwrap();
         assert_eq!(r.origin, PixelPoint::new(15, 7));
+    }
+
+    #[test]
+    fn select_all_covers_the_full_bounded_image() {
+        let mut s = SelectionSession::new()
+            .with_bounds(PixelRect::new(-20, 15, 1920, 1080))
+            .with_min_edge(2);
+
+        let rect = s.select_all().unwrap();
+
+        assert_eq!(rect, PixelRect::new(-20, 15, 1920, 1080));
     }
 
     #[test]

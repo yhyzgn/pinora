@@ -12,6 +12,7 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayAction {
     Capture,
+    CaptureFullDisplay,
     Settings,
     History,
     ShowAllPins,
@@ -24,6 +25,7 @@ pub enum TrayAction {
 pub struct AppTray {
     _tray: TrayIcon,
     capture_id: tray_icon::menu::MenuId,
+    capture_full_display_id: tray_icon::menu::MenuId,
     settings_id: tray_icon::menu::MenuId,
     history_id: tray_icon::menu::MenuId,
     show_all_pins_id: tray_icon::menu::MenuId,
@@ -59,6 +61,9 @@ impl AppTray {
         while let Ok(ev) = MenuEvent::receiver().try_recv() {
             if ev.id == self.capture_id {
                 return Some(TrayAction::Capture);
+            }
+            if ev.id == self.capture_full_display_id {
+                return Some(TrayAction::CaptureFullDisplay);
             }
             if ev.id == self.settings_id {
                 return Some(TrayAction::Settings);
@@ -96,6 +101,7 @@ fn try_new_inner() -> Result<AppTray, String> {
     let icon = make_icon().map_err(|e| format!("tray icon: {e}"))?;
     let menu = Menu::new();
     let capture = MenuItem::new("截图 (F2)", true, None);
+    let capture_full_display = MenuItem::new("全屏截图 (F3)", true, None);
     let settings = MenuItem::new("设置", true, None);
     let history = MenuItem::new("历史", true, None);
     let show_all_pins = MenuItem::new("显示全部贴图", true, None);
@@ -104,6 +110,8 @@ fn try_new_inner() -> Result<AppTray, String> {
     let quit = MenuItem::new("退出", true, None);
     menu.append(&capture)
         .map_err(|e| format!("menu append capture: {e}"))?;
+    menu.append(&capture_full_display)
+        .map_err(|e| format!("menu append full-display capture: {e}"))?;
     menu.append(&settings)
         .map_err(|e| format!("menu append settings: {e}"))?;
     menu.append(&history)
@@ -122,6 +130,7 @@ fn try_new_inner() -> Result<AppTray, String> {
         .map_err(|e| format!("menu append quit: {e}"))?;
 
     let capture_id = capture.id().clone();
+    let capture_full_display_id = capture_full_display.id().clone();
     let settings_id = settings.id().clone();
     let history_id = history.id().clone();
     let show_all_pins_id = show_all_pins.id().clone();
@@ -139,6 +148,7 @@ fn try_new_inner() -> Result<AppTray, String> {
     Ok(AppTray {
         _tray: tray,
         capture_id,
+        capture_full_display_id,
         settings_id,
         history_id,
         show_all_pins_id,

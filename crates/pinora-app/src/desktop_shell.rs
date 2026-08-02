@@ -127,7 +127,9 @@ where
         println!("pinora: hotkey: {note}");
     }
     if hotkeys.status().available {
-        println!("pinora: global hotkeys: F2 / Ctrl+N / Ctrl+Shift+S → capture");
+        println!(
+            "pinora: global hotkeys: F2 / Ctrl+N / Ctrl+Shift+S → region, F3 → full display when registered"
+        );
     } else {
         println!("pinora: global hotkeys unavailable — use window focus keys or `pinora capture`");
     }
@@ -190,6 +192,7 @@ where
         history_store,
         history_index,
         start_capture_wait: None,
+        capture_mode: CaptureMode::Region,
         tray,
         default_pin_opacity,
     };
@@ -234,6 +237,32 @@ enum Mode {
     Idle,
 }
 
+/// 截图会话的初始选区模式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureMode {
+    Region,
+    FullDisplay,
+}
+
+impl CaptureMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Region => "region",
+            Self::FullDisplay => "full-display",
+        }
+    }
+}
+
+fn select_initial_capture_area(
+    session: &mut SelectionSession,
+    capture_mode: CaptureMode,
+) -> Result<Option<PixelRect>, PinoraError> {
+    match capture_mode {
+        CaptureMode::Region => Ok(None),
+        CaptureMode::FullDisplay => session.select_all().map(Some),
+    }
+}
+
 /// 后台线程准备好的全屏预览（原图像素 + 暗化底图）。
 struct PreparedPreview {
     image: CaptureImage,
@@ -244,8 +273,16 @@ struct PreparedPreview {
 /// 截屏中：后台抓当前屏（无全屏遮罩，避免截到自己）；完成后立刻开真实 overlay。
 struct LoadingState {
     preview_rx: Receiver<Result<PreparedPreview, String>>,
+    target: OverlayTarget,
+}
+
+/// 打开 Overlay 所需的捕获来源与初始交互意图。
+struct OverlayTarget {
     display_id: DisplayId,
     display_origin: PixelPoint,
+    image_width: u32,
+    image_height: u32,
+    capture_mode: CaptureMode,
 }
 
 /// Idle 时保持一个小控制窗，否则 Wayland 下无焦点窗口时 F2 永远收不到。
@@ -411,6 +448,8 @@ struct DesktopApp<L, P, C, S> {
     history_index: HistoryIndex,
     /// 等待 frame-cache 首帧的起始时间；超时走 cold path。
     start_capture_wait: Option<Instant>,
+    /// 当前会话在 Overlay 打开后的初始选区；cold capture 必须保持这一意图。
+    capture_mode: CaptureMode,
     tray: Option<AppTray>,
     /// 设置驱动的新建贴图默认不透明度；运行时手动调整后不再覆盖。
     default_pin_opacity: f64,
@@ -441,6 +480,10 @@ where
                 TrayAction::Capture => {
                     println!("pinora: tray → capture");
                     self.request_new_capture(event_loop);
+                }
+                TrayAction::CaptureFullDisplay => {
+                    println!("pinora: tray → full-display capture");
+                    self.request_full_display_capture(event_loop);
                 }
                 TrayAction::Settings => {
                     println!("pinora: tray → settings");
@@ -639,6 +682,10 @@ where
                     println!("pinora: global hotkey → capture");
                     self.request_new_capture(event_loop);
                 }
+                ActionId::CaptureFullDisplay => {
+                    println!("pinora: global hotkey → full-display capture");
+                    self.request_full_display_capture(event_loop);
+                }
                 ActionId::Quit => {
                     self.quit = true;
                     event_loop.exit();
@@ -738,6 +785,7 @@ where
     /// 弹出选区 overlay：优先用后台预截帧（瞬时），否则再等一次截屏。
     fn begin_screen_grab(&mut self, event_loop: &ActiveEventLoop) -> Result<(), PinoraError> {
         self.hide_control();
+        let capture_mode = self.capture_mode;
         // 1) 缓存命中 → 立刻开 overlay（目标 < 16ms）
         // 允许最多 2s 龄的帧；后台约每 0.5s 刷新一轮
         let cached_frame = self.frame_cache.as_ref().and_then(|cache| {
@@ -766,10 +814,13 @@ where
             return self.open_overlay_with_preview(
                 event_loop,
                 prep,
-                frame.display_id,
-                frame.display_origin,
-                img_w,
-                img_h,
+                OverlayTarget {
+                    display_id: frame.display_id,
+                    display_origin: frame.display_origin,
+                    image_width: img_w,
+                    image_height: img_h,
+                    capture_mode,
+                },
             );
         }
 
@@ -816,8 +867,13 @@ where
 
         self.loading = Some(LoadingState {
             preview_rx: rx,
-            display_id: display.id,
-            display_origin: display.bounds.origin,
+            target: OverlayTarget {
+                display_id: display.id,
+                display_origin: display.bounds.origin,
+                image_width: display.bounds.size.width,
+                image_height: display.bounds.size.height,
+                capture_mode,
+            },
         });
         self.mode = Mode::LoadingCapture;
         Ok(())
@@ -838,7 +894,7 @@ where
             return Ok(());
         }
         let attrs = Window::default_attributes()
-            .with_title("Pinora — F2 截图 · H 历史 · S 设置 · Ctrl+Q 退出")
+            .with_title("Pinora — F2 区域 · F3 全屏 · H 历史 · S 设置 · Ctrl+Q 退出")
             .with_inner_size(PhysicalSize::new(420, 64))
             .with_decorations(true)
             .with_resizable(false)
@@ -913,9 +969,8 @@ where
                     event_loop.exit();
                     return;
                 }
-                if self.is_new_capture_key(&event) {
+                if self.handle_capture_shortcut(event_loop, &event) {
                     self.close_settings();
-                    self.request_new_capture(event_loop);
                     return;
                 }
                 let key = match event.physical_key {
@@ -1117,9 +1172,8 @@ where
                     event_loop.exit();
                     return;
                 }
-                if self.is_new_capture_key(&event) {
+                if self.handle_capture_shortcut(event_loop, &event) {
                     self.close_history();
-                    self.request_new_capture(event_loop);
                     return;
                 }
                 let key = match event.physical_key {
@@ -1337,8 +1391,7 @@ where
                 if self.is_quit_key(&event) {
                     self.quit = true;
                     event_loop.exit();
-                } else if self.is_new_capture_key(&event) {
-                    self.request_new_capture(event_loop);
+                } else if self.handle_capture_shortcut(event_loop, &event) {
                 } else if matches!(event.logical_key, Key::Character(ref c) if c == "s" || c == "S")
                     || (self.modifiers.control_key()
                         && matches!(event.logical_key, Key::Character(ref c) if c == ","))
@@ -1367,8 +1420,16 @@ where
         }
     }
 
-    /// 任意模式触发再截：立刻关 overlay/loading，开新一轮 grab。
     fn request_new_capture(&mut self, event_loop: &ActiveEventLoop) {
+        self.request_capture(event_loop, CaptureMode::Region);
+    }
+
+    fn request_full_display_capture(&mut self, event_loop: &ActiveEventLoop) {
+        self.request_capture(event_loop, CaptureMode::FullDisplay);
+    }
+
+    /// 任意模式触发再截：立刻关 overlay/loading，开新一轮 grab。
+    fn request_capture(&mut self, event_loop: &ActiveEventLoop, capture_mode: CaptureMode) {
         if let Some(ov) = self.overlay.take() {
             self.ocr_jobs.close_owner(JobOwner::Session(ov.session_id));
             self.export_jobs
@@ -1379,8 +1440,9 @@ where
         self.close_history();
         let _ = self.loading.take();
         self.hide_control();
+        self.capture_mode = capture_mode;
         self.mode = Mode::StartCapture;
-        println!("pinora: new capture requested (F2/Ctrl+N)");
+        println!("pinora: new {} capture requested", capture_mode.label());
         if let Err(e) = self.begin_screen_grab(event_loop) {
             self.error = Some(e);
             event_loop.exit();
@@ -1430,25 +1492,25 @@ where
             ));
         }
 
-        self.open_overlay_with_preview(
-            event_loop,
-            prep,
-            loading.display_id,
-            loading.display_origin,
-            img_w,
-            img_h,
-        )
+        let mut target = loading.target;
+        target.image_width = img_w;
+        target.image_height = img_h;
+        self.open_overlay_with_preview(event_loop, prep, target)
     }
 
     fn open_overlay_with_preview(
         &mut self,
         event_loop: &ActiveEventLoop,
         prep: PreparedPreview,
-        display_id: DisplayId,
-        display_origin: PixelPoint,
-        img_w: u32,
-        img_h: u32,
+        target: OverlayTarget,
     ) -> Result<(), PinoraError> {
+        let OverlayTarget {
+            display_id,
+            display_origin,
+            image_width: img_w,
+            image_height: img_h,
+            capture_mode,
+        } = target;
         self.ensure_context(event_loop);
         let context = self.context.as_ref().ok_or_else(|| {
             PinoraError::new(ErrorCode::Internal, "softbuffer context unavailable")
@@ -1541,6 +1603,22 @@ where
             session_id: SessionId::new(),
             annotation_asset: None,
         });
+        if let Some(selection) = select_initial_capture_area(
+            &mut self
+                .overlay
+                .as_mut()
+                .expect("overlay was just created")
+                .session,
+            capture_mode,
+        )? {
+            let overlay = self.overlay.as_mut().expect("overlay was just created");
+            overlay.phase = OverlayPhase::Ready;
+            refresh_overlay_ready(overlay);
+            println!(
+                "pinora: full-display selection ready {}x{}",
+                selection.size.width, selection.size.height
+            );
+        }
         self.mode = Mode::Idle;
         window.request_redraw();
         Ok(())
@@ -1556,8 +1634,7 @@ where
                 event_loop.exit();
                 return;
             }
-            if self.is_new_capture_key(key) {
-                self.request_new_capture(event_loop);
+            if self.handle_capture_shortcut(event_loop, key) {
                 return;
             }
         }
@@ -2529,8 +2606,7 @@ where
                     event_loop.exit();
                     return;
                 }
-                if self.is_new_capture_key(&event) {
-                    self.request_new_capture(event_loop);
+                if self.handle_capture_shortcut(event_loop, &event) {
                     return;
                 }
                 if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
@@ -2942,6 +3018,27 @@ where
         let ctrl_n = self.modifiers.control_key()
             && matches!(event.physical_key, PhysicalKey::Code(KeyCode::KeyN));
         f2 || ctrl_n
+    }
+
+    fn is_full_display_capture_key(&self, event: &winit::event::KeyEvent) -> bool {
+        matches!(event.logical_key, Key::Named(NamedKey::F3))
+            || matches!(event.physical_key, PhysicalKey::Code(KeyCode::F3))
+    }
+
+    fn handle_capture_shortcut(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        event: &winit::event::KeyEvent,
+    ) -> bool {
+        if self.is_full_display_capture_key(event) {
+            self.request_full_display_capture(event_loop);
+            true
+        } else if self.is_new_capture_key(event) {
+            self.request_new_capture(event_loop);
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -3537,6 +3634,23 @@ mod overlay_scale_tests {
         let r = buf_rect_to_src(PixelRect::new(0, 0, 1920, 1080), 1920, 1080, 3840, 2160);
         assert_eq!(r.size.width, 3840);
         assert_eq!(r.size.height, 2160);
+    }
+
+    #[test]
+    fn capture_mode_preserves_region_or_preselects_the_full_image() {
+        let bounds = PixelRect::new(-20, 15, 1920, 1080);
+        let mut region = SelectionSession::new().with_bounds(bounds).with_min_edge(2);
+        let mut full = SelectionSession::new().with_bounds(bounds).with_min_edge(2);
+
+        assert_eq!(
+            select_initial_capture_area(&mut region, CaptureMode::Region).unwrap(),
+            None
+        );
+        assert_eq!(region.preview_rect(), None);
+        assert_eq!(
+            select_initial_capture_area(&mut full, CaptureMode::FullDisplay).unwrap(),
+            Some(bounds)
+        );
     }
 
     #[test]

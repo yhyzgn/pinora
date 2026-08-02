@@ -297,6 +297,17 @@ where
                     self.default_pin_position,
                 ))
             }
+            ActionId::CaptureFullDisplay => {
+                let displays = self.capture.displays()?;
+                let display = displays
+                    .first()
+                    .map(|d| d.id.clone())
+                    .ok_or_else(|| fail(ErrorCode::NotFound, "no display for capture"))?;
+                Ok(Command::capture_and_pin(
+                    CaptureRequest::FullDisplay { display },
+                    self.default_pin_position,
+                ))
+            }
             ActionId::SaveLastCapture => {
                 let image_id = self
                     .state
@@ -486,6 +497,23 @@ mod tests {
             .unwrap();
         assert_eq!(rt.state().pin_count(), 1);
         assert!(rt.state().last_capture_id.is_some());
+    }
+
+    #[test]
+    fn invoke_action_capture_full_display_and_pin() {
+        let mut rt = runtime();
+        rt.bootstrap().unwrap();
+        let display = rt.capture_provider().displays().unwrap().remove(0);
+
+        rt.dispatch(Command::invoke_action(ActionId::CaptureFullDisplay))
+            .unwrap();
+
+        let image_id = rt.state().last_capture_id.unwrap();
+        assert_eq!(
+            rt.state().image(image_id).unwrap().source_rect,
+            display.bounds
+        );
+        assert_eq!(rt.state().pin_count(), 1);
     }
 
     #[test]
