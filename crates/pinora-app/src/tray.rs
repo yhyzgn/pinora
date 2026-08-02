@@ -6,18 +6,22 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::Duration;
 
-use pinora_core::{DisplayId, DisplayInfo};
+use pinora_core::{CaptureWindowInfo, DisplayId, DisplayInfo};
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
+/// 避免窗口枚举把 tray 菜单膨胀为大量不可快速扫描的项目。
+const MAX_WINDOW_CAPTURE_CANDIDATES: usize = 20;
+
 /// 托盘菜单动作。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TrayAction {
     Capture,
     CaptureRegionAfter(Duration),
     CancelDelayedCapture,
     CaptureFullDisplay,
     CaptureDisplay(DisplayId),
+    CaptureWindow(CaptureWindowInfo),
     Settings,
     History,
     ShowAllPins,
@@ -36,6 +40,7 @@ pub struct AppTray {
     cancel_delayed_capture_item: MenuItem,
     capture_full_display_id: tray_icon::menu::MenuId,
     capture_display_ids: Vec<(MenuId, DisplayId)>,
+    capture_window_ids: Vec<(MenuId, CaptureWindowInfo)>,
     settings_id: tray_icon::menu::MenuId,
     history_id: tray_icon::menu::MenuId,
     show_all_pins_id: tray_icon::menu::MenuId,
@@ -46,9 +51,12 @@ pub struct AppTray {
 
 impl AppTray {
     /// 创建托盘图标；调用方决定失败是否允许启动。
-    pub fn try_new(displays: &[DisplayInfo]) -> Result<Self, String> {
+    pub fn try_new(
+        displays: &[DisplayInfo],
+        windows: &[CaptureWindowInfo],
+    ) -> Result<Self, String> {
         // tray-icon 内部可能 panic（未 gtk::init），必须 catch
-        match catch_unwind(AssertUnwindSafe(|| try_new_inner(displays))) {
+        match catch_unwind(AssertUnwindSafe(|| try_new_inner(displays, windows))) {
             Ok(r) => r,
             Err(_) => Err("tray panicked (often GTK not initialized or no display)".into()),
         }
@@ -84,6 +92,9 @@ impl AppTray {
             if let Some(action) = display_capture_action(&ev.id, &self.capture_display_ids) {
                 return Some(action);
             }
+            if let Some(action) = window_capture_action(&ev.id, &self.capture_window_ids) {
+                return Some(action);
+            }
             if ev.id == self.settings_id {
                 return Some(TrayAction::Settings);
             }
@@ -115,7 +126,10 @@ impl AppTray {
     }
 }
 
-fn try_new_inner(displays: &[DisplayInfo]) -> Result<AppTray, String> {
+fn try_new_inner(
+    displays: &[DisplayInfo],
+    windows: &[CaptureWindowInfo],
+) -> Result<AppTray, String> {
     // Linux tray-icon → appindicator → GTK 菜单；GTK 不应进入其他 target。
     #[cfg(target_os = "linux")]
     if gtk::init().is_err() {
@@ -134,6 +148,7 @@ fn try_new_inner(displays: &[DisplayInfo]) -> Result<AppTray, String> {
     let cancel_delayed_capture = MenuItem::new("取消延时截图", false, None);
     let capture_full_display = MenuItem::new("全屏截图 (F3)", true, None);
     let mut capture_display_ids = Vec::new();
+    let mut capture_window_ids = Vec::new();
     let settings = MenuItem::new("设置", true, None);
     let history = MenuItem::new("历史", true, None);
     let show_all_pins = MenuItem::new("显示全部贴图", true, None);
@@ -162,6 +177,17 @@ fn try_new_inner(displays: &[DisplayInfo]) -> Result<AppTray, String> {
             menu.append(&capture_display)
                 .map_err(|e| format!("menu append display capture: {e}"))?;
             capture_display_ids.push((capture_display.id().clone(), display.id.clone()));
+        }
+    }
+    let windows = tray_window_candidates(windows);
+    if !windows.is_empty() {
+        menu.append(&PredefinedMenuItem::separator())
+            .map_err(|e| format!("menu sep windows: {e}"))?;
+        for window in windows {
+            let capture_window = MenuItem::new(window_capture_label(window), true, None);
+            menu.append(&capture_window)
+                .map_err(|e| format!("menu append window capture: {e}"))?;
+            capture_window_ids.push((capture_window.id().clone(), window.clone()));
         }
     }
     menu.append(&settings)
@@ -212,6 +238,7 @@ fn try_new_inner(displays: &[DisplayInfo]) -> Result<AppTray, String> {
         cancel_delayed_capture_item: cancel_delayed_capture,
         capture_full_display_id,
         capture_display_ids,
+        capture_window_ids,
         settings_id,
         history_id,
         show_all_pins_id,
@@ -219,6 +246,10 @@ fn try_new_inner(displays: &[DisplayInfo]) -> Result<AppTray, String> {
         close_all_pins_id,
         quit_id,
     })
+}
+
+fn tray_window_candidates(windows: &[CaptureWindowInfo]) -> &[CaptureWindowInfo] {
+    &windows[..windows.len().min(MAX_WINDOW_CAPTURE_CANDIDATES)]
 }
 
 fn display_capture_label(display: &DisplayInfo) -> String {
@@ -243,6 +274,16 @@ fn display_capture_action(
         .map(|(_, display_id)| TrayAction::CaptureDisplay(display_id.clone()))
 }
 
+fn window_capture_action(
+    menu_id: &MenuId,
+    window_ids: &[(MenuId, CaptureWindowInfo)],
+) -> Option<TrayAction> {
+    window_ids
+        .iter()
+        .find(|(id, _)| id == menu_id)
+        .map(|(_, window)| TrayAction::CaptureWindow(window.clone()))
+}
+
 fn delayed_capture_action(
     menu_id: &MenuId,
     delay_capture_ids: &[(MenuId, Duration); 3],
@@ -251,6 +292,41 @@ fn delayed_capture_action(
         .iter()
         .find(|(id, _)| id == menu_id)
         .map(|(_, delay)| TrayAction::CaptureRegionAfter(*delay))
+}
+
+fn window_capture_label(window: &CaptureWindowInfo) -> String {
+    let app_name = sanitize_menu_text(&window.app_name, 24, "未知应用");
+    let title = sanitize_menu_text(&window.title, 48, "无标题窗口");
+    format!(
+        "窗口截图：{app_name} - {title} ({}x{})",
+        window.bounds.size.width, window.bounds.size.height
+    )
+}
+
+fn sanitize_menu_text(value: &str, max_chars: usize, fallback: &str) -> String {
+    let mut output = String::new();
+    let mut previous_was_space = true;
+    for character in value.chars() {
+        if character.is_control() || character.is_whitespace() {
+            if !previous_was_space {
+                output.push(' ');
+                previous_was_space = true;
+            }
+            continue;
+        }
+        if output.chars().count() == max_chars {
+            output.push_str("...");
+            break;
+        }
+        output.push(character);
+        previous_was_space = false;
+    }
+    let output = output.trim();
+    if output.is_empty() {
+        fallback.into()
+    } else {
+        output.into()
+    }
 }
 
 fn make_icon() -> Result<Icon, String> {
@@ -289,7 +365,7 @@ fn make_icon() -> Result<Icon, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pinora_core::PixelRect;
+    use pinora_core::{CaptureWindowId, PixelRect};
 
     fn display(id: &str, name: &str, x: i32, y: i32) -> DisplayInfo {
         DisplayInfo {
@@ -297,6 +373,18 @@ mod tests {
             name: name.into(),
             bounds: PixelRect::new(x, y, 2560, 1440),
             scale: 1.25,
+        }
+    }
+
+    fn window() -> CaptureWindowInfo {
+        CaptureWindowInfo {
+            id: CaptureWindowId::from_raw(999),
+            app_name: "Browser\nApplication".into(),
+            title: "Private\tDocumentation\u{0} with a title that exceeds the menu limit".into(),
+            bounds: PixelRect::new(10, 20, 1280, 720),
+            display: DisplayId::new("private-display-id"),
+            scale: 1.25,
+            is_minimized: false,
         }
     }
 
@@ -337,5 +425,40 @@ mod tests {
             Some(TrayAction::CaptureRegionAfter(Duration::from_secs(3)))
         );
         assert!(delayed_capture_action(&MenuId::new("other"), &delays).is_none());
+    }
+
+    #[test]
+    fn window_capture_action_preserves_the_internal_snapshot_without_displaying_it() {
+        let menu_id = MenuId::new("capture-window");
+        let target = window();
+        let candidates = vec![(menu_id.clone(), target.clone())];
+
+        assert_eq!(
+            window_capture_action(&menu_id, &candidates),
+            Some(TrayAction::CaptureWindow(target))
+        );
+        assert!(window_capture_action(&MenuId::new("other"), &candidates).is_none());
+    }
+
+    #[test]
+    fn window_capture_label_sanitizes_and_truncates_local_text_without_exposing_ids() {
+        let label = window_capture_label(&window());
+
+        assert!(label.contains("Browser Application"));
+        assert!(!label.contains('\n'));
+        assert!(!label.contains('\t'));
+        assert!(!label.contains("999"));
+        assert!(!label.contains("private-display-id"));
+        assert!(label.contains("1280x720"));
+    }
+
+    #[test]
+    fn window_capture_candidates_are_bounded_for_a_responsive_tray_menu() {
+        let candidates = vec![window(); MAX_WINDOW_CAPTURE_CANDIDATES + 1];
+
+        assert_eq!(
+            tray_window_candidates(&candidates).len(),
+            MAX_WINDOW_CAPTURE_CANDIDATES
+        );
     }
 }

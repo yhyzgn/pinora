@@ -42,10 +42,11 @@ use crate::tray::{AppTray, TrayAction};
 use crate::window_policy::{self, AuxiliaryWindowKind};
 use pinora_core::{
     ActionId, AnnotateSession, AnnotateTool, AnnotationRevision, AssetGeneration, AssetRef,
-    CaptureImage, CaptureProvider, CaptureRequest, Command, CorrelationId, DisplayId, DisplayInfo,
-    DomainEventKind, ErrorCode, HistoryEntry, HistoryIndex, ImageId, ImageSink, JobId, JobKind,
-    JobOwner, JobSpec, OcrResult, OcrTextSelection, OcrWordRef, PinId, PinTransform, PinoraError,
-    PixelPoint, PixelRect, SelectionSession, SessionId, bake_annotations, render_preview_rgba,
+    CaptureImage, CaptureProvider, CaptureRequest, CaptureWindowInfo, Command, CorrelationId,
+    DisplayId, DisplayInfo, DomainEventKind, ErrorCode, HistoryEntry, HistoryIndex, ImageId,
+    ImageSink, JobId, JobKind, JobOwner, JobSpec, OcrResult, OcrTextSelection, OcrWordRef, PinId,
+    PinTransform, PinoraError, PixelPoint, PixelRect, SelectionSession, SessionId,
+    bake_annotations, render_preview_rgba,
 };
 use softbuffer::{Context, Rect as DamageRect, Surface};
 use winit::application::ApplicationHandler;
@@ -163,7 +164,14 @@ where
             Vec::new()
         }
     };
-    let tray = require_tray(AppTray::try_new(&tray_displays))?;
+    let tray_windows = match runtime.capture_provider().windows() {
+        Ok(windows) => windows,
+        Err(error) => {
+            eprintln!("pinora: tray window capture unavailable ({})", error.code);
+            Vec::new()
+        }
+    };
+    let tray = require_tray(AppTray::try_new(&tray_displays, &tray_windows))?;
     println!("pinora: system tray ready (click / menu → capture)");
 
     // 后台预截屏：空闲时持续备帧，F2 时 overlay 瞬时弹出
@@ -282,13 +290,15 @@ enum Mode {
 enum CaptureMode {
     Region,
     FullDisplay,
+    Window,
 }
 
-/// 捕获会话的目标显示器。默认路径保持既有“最大面积显示器”语义。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// 捕获会话目标。窗口快照必须在实际捕获前由后端重新验证。
+#[derive(Clone, PartialEq)]
 enum CaptureTarget {
     DefaultLargest,
     Display(DisplayId),
+    Window(CaptureWindowInfo),
 }
 
 impl CaptureMode {
@@ -296,6 +306,17 @@ impl CaptureMode {
         match self {
             Self::Region => "region",
             Self::FullDisplay => "full-display",
+            Self::Window => "window",
+        }
+    }
+}
+
+impl CaptureTarget {
+    fn log_label(&self) -> &'static str {
+        match self {
+            Self::DefaultLargest => "default-display",
+            Self::Display(_) => "selected-display",
+            Self::Window(_) => "selected-window",
         }
     }
 }
@@ -310,7 +331,7 @@ enum OverlayInitialSelection {
 fn initial_selection_for_capture(capture_mode: CaptureMode) -> OverlayInitialSelection {
     match capture_mode {
         CaptureMode::Region => OverlayInitialSelection::Manual,
-        CaptureMode::FullDisplay => OverlayInitialSelection::FullImage,
+        CaptureMode::FullDisplay | CaptureMode::Window => OverlayInitialSelection::FullImage,
     }
 }
 
@@ -334,6 +355,10 @@ fn resolve_capture_target(
                     format!("selected display is no longer available: {}", display_id.0),
                 )
             }),
+        CaptureTarget::Window(_) => Err(PinoraError::new(
+            ErrorCode::InvalidState,
+            "window capture target cannot be resolved as a display",
+        )),
     }
 }
 
@@ -363,16 +388,25 @@ fn prepare_preview(image: CaptureImage) -> PreparedPreview {
     }
 }
 
+fn preview_buffers_match_image(preview: &PreparedPreview) -> bool {
+    let Some(expected_len) = usize::try_from(preview.image.pixels.size.area()).ok() else {
+        return false;
+    };
+    preview.base.len() == expected_len && preview.dimmed.len() == expected_len
+}
+
 /// Overlay 的窗口呈现方式。历史编辑不能假装当前桌面仍是原始全屏捕获。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OverlayPresentation {
     ScreenCapture,
+    WindowCapture,
     HistoryEditor,
 }
 
 /// 截屏中：后台抓当前屏（无全屏遮罩，避免截到自己）；完成后立刻开真实 overlay。
 struct LoadingState {
-    preview_rx: Receiver<Result<PreparedPreview, String>>,
+    // 后台捕获错误只跨线程传递稳定错误码，避免平台后端文本泄露窗口身份或标题。
+    preview_rx: Receiver<Result<PreparedPreview, ErrorCode>>,
     target: OverlayTarget,
 }
 
@@ -418,6 +452,18 @@ fn history_edit_target(image: &CaptureImage) -> OverlayTarget {
         image_height: image.pixels.size.height,
         initial_selection: OverlayInitialSelection::FullImage,
         presentation: OverlayPresentation::HistoryEditor,
+        min_selection_edge: 1,
+    }
+}
+
+fn window_capture_overlay_target(window: &CaptureWindowInfo) -> OverlayTarget {
+    OverlayTarget {
+        display_id: window.display.clone(),
+        display_origin: window.bounds.origin,
+        image_width: window.bounds.size.width,
+        image_height: window.bounds.size.height,
+        initial_selection: OverlayInitialSelection::FullImage,
+        presentation: OverlayPresentation::WindowCapture,
         min_selection_edge: 1,
     }
 }
@@ -698,6 +744,10 @@ where
                 TrayAction::CaptureDisplay(display_id) => {
                     println!("pinora: tray → display capture ({})", display_id.0);
                     self.request_display_capture(event_loop, display_id);
+                }
+                TrayAction::CaptureWindow(target) => {
+                    println!("pinora: tray → window capture");
+                    self.request_window_capture(event_loop, target);
                 }
                 TrayAction::Settings => {
                     println!("pinora: tray → settings");
@@ -1017,7 +1067,7 @@ where
             CaptureTarget::DefaultLargest => {
                 self.frame_cache.as_ref().is_some_and(FrameCache::is_ready)
             }
-            CaptureTarget::Display(_) => true,
+            CaptureTarget::Display(_) | CaptureTarget::Window(_) => true,
         };
         if !cache_ready {
             if let Some(cache) = &self.frame_cache {
@@ -1056,11 +1106,15 @@ where
                 let displays = runtime.capture_provider().displays()?;
                 Some(resolve_capture_target(&displays, &self.capture_target)?)
             }
+            CaptureTarget::Window(_) => None,
         };
         // 1) 缓存命中 → 立刻开 overlay（目标 < 16ms）
         // 允许最多 2s 龄的帧；后台约每 0.5s 刷新一轮
         let cached_frame = allow_cached_frame
             .then(|| {
+                if matches!(self.capture_target, CaptureTarget::Window(_)) {
+                    return None;
+                }
                 self.frame_cache.as_ref().and_then(|cache| {
                     if let Some(display) = explicit_display.as_ref() {
                         cache
@@ -1107,27 +1161,53 @@ where
             );
         }
 
-        // 2) 缓存未就绪（刚启动）：同步等待路径
+        // 2) 缓存未就绪或窗口目标：后台冷捕获。窗口绝不消费显示器预截帧。
         let rt = self.runtime.as_ref().unwrap();
-        let display = match explicit_display {
-            Some(display) => display,
-            None => {
-                let displays = rt.capture_provider().displays()?;
-                resolve_capture_target(&displays, &self.capture_target)?
+        let (request, target, log_target) = match &self.capture_target {
+            CaptureTarget::Window(window) => (
+                CaptureRequest::Window {
+                    target: window.clone(),
+                },
+                window_capture_overlay_target(window),
+                "selected window".to_owned(),
+            ),
+            CaptureTarget::DefaultLargest | CaptureTarget::Display(_) => {
+                let display = match explicit_display {
+                    Some(display) => display,
+                    None => {
+                        let displays = rt.capture_provider().displays()?;
+                        resolve_capture_target(&displays, &self.capture_target)?
+                    }
+                };
+                let image_width = display.bounds.size.width;
+                let image_height = display.bounds.size.height;
+                let display_name = display.name;
+                (
+                    CaptureRequest::FullDisplay {
+                        display: display.id.clone(),
+                    },
+                    OverlayTarget {
+                        display_id: display.id,
+                        display_origin: display.bounds.origin,
+                        image_width,
+                        image_height,
+                        initial_selection,
+                        presentation: OverlayPresentation::ScreenCapture,
+                        min_selection_edge: 2,
+                    },
+                    display_name,
+                )
             }
         };
 
         let provider = rt.capture_provider().clone();
-        let display_id = display.id.clone();
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
             let started = Instant::now();
             let result = provider
-                .capture(CaptureRequest::FullDisplay {
-                    display: display_id,
-                })
+                .capture(request)
                 .map(prepare_preview)
-                .map_err(|e| e.to_string());
+                .map_err(|error| error.code);
             println!(
                 "pinora: capture done in {:.0}ms (cold path)",
                 started.elapsed().as_secs_f64() * 1000.0
@@ -1135,22 +1215,11 @@ where
             let _ = tx.send(result);
         });
 
-        println!(
-            "pinora: cache miss — grabbing {} ({}x{})…",
-            display.name, display.bounds.size.width, display.bounds.size.height
-        );
+        println!("pinora: cache miss — grabbing {log_target}…");
 
         self.loading = Some(LoadingState {
             preview_rx: rx,
-            target: OverlayTarget {
-                display_id: display.id,
-                display_origin: display.bounds.origin,
-                image_width: display.bounds.size.width,
-                image_height: display.bounds.size.height,
-                initial_selection,
-                presentation: OverlayPresentation::ScreenCapture,
-                min_selection_edge: 2,
-            },
+            target,
         });
         self.mode = Mode::LoadingCapture;
         Ok(())
@@ -1849,6 +1918,14 @@ where
         );
     }
 
+    fn request_window_capture(&mut self, event_loop: &ActiveEventLoop, target: CaptureWindowInfo) {
+        self.request_capture(
+            event_loop,
+            CaptureMode::Window,
+            CaptureTarget::Window(target),
+        );
+    }
+
     fn request_delayed_region_capture(&mut self, delay: Duration) {
         if self.delayed_capture.is_some() {
             println!("pinora: delayed capture already active; use tray cancel first");
@@ -1923,9 +2000,9 @@ where
         self.capture_target = capture_target;
         self.mode = Mode::StartCapture;
         println!(
-            "pinora: new {} capture requested ({:?})",
+            "pinora: new {} capture requested ({})",
             capture_mode.label(),
-            self.capture_target
+            self.capture_target.log_label()
         );
         if let Err(e) = self.begin_screen_grab(event_loop, true) {
             self.handle_capture_start_error(e);
@@ -1933,8 +2010,27 @@ where
     }
 
     fn handle_capture_start_error(&mut self, error: PinoraError) {
+        if self.is_window_capture() {
+            self.finish_window_capture_failure(error);
+            return;
+        }
         eprintln!("pinora: capture start failed ({}) {error}", error.code);
         self.error = Some(error);
+        self.mode = Mode::Idle;
+        self.start_capture_wait = None;
+        self.resume_frame_cache();
+    }
+
+    fn is_window_capture(&self) -> bool {
+        matches!(&self.capture_target, CaptureTarget::Window(_))
+    }
+
+    fn finish_window_capture_failure(&mut self, error: PinoraError) {
+        eprintln!(
+            "pinora: window capture failed ({}); returning to tray",
+            error.code
+        );
+        let _ = self.loading.take();
         self.mode = Mode::Idle;
         self.start_capture_wait = None;
         self.resume_frame_cache();
@@ -1963,75 +2059,60 @@ where
         }
     }
 
+    fn handle_loading_capture_failure(&mut self, error: PinoraError) -> Result<(), PinoraError> {
+        if self.is_window_capture() {
+            self.finish_window_capture_failure(error);
+            return Ok(());
+        }
+        if self.delayed_capture.is_some() {
+            self.finish_delayed_capture_failure(error);
+            return Ok(());
+        }
+        self.cancel_loading();
+        Err(error)
+    }
+
     fn poll_loading_to_overlay(&mut self, event_loop: &ActiveEventLoop) -> Result<(), PinoraError> {
         let Some(loading) = self.loading.as_ref() else {
             return Ok(());
         };
-        let delayed_capture = self.delayed_capture.is_some();
         let prep = match loading.preview_rx.try_recv() {
             Ok(Ok(p)) => p,
-            Ok(Err(err)) => {
-                self.cancel_loading();
-                let error = PinoraError::new(
-                    ErrorCode::RetryablePlatform,
-                    format!("screen capture failed: {err}"),
-                );
-                if delayed_capture {
-                    eprintln!(
-                        "pinora: delayed capture failed ({}) {error}; returning to tray",
-                        error.code
-                    );
-                    return Ok(());
-                }
-                return Err(error);
+            Ok(Err(code)) => {
+                return self.handle_loading_capture_failure(PinoraError::new(
+                    code,
+                    "capture provider returned an error",
+                ));
             }
             Err(TryRecvError::Empty) => return Ok(()),
             Err(TryRecvError::Disconnected) => {
-                self.cancel_loading();
-                let error = PinoraError::new(ErrorCode::Internal, "capture thread disconnected");
-                if delayed_capture {
-                    eprintln!(
-                        "pinora: delayed capture failed ({}) {error}; returning to tray",
-                        error.code
-                    );
-                    return Ok(());
-                }
-                return Err(error);
+                return self.handle_loading_capture_failure(PinoraError::new(
+                    ErrorCode::Internal,
+                    "capture thread disconnected",
+                ));
             }
         };
 
         let loading = self.loading.take().unwrap();
+        if !preview_buffers_match_image(&prep) {
+            return self.handle_loading_capture_failure(PinoraError::new(
+                ErrorCode::Internal,
+                "capture buffer size mismatch",
+            ));
+        }
         let img_w = prep.image.pixels.size.width.max(1);
         let img_h = prep.image.pixels.size.height.max(1);
-        if prep.base.len() != (img_w as usize) * (img_h as usize) {
-            let error = PinoraError::new(ErrorCode::Internal, "capture buffer size mismatch");
-            if delayed_capture {
-                self.finish_delayed_capture_failure(error);
-                return Ok(());
-            }
-            return Err(error);
-        }
 
         let mut target = loading.target;
         target.image_width = img_w;
         target.image_height = img_h;
         // 此时 capture provider 已经取得真实像素，恢复不会进入本次截图。
-        if delayed_capture {
+        if self.delayed_capture.is_some() {
             self.restore_delayed_pins();
         }
         match self.open_overlay_with_preview(event_loop, prep, target) {
             Ok(()) => Ok(()),
-            Err(error) if delayed_capture => {
-                eprintln!(
-                    "pinora: delayed overlay open failed ({}) {error}; returning to tray",
-                    error.code
-                );
-                self.mode = Mode::Idle;
-                self.start_capture_wait = None;
-                self.resume_frame_cache();
-                Ok(())
-            }
-            Err(error) => Err(error),
+            Err(error) => self.handle_loading_capture_failure(error),
         }
     }
 
@@ -2066,6 +2147,20 @@ where
                         .with_fullscreen(Some(Fullscreen::Borderless(None)))
                         .with_cursor(CursorIcon::Crosshair)
                         .with_decorations(false)
+                        .with_visible(true),
+                )
+            }
+            OverlayPresentation::WindowCapture => {
+                let title = "Pinora Window Capture";
+                (
+                    title,
+                    Window::default_attributes()
+                        .with_title(title)
+                        .with_inner_size(PhysicalSize::new(img_w, img_h))
+                        .with_cursor(CursorIcon::Crosshair)
+                        .with_decorations(true)
+                        .with_resizable(true)
+                        .with_window_level(WindowLevel::AlwaysOnTop)
                         .with_visible(true),
                 )
             }
@@ -4381,6 +4476,49 @@ mod overlay_scale_tests {
             .unwrap(),
             Some(bounds)
         );
+        assert_eq!(
+            initial_selection_for_capture(CaptureMode::Window),
+            OverlayInitialSelection::FullImage
+        );
+    }
+
+    #[test]
+    fn window_capture_opens_a_full_image_editor_without_a_display_capture_target() {
+        let window = CaptureWindowInfo {
+            id: pinora_core::CaptureWindowId::from_raw(3),
+            app_name: "Example".into(),
+            title: "Private window".into(),
+            bounds: PixelRect::new(40, 50, 800, 600),
+            display: DisplayId::new("window-display"),
+            scale: 1.25,
+            is_minimized: false,
+        };
+
+        let target = window_capture_overlay_target(&window);
+
+        assert_eq!(target.display_id, window.display);
+        assert_eq!(target.display_origin, window.bounds.origin);
+        assert_eq!(target.image_width, 800);
+        assert_eq!(target.image_height, 600);
+        assert_eq!(target.initial_selection, OverlayInitialSelection::FullImage);
+        assert_eq!(target.presentation, OverlayPresentation::WindowCapture);
+        assert_eq!(target.min_selection_edge, 1);
+    }
+
+    #[test]
+    fn preview_buffer_validation_requires_both_render_buffers_to_match_the_image() {
+        let image = CaptureImage::new(
+            ImageId::from_raw(71),
+            RgbaBuffer::solid(PixelSize::new(2, 2), [1, 2, 3, 255]),
+            PixelRect::new(0, 0, 2, 2),
+            CaptureMetadata::new(DisplayId::new("preview"), 1.0, 1),
+        )
+        .unwrap();
+        let mut preview = prepare_preview(image);
+
+        assert!(preview_buffers_match_image(&preview));
+        preview.dimmed.pop();
+        assert!(!preview_buffers_match_image(&preview));
     }
 
     #[test]

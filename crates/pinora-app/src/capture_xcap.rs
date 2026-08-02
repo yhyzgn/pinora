@@ -3,10 +3,11 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use pinora_core::{
-    CaptureImage, CaptureMetadata, CaptureProvider, CaptureRequest, DisplayId, DisplayInfo,
-    ErrorCode, ImageId, PinoraError, PixelRect, PixelSize, RgbaBuffer, resolve_capture_rect,
+    CaptureImage, CaptureMetadata, CaptureProvider, CaptureRequest, CaptureWindowId,
+    CaptureWindowInfo, DisplayId, DisplayInfo, ErrorCode, ImageId, PinoraError, PixelRect,
+    PixelSize, RgbaBuffer, resolve_capture_rect,
 };
-use xcap::Monitor;
+use xcap::{Monitor, Window};
 
 /// xcap 实现的捕获提供者。
 #[derive(Debug, Default, Clone, Copy)]
@@ -35,7 +36,25 @@ impl CaptureProvider for XcapCaptureProvider {
         monitors.iter().map(monitor_to_display).collect()
     }
 
+    fn windows(&self) -> Result<Vec<CaptureWindowInfo>, PinoraError> {
+        let displays = self.displays()?;
+        Window::all()
+            .map_err(map_xcap)?
+            .iter()
+            .filter_map(|window| match window_to_capture_info(window, &displays) {
+                Ok(Some(info)) => Some(Ok(info)),
+                Ok(None) => None,
+                // 一个系统窗口的元数据损坏、权限受限或瞬时消失不应让整个 tray 菜单
+                // 不可用；只有已经完整验证的候选才会暴露给用户。
+                Err(_) => None,
+            })
+            .collect()
+    }
+
     fn capture(&self, request: CaptureRequest) -> Result<CaptureImage, PinoraError> {
+        if let CaptureRequest::Window { target } = request {
+            return self.capture_window(target);
+        }
         let displays = self.displays()?;
         let (info, rect) = resolve_capture_rect(&displays, &request)?;
         let monitor = find_monitor_for_display(&info.id)?;
@@ -82,6 +101,49 @@ impl CaptureProvider for XcapCaptureProvider {
     }
 }
 
+impl XcapCaptureProvider {
+    fn capture_window(&self, target: CaptureWindowInfo) -> Result<CaptureImage, PinoraError> {
+        let displays = self.displays()?;
+        let (window, current) = find_window_for_target(&target, &displays)?;
+        if !target.matches_capture_snapshot(&current) {
+            return Err(PinoraError::new(
+                ErrorCode::NotFound,
+                "capture window no longer matches the menu snapshot",
+            ));
+        }
+
+        let rgba = window.capture_image().map_err(map_xcap)?;
+        let (width, height) = rgba.dimensions();
+        if width == 0 || height == 0 {
+            return Err(PinoraError::new(
+                ErrorCode::RetryablePlatform,
+                "window capture returned an empty image",
+            ));
+        }
+        if width != current.bounds.size.width || height != current.bounds.size.height {
+            return Err(PinoraError::new(
+                ErrorCode::RetryablePlatform,
+                "window capture dimensions changed while capturing",
+            ));
+        }
+        let size = PixelSize::new(width, height);
+        let pixels = RgbaBuffer::new(size, rgba.into_raw())
+            .map_err(|message| PinoraError::new(ErrorCode::Internal, message))?;
+        CaptureImage::new(
+            ImageId::new(),
+            pixels,
+            PixelRect::new(
+                current.bounds.origin.x,
+                current.bounds.origin.y,
+                width,
+                height,
+            ),
+            CaptureMetadata::new(current.display, current.scale, now_ms()),
+        )
+        .map_err(|message| PinoraError::new(ErrorCode::Internal, message))
+    }
+}
+
 fn monitor_to_display(monitor: &Monitor) -> Result<DisplayInfo, PinoraError> {
     let id = monitor.id().map_err(map_xcap)?;
     let name = monitor
@@ -117,6 +179,100 @@ fn find_monitor_for_display(display_id: &DisplayId) -> Result<Monitor, PinoraErr
         ErrorCode::NotFound,
         format!("xcap monitor not found: {}", display_id.0),
     ))
+}
+
+fn find_window_for_target(
+    target: &CaptureWindowInfo,
+    displays: &[DisplayInfo],
+) -> Result<(Window, CaptureWindowInfo), PinoraError> {
+    for window in Window::all().map_err(map_xcap)? {
+        let Some(current) = window_to_capture_info(&window, displays)? else {
+            continue;
+        };
+        if current.id == target.id {
+            return Ok((window, current));
+        }
+    }
+    Err(PinoraError::new(
+        ErrorCode::NotFound,
+        "capture window is no longer available",
+    ))
+}
+
+fn window_to_capture_info(
+    window: &Window,
+    displays: &[DisplayInfo],
+) -> Result<Option<CaptureWindowInfo>, PinoraError> {
+    let app_name = window.app_name().map_err(map_xcap)?;
+    let title = window.title().map_err(map_xcap)?;
+    let is_minimized = window.is_minimized().map_err(map_xcap)?;
+    let width = window.width().map_err(map_xcap)?;
+    let height = window.height().map_err(map_xcap)?;
+    let bounds = PixelRect::new(
+        window.x().map_err(map_xcap)?,
+        window.y().map_err(map_xcap)?,
+        width,
+        height,
+    );
+    if !is_capturable_window(&app_name, &title, bounds, is_minimized) {
+        return Ok(None);
+    }
+
+    let monitor = window.current_monitor().map_err(map_xcap)?;
+    let monitor_id = monitor.id().map_err(map_xcap)?;
+    let display_id = DisplayId::new(format!("xcap-{monitor_id}"));
+    let display = displays
+        .iter()
+        .find(|display| display.id == display_id)
+        .ok_or_else(|| {
+            PinoraError::new(
+                ErrorCode::NotFound,
+                "capture window display is no longer available",
+            )
+        })?;
+
+    Ok(Some(CaptureWindowInfo {
+        id: CaptureWindowId::from_raw(u64::from(window.id().map_err(map_xcap)?)),
+        app_name,
+        title,
+        bounds,
+        display: display.id.clone(),
+        scale: display.scale,
+        is_minimized,
+    }))
+}
+
+fn is_capturable_window(
+    app_name: &str,
+    title: &str,
+    bounds: PixelRect,
+    is_minimized: bool,
+) -> bool {
+    !is_minimized
+        && !bounds.size.is_empty()
+        && !is_pinora_window(app_name, title)
+        && (!app_name.trim().is_empty() || !title.trim().is_empty())
+}
+
+fn is_pinora_window(app_name: &str, title: &str) -> bool {
+    app_name.trim().eq_ignore_ascii_case("pinora")
+        || matches!(
+            title.trim(),
+            "pinora-display-handle"
+                | "Pinora Settings"
+                | "Pinora History"
+                | "Pinora History Edit"
+                | "Pinora Window Capture"
+        )
+        || title.starts_with("Pinora-pin-")
+        || title.starts_with("Pinora —")
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn map_xcap(err: xcap::XCapError) -> PinoraError {
@@ -161,5 +317,38 @@ mod tests {
         assert!(image.size().width > 0);
         assert!(image.size().height > 0);
         assert_eq!(image.pixels.byte_len(), (image.size().area() * 4) as usize);
+    }
+
+    #[test]
+    fn candidate_filter_excludes_pinora_minimized_empty_and_unnamed_windows() {
+        let bounds = PixelRect::new(10, 20, 100, 50);
+
+        assert!(!is_capturable_window("Pinora", "Other", bounds, false));
+        assert!(!is_capturable_window(
+            "Other",
+            "Pinora-pin-pin-1",
+            bounds,
+            false
+        ));
+        assert!(!is_capturable_window(
+            "Other",
+            "Pinora Window Capture",
+            bounds,
+            false
+        ));
+        assert!(!is_capturable_window("Other", "Other", bounds, true));
+        assert!(!is_capturable_window(
+            "Other",
+            "Other",
+            PixelRect::new(0, 0, 0, 50),
+            false
+        ));
+        assert!(!is_capturable_window("", "", bounds, false));
+        assert!(is_capturable_window(
+            "Browser",
+            "Documentation",
+            bounds,
+            false
+        ));
     }
 }

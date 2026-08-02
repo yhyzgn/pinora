@@ -13,8 +13,9 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use pinora_core::{
-    CaptureImage, CaptureMetadata, CaptureProvider, CaptureRequest, DisplayId, DisplayInfo,
-    ErrorCode, ImageId, PinoraError, PixelRect, PixelSize, RgbaBuffer, resolve_capture_rect,
+    CaptureImage, CaptureMetadata, CaptureProvider, CaptureRequest, CaptureWindowInfo, DisplayId,
+    DisplayInfo, ErrorCode, ImageId, PinoraError, PixelRect, PixelSize, RgbaBuffer,
+    resolve_capture_rect,
 };
 
 /// 基于 KDE Spectacle CLI 的捕获提供者。
@@ -122,7 +123,20 @@ impl CaptureProvider for KdeSpectacleCaptureProvider {
         list_displays_kscreen().or_else(|_| list_displays_xrandr_like())
     }
 
+    fn windows(&self) -> Result<Vec<CaptureWindowInfo>, PinoraError> {
+        Err(PinoraError::new(
+            ErrorCode::CapabilityUnavailable,
+            "KDE Spectacle capture backend does not support window capture",
+        ))
+    }
+
     fn capture(&self, request: CaptureRequest) -> Result<CaptureImage, PinoraError> {
+        if matches!(request, CaptureRequest::Window { .. }) {
+            return Err(PinoraError::new(
+                ErrorCode::CapabilityUnavailable,
+                "KDE Spectacle capture backend does not support window capture",
+            ));
+        }
         let displays = self.displays()?;
         let (info, rect) = resolve_capture_rect(&displays, &request)?;
 

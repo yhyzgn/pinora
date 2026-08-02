@@ -5,7 +5,8 @@
 //! 在 KDE 上对标的是 KWin 内部截图（Spectacle / ScreenShot2），不是 portal。
 
 use pinora_core::{
-    CaptureImage, CaptureProvider, CaptureRequest, DisplayInfo, ErrorCode, PinoraError,
+    CaptureImage, CaptureProvider, CaptureRequest, CaptureWindowInfo, DisplayInfo, ErrorCode,
+    PinoraError,
 };
 
 use crate::capture_fake::FakeCaptureProvider;
@@ -93,6 +94,18 @@ impl CaptureProvider for SelectedCaptureProvider {
                 reason.clone(),
             )),
             Self::Fake(p) => p.displays(),
+        }
+    }
+
+    fn windows(&self) -> Result<Vec<CaptureWindowInfo>, PinoraError> {
+        match self {
+            Self::Kde(p) => p.windows(),
+            Self::Xcap(p) => p.windows(),
+            Self::Unavailable { reason } => Err(PinoraError::new(
+                ErrorCode::CapabilityUnavailable,
+                reason.clone(),
+            )),
+            Self::Fake(p) => p.windows(),
         }
     }
 

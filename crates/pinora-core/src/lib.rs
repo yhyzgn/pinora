@@ -28,7 +28,10 @@ pub use annotate::{
     render_preview_rgba,
 };
 pub use asset::{AssetGeneration, AssetRef};
-pub use capture::{CaptureProvider, CaptureRequest, DisplayInfo, resolve_capture_rect};
+pub use capture::{
+    CaptureProvider, CaptureRequest, CaptureWindowId, CaptureWindowInfo, DisplayInfo,
+    resolve_capture_rect,
+};
 pub use command::Command;
 pub use error::{ErrorCode, PinoraError};
 pub use event::{DomainEvent, DomainEventKind, EventEnvelope};

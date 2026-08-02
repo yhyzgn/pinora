@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/056_delayed_capture.md`
-- 任务：`.context/tasks/056_delayed_capture.md`
+- 计划：`.context/plans/057_window_capture.md`
+- 任务：`.context/tasks/057_window_capture.md`
 
 ## 交付要求
 
