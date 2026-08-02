@@ -301,6 +301,25 @@ enum CaptureTarget {
     Window(CaptureWindowInfo),
 }
 
+/// `LoadingState` 失败时必须采用的恢复路径。延时会话优先，因为它拥有需要恢复的
+/// 贴图可见性快照；正常和窗口截图不应以失败退出 tray 主循环。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureFailureScope {
+    Standard,
+    Window,
+    Delayed,
+}
+
+fn capture_failure_scope(target: &CaptureTarget, delayed_active: bool) -> CaptureFailureScope {
+    if delayed_active {
+        CaptureFailureScope::Delayed
+    } else if matches!(target, CaptureTarget::Window(_)) {
+        CaptureFailureScope::Window
+    } else {
+        CaptureFailureScope::Standard
+    }
+}
+
 impl CaptureMode {
     fn label(self) -> &'static str {
         match self {
@@ -807,11 +826,7 @@ where
 
         // 后台截屏完成 → 打开真实桌面遮罩
         if matches!(self.mode, Mode::LoadingCapture) {
-            if let Err(e) = self.poll_loading_to_overlay(event_loop) {
-                self.error = Some(e);
-                event_loop.exit();
-                return;
-            }
+            self.poll_loading_to_overlay(event_loop);
             if self.loading.is_some() {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(
                     Instant::now() + Duration::from_millis(30),
@@ -2010,19 +2025,11 @@ where
     }
 
     fn handle_capture_start_error(&mut self, error: PinoraError) {
-        if self.is_window_capture() {
-            self.finish_window_capture_failure(error);
-            return;
-        }
-        eprintln!("pinora: capture start failed ({}) {error}", error.code);
-        self.error = Some(error);
-        self.mode = Mode::Idle;
-        self.start_capture_wait = None;
-        self.resume_frame_cache();
+        self.finish_loading_capture_failure(error);
     }
 
-    fn is_window_capture(&self) -> bool {
-        matches!(&self.capture_target, CaptureTarget::Window(_))
+    fn capture_failure_scope(&self) -> CaptureFailureScope {
+        capture_failure_scope(&self.capture_target, self.delayed_capture.is_some())
     }
 
     fn finish_window_capture_failure(&mut self, error: PinoraError) {
@@ -2038,7 +2045,7 @@ where
 
     fn finish_delayed_capture_failure(&mut self, error: PinoraError) {
         eprintln!(
-            "pinora: delayed capture failed ({}) {error}; returning to tray",
+            "pinora: delayed capture failed ({}); returning to tray",
             error.code
         );
         let _ = self.loading.take();
@@ -2059,46 +2066,56 @@ where
         }
     }
 
-    fn handle_loading_capture_failure(&mut self, error: PinoraError) -> Result<(), PinoraError> {
-        if self.is_window_capture() {
-            self.finish_window_capture_failure(error);
-            return Ok(());
-        }
-        if self.delayed_capture.is_some() {
-            self.finish_delayed_capture_failure(error);
-            return Ok(());
-        }
-        self.cancel_loading();
-        Err(error)
+    fn finish_standard_capture_failure(&mut self, error: PinoraError) {
+        eprintln!("pinora: capture failed ({}); returning to tray", error.code);
+        let _ = self.loading.take();
+        self.mode = Mode::Idle;
+        self.start_capture_wait = None;
+        self.resume_frame_cache();
     }
 
-    fn poll_loading_to_overlay(&mut self, event_loop: &ActiveEventLoop) -> Result<(), PinoraError> {
+    fn finish_capture_failure_in_scope(&mut self, scope: CaptureFailureScope, error: PinoraError) {
+        match scope {
+            CaptureFailureScope::Standard => self.finish_standard_capture_failure(error),
+            CaptureFailureScope::Window => self.finish_window_capture_failure(error),
+            CaptureFailureScope::Delayed => self.finish_delayed_capture_failure(error),
+        }
+    }
+
+    fn finish_loading_capture_failure(&mut self, error: PinoraError) {
+        self.finish_capture_failure_in_scope(self.capture_failure_scope(), error);
+    }
+
+    fn poll_loading_to_overlay(&mut self, event_loop: &ActiveEventLoop) {
         let Some(loading) = self.loading.as_ref() else {
-            return Ok(());
+            return;
         };
         let prep = match loading.preview_rx.try_recv() {
             Ok(Ok(p)) => p,
             Ok(Err(code)) => {
-                return self.handle_loading_capture_failure(PinoraError::new(
+                self.finish_loading_capture_failure(PinoraError::new(
                     code,
                     "capture provider returned an error",
                 ));
+                return;
             }
-            Err(TryRecvError::Empty) => return Ok(()),
+            Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => {
-                return self.handle_loading_capture_failure(PinoraError::new(
+                self.finish_loading_capture_failure(PinoraError::new(
                     ErrorCode::Internal,
                     "capture thread disconnected",
                 ));
+                return;
             }
         };
 
         let loading = self.loading.take().unwrap();
         if !preview_buffers_match_image(&prep) {
-            return self.handle_loading_capture_failure(PinoraError::new(
+            self.finish_loading_capture_failure(PinoraError::new(
                 ErrorCode::Internal,
                 "capture buffer size mismatch",
             ));
+            return;
         }
         let img_w = prep.image.pixels.size.width.max(1);
         let img_h = prep.image.pixels.size.height.max(1);
@@ -2106,13 +2123,13 @@ where
         let mut target = loading.target;
         target.image_width = img_w;
         target.image_height = img_h;
+        let failure_scope = self.capture_failure_scope();
         // 此时 capture provider 已经取得真实像素，恢复不会进入本次截图。
         if self.delayed_capture.is_some() {
             self.restore_delayed_pins();
         }
-        match self.open_overlay_with_preview(event_loop, prep, target) {
-            Ok(()) => Ok(()),
-            Err(error) => self.handle_loading_capture_failure(error),
+        if let Err(error) = self.open_overlay_with_preview(event_loop, prep, target) {
+            self.finish_capture_failure_in_scope(failure_scope, error);
         }
     }
 
@@ -4479,6 +4496,32 @@ mod overlay_scale_tests {
         assert_eq!(
             initial_selection_for_capture(CaptureMode::Window),
             OverlayInitialSelection::FullImage
+        );
+    }
+
+    #[test]
+    fn delayed_failure_recovery_precedes_window_and_standard_capture_scopes() {
+        let window = CaptureTarget::Window(CaptureWindowInfo {
+            id: pinora_core::CaptureWindowId::from_raw(4),
+            app_name: "Example".into(),
+            title: "Private window".into(),
+            bounds: PixelRect::new(1, 2, 3, 4),
+            display: DisplayId::new("display"),
+            scale: 1.0,
+            is_minimized: false,
+        });
+
+        assert_eq!(
+            capture_failure_scope(&CaptureTarget::DefaultLargest, false),
+            CaptureFailureScope::Standard
+        );
+        assert_eq!(
+            capture_failure_scope(&window, false),
+            CaptureFailureScope::Window
+        );
+        assert_eq!(
+            capture_failure_scope(&window, true),
+            CaptureFailureScope::Delayed
         );
     }
 
