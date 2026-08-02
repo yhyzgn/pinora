@@ -1,6 +1,6 @@
 # 计划 055：托盘逐显示器全屏捕获与目标绑定缓存
 
-- 状态：进行中
+- 状态：已完成
 - 负责人：Codex
 - 当前任务：`.context/tasks/055_display_targeted_capture.md`
 
@@ -65,4 +65,4 @@
 
 - 2026-08-02：托盘在启动时探测到多台显示器时，会新增逐显示器全屏截图项目，展示后端名称、物理 origin、物理分辨率和 scale；菜单事件只解析为内部 `DisplayId`，不会把后端 ID 暴露给用户。
 - desktop shell 的指定显示器意图会在捕获前重新枚举当前拓扑；目标缺失返回 `NotFound` 并回到 tray 常驻空闲态，不退出进程、不改拍默认屏幕。指定目标仅在缓存的 ID、source rect/origin、尺寸和 scale 全部匹配时消费预截帧，否则走该目标冷捕获。
-- 本地通过 tray、frame cache、desktop shell 定向测试、fmt、workspace check、严格 Clippy、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`（app 144 通过、2 个真实桌面测试忽略；core 55 通过）、diff 检查与 `ctx validate`。GitHub 三平台 CI 尚待本次提交后执行，任务保持进行中；真实多显示器、热插拔、HiDPI 和托盘菜单探针未运行。
+- 本地通过 tray、frame cache、desktop shell 定向测试、fmt、workspace check、严格 Clippy、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`（app 144 通过、2 个真实桌面测试忽略；core 55 通过）、diff 检查与 `ctx validate`。提交 `dfa8339` 的 GitHub CI `30735354166` 已在 Linux、macOS、Windows 原生 runner 通过格式、workspace 编译、严格 Clippy 和单元测试；真实多显示器、热插拔、HiDPI 和托盘菜单探针未运行。

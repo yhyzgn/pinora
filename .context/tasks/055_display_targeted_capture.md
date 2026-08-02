@@ -1,6 +1,6 @@
 # 任务 055：托盘逐显示器全屏捕获与目标绑定缓存
 
-- 状态：进行中
+- 状态：已完成
 - 计划：`.context/plans/055_display_targeted_capture.md`
 - 规模：中
 - 依赖：`.context/tasks/048_full_display_capture.md`、`.context/tasks/047_frame_cache_handoff.md`、`.context/tasks/054_auxiliary_window_boundary.md`
@@ -62,4 +62,4 @@
 
 - 2026-08-02：`AppTray` 现在以启动时的 `DisplayInfo` 列表创建多显示器全屏截图项目，并由菜单 ID 一对一解析为 `TrayAction::CaptureDisplay(DisplayId)`；单显示器和枚举失败时保留既有默认截图项。
 - `CaptureTarget` 将指定 `DisplayId` 贯穿 desktop shell。指定目标必须先重新枚举并精确存在，无法找到时返回 `NotFound` 并保留 tray 常驻；`FrameCache` 只在 ID、origin、source rect 尺寸和 scale 全部一致时交付帧，四种拓扑错配均由离线测试拒绝。
-- 本地通过 tray/frame cache/desktop shell 定向测试、fmt、workspace check、严格 Clippy、全量 workspace 测试（app 144 通过、2 个真实桌面测试忽略；core 55 通过）、diff 检查与 `ctx validate`。GitHub 三平台 CI 尚待本次提交后执行，因此任务保持进行中；真实双屏、热插拔、HiDPI、不同托盘实现和辅助窗口行为未覆盖。
+- 本地通过 tray/frame cache/desktop shell 定向测试、fmt、workspace check、严格 Clippy、全量 workspace 测试（app 144 通过、2 个真实桌面测试忽略；core 55 通过）、diff 检查与 `ctx validate`。提交 `dfa8339` 的 GitHub CI `30735354166` 已在 Linux、macOS、Windows 原生 runner 通过格式、workspace 编译、严格 Clippy 和单元测试；真实双屏、热插拔、HiDPI、不同托盘实现和辅助窗口行为未覆盖。
