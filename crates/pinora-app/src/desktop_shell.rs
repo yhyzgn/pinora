@@ -497,6 +497,7 @@ struct PinWin {
     image: CaptureImage,
     asset: AssetRef,
     pixels_xrgb: Vec<u32>,
+    render_cache: Option<PinRenderCache>,
     scale: f64,
     opacity: f64,
     locked: bool,
@@ -512,6 +513,22 @@ struct PinWin {
     ocr_drag_start: Option<(f64, f64)>,
     /// 当前选中的 OCR 词。
     ocr_selection: OcrTextSelection,
+}
+
+/// 贴图基础帧缓存：不包含 OCR、拖选或锁定边框等每帧变化的叠加层。
+struct PinRenderCache {
+    width: u32,
+    height: u32,
+    opacity_factor: u32,
+    pixels: Vec<u32>,
+}
+
+impl PinRenderCache {
+    fn matches(&self, width: u32, height: u32, opacity: f64) -> bool {
+        self.width == width
+            && self.height == height
+            && self.opacity_factor == opacity_factor(opacity)
+    }
 }
 
 /// 创建贴图窗口所需的呈现参数。预处理像素仅由受监督的历史读取 worker 提供。
@@ -2778,14 +2795,7 @@ where
 
         let image_size = image.size();
         let (w, h) = scaled_window_size(image_size, scale);
-        let expected_pixels = usize::try_from(image_size.width)
-            .ok()
-            .and_then(|width| {
-                usize::try_from(image_size.height)
-                    .ok()
-                    .and_then(|height| width.checked_mul(height))
-            })
-            .ok_or_else(|| PinoraError::new(ErrorCode::InvalidState, "pin image is too large"))?;
+        let expected_pixels = pixel_count(image_size.width, image_size.height, "pin image")?;
         let pixels_xrgb = match prepared_pixels_xrgb {
             Some(pixels) if pixels.len() == expected_pixels => pixels,
             Some(_) => {
@@ -2835,6 +2845,7 @@ where
                 image,
                 asset,
                 pixels_xrgb,
+                render_cache: None,
                 scale,
                 opacity: opacity.clamp(0.15, 1.0),
                 locked: false,
@@ -3047,6 +3058,7 @@ where
                 }
                 let factor = if steps > 0.0 { 1.1_f64 } else { 1.0 / 1.1 };
                 pin.scale = (pin.scale * factor).clamp(0.1, 8.0);
+                pin.render_cache = None;
                 let (w, h) = scaled_window_size(pin.image.size(), pin.scale);
                 let _ = pin.window.request_inner_size(PhysicalSize::new(w, h));
                 if let (Some(nw), Some(nh)) = (NonZeroU32::new(w), NonZeroU32::new(h)) {
@@ -3069,6 +3081,7 @@ where
                     ) {
                         let _ = pin.surface.resize(w, h);
                     }
+                    pin.render_cache = None;
                     pin.window.request_redraw();
                 }
             }
@@ -3130,6 +3143,7 @@ where
             return;
         }
         pin.opacity = (pin.opacity + delta).clamp(0.15, 1.0);
+        pin.render_cache = None;
         println!(
             "pinora: pin {} opacity {:.0}%",
             pin.pin_id,
@@ -3194,24 +3208,11 @@ where
                 format!("pin surface resize: {e}"),
             ));
         }
+        ensure_pin_render_cache(pin, bw, bh)?;
         let bw = bw as usize;
         let bh = bh as usize;
-        let mut buffer = pin
-            .surface
-            .buffer_mut()
-            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("pin buffer: {e}")))?;
-        if buffer.len() < bw * bh {
-            // 尺寸尚未就绪时跳过本帧，不崩溃退出
-            eprintln!(
-                "pinora: pin buffer skip (have {} need {})",
-                buffer.len(),
-                bw * bh
-            );
-            return Ok(());
-        }
         let sw = pin.image.pixels.size.width as usize;
         let sh = pin.image.pixels.size.height as usize;
-        let opacity = pin.opacity;
         let locked = pin.locked;
         let show_ocr = pin.ocr_show_boxes;
         let ocr_selection = pin.ocr_selection.clone();
@@ -3244,15 +3245,25 @@ where
         } else {
             Vec::new()
         };
-        if bw == sw && bh == sh {
-            buffer[..bw * bh].copy_from_slice(&pin.pixels_xrgb);
-        } else {
-            scale_nearest(&pin.pixels_xrgb, sw, sh, &mut buffer[..bw * bh], bw, bh);
+        let cached_pixels = &pin
+            .render_cache
+            .as_ref()
+            .expect("render cache is populated by ensure_pin_render_cache")
+            .pixels;
+        let mut buffer = pin
+            .surface
+            .buffer_mut()
+            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("pin buffer: {e}")))?;
+        if buffer.len() < bw * bh {
+            // 尺寸尚未就绪时跳过本帧，不崩溃退出
+            eprintln!(
+                "pinora: pin buffer skip (have {} need {})",
+                buffer.len(),
+                bw * bh
+            );
+            return Ok(());
         }
-        // softbuffer 无真透明：用不透明度压暗近似
-        if opacity < 0.999 {
-            apply_opacity_darken(&mut buffer[..bw * bh], opacity);
-        }
+        buffer[..bw * bh].copy_from_slice(cached_pixels);
         // OCR 词框（图像坐标 → 窗口坐标）
         if !ocr_boxes.is_empty() && sw > 0 && sh > 0 {
             let sx = bw as f64 / sw as f64;
@@ -3780,15 +3791,104 @@ fn window_rect_from_points(start: (f64, f64), end: (f64, f64)) -> PixelRect {
     PixelRect::new(x0, y0, (x1 - x0).max(0) as u32, (y1 - y0).max(0) as u32)
 }
 
+fn ensure_pin_render_cache(pin: &mut PinWin, width: u32, height: u32) -> Result<(), PinoraError> {
+    if pin
+        .render_cache
+        .as_ref()
+        .is_some_and(|cache| cache.matches(width, height, pin.opacity))
+    {
+        return Ok(());
+    }
+
+    let source_size = pin.image.size();
+    pin.render_cache = Some(build_pin_render_cache(
+        &pin.pixels_xrgb,
+        source_size.width,
+        source_size.height,
+        width,
+        height,
+        pin.opacity,
+    )?);
+    Ok(())
+}
+
+fn build_pin_render_cache(
+    source: &[u32],
+    source_width: u32,
+    source_height: u32,
+    width: u32,
+    height: u32,
+    opacity: f64,
+) -> Result<PinRenderCache, PinoraError> {
+    let source_len = pixel_count(source_width, source_height, "pin source")?;
+    if source.len() != source_len {
+        return Err(PinoraError::new(
+            ErrorCode::InvalidState,
+            "pin source pixels do not match image dimensions",
+        ));
+    }
+    let target_len = pixel_count(width, height, "pin render target")?;
+    let source_width = usize::try_from(source_width)
+        .map_err(|_| PinoraError::new(ErrorCode::InvalidState, "pin source is too large"))?;
+    let source_height = usize::try_from(source_height)
+        .map_err(|_| PinoraError::new(ErrorCode::InvalidState, "pin source is too large"))?;
+    let width_usize = usize::try_from(width)
+        .map_err(|_| PinoraError::new(ErrorCode::InvalidState, "pin render target is too large"))?;
+    let height_usize = usize::try_from(height)
+        .map_err(|_| PinoraError::new(ErrorCode::InvalidState, "pin render target is too large"))?;
+    let mut pixels = vec![0; target_len];
+    if source_width == width_usize && source_height == height_usize {
+        pixels.copy_from_slice(source);
+    } else {
+        scale_nearest(
+            source,
+            source_width,
+            source_height,
+            &mut pixels,
+            width_usize,
+            height_usize,
+        );
+    }
+    apply_opacity_darken(&mut pixels, opacity);
+    Ok(PinRenderCache {
+        width,
+        height,
+        opacity_factor: opacity_factor(opacity),
+        pixels,
+    })
+}
+
+fn pixel_count(width: u32, height: u32, subject: &str) -> Result<usize, PinoraError> {
+    let width = usize::try_from(width).map_err(|_| {
+        PinoraError::new(ErrorCode::InvalidState, format!("{subject} is too large"))
+    })?;
+    let height = usize::try_from(height).map_err(|_| {
+        PinoraError::new(ErrorCode::InvalidState, format!("{subject} is too large"))
+    })?;
+    width
+        .checked_mul(height)
+        .ok_or_else(|| PinoraError::new(ErrorCode::InvalidState, format!("{subject} is too large")))
+}
+
 /// 无窗口透明时，用压暗模拟 opacity（1.0 = 原色，0.15 = 很暗）。
 fn apply_opacity_darken(buf: &mut [u32], opacity: f64) {
-    let o = opacity.clamp(0.05, 1.0);
-    let factor = (o * 256.0) as u32;
+    let factor = opacity_factor(opacity);
+    if factor == 256 {
+        return;
+    }
     for px in buf.iter_mut() {
         let r = ((*px >> 16) & 0xff) * factor / 256;
         let g = ((*px >> 8) & 0xff) * factor / 256;
         let b = (*px & 0xff) * factor / 256;
         *px = (r << 16) | (g << 8) | b;
+    }
+}
+
+fn opacity_factor(opacity: f64) -> u32 {
+    if opacity >= 0.999 {
+        256
+    } else {
+        (opacity.clamp(0.05, 1.0) * 256.0) as u32
     }
 }
 
@@ -4089,6 +4189,28 @@ mod overlay_scale_tests {
         assert!((opacity_from_settings_percent(72) - 0.72).abs() < f64::EPSILON);
         assert!((opacity_from_settings_percent(0) - 0.15).abs() < f64::EPSILON);
         assert!((opacity_from_settings_percent(255) - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn pin_render_cache_scales_and_darkens_for_its_exact_key() {
+        let cache =
+            build_pin_render_cache(&[0x00ff_0000, 0x0000_00ff], 2, 1, 4, 1, 0.5).expect("cache");
+
+        assert_eq!(
+            cache.pixels,
+            vec![0x007f_0000, 0x007f_0000, 0x0000_007f, 0x0000_007f]
+        );
+        assert!(cache.matches(4, 1, 0.5));
+        assert!(!cache.matches(2, 1, 0.5));
+        assert!(!cache.matches(4, 1, 0.75));
+    }
+
+    #[test]
+    fn near_opaque_pin_render_cache_keeps_existing_pixel_semantics() {
+        let cache = build_pin_render_cache(&[0x0011_2233], 1, 1, 1, 1, 0.999).expect("cache");
+
+        assert_eq!(cache.pixels, vec![0x0011_2233]);
+        assert!(cache.matches(1, 1, 1.0));
     }
 
     #[test]

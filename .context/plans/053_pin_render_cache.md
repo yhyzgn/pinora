@@ -65,4 +65,6 @@
 
 ## 完成记录
 
-- 待完成：已建立范围与验证边界，尚未修改实现。
+- 2026-08-02：`PinWin` 现在缓存按窗口物理尺寸与有效不透明度因子生成的基础帧；`paint_pin` 命中缓存时只复制该帧，再绘制 OCR 词框、拖选和锁定边框，不再重复缩放或压暗完整图像。
+- 滚轮缩放、窗口 resize 和透明度调整都会明确失效缓存；贴图创建延迟构建首帧，历史重新贴图继续使用 052 提供的 XRGB。基础帧生成会校验来源像素数量，尺寸异常时返回 `InvalidState`，不创建额外窗口或回退到不受控路径。
+- 本地验证：贴图缓存缩放/压暗/键匹配、既有 desktop shell、pin window 定向测试以及 `cargo fmt --check`、workspace check、严格 Clippy、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace` 通过（app 137 通过、2 个真实桌面测试忽略；core 55 通过）。ctx validate 与 GitHub 三平台 CI 尚待本次提交后执行，任务保持进行中；真实 resize、HiDPI、输入延迟和无障碍探针未覆盖。
