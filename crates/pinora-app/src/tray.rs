@@ -6,8 +6,8 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::Duration;
 
-use pinora_core::{CaptureWindowInfo, DisplayId, DisplayInfo, HotkeyBinding};
-use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
+use pinora_core::{CaptureWindowInfo, DisplayId, DisplayInfo, HotkeyBinding, PinId};
+use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 use crate::tray_capabilities::{CAPABILITY_MENU_TITLE, TrayCapabilitySummary};
@@ -15,6 +15,14 @@ use crate::tray_feedback::TrayFeedback;
 
 /// 避免窗口枚举把 tray 菜单膨胀为大量不可快速扫描的项目。
 const MAX_WINDOW_CAPTURE_CANDIDATES: usize = 20;
+const EMPTY_PIN_LIST_LABEL: &str = "没有打开的贴图";
+
+/// 传入托盘的贴图可见性快照。标签由 tray 适配器生成，避免泄露图像或窗口内容。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TrayPinListEntry {
+    pub pin_id: PinId,
+    pub visible: bool,
+}
 
 /// 托盘菜单动作。
 #[derive(Debug, Clone, PartialEq)]
@@ -32,6 +40,7 @@ pub enum TrayAction {
     ShowAllPins,
     HideAllPins,
     CloseAllPins,
+    ActivatePin(PinId),
     UndoClosePin,
     Quit,
 }
@@ -54,6 +63,9 @@ pub struct AppTray {
     settings_id: tray_icon::menu::MenuId,
     history_id: tray_icon::menu::MenuId,
     diagnostics_id: tray_icon::menu::MenuId,
+    pin_list_menu: Submenu,
+    pin_list_items: Vec<MenuItem>,
+    pin_list_ids: Vec<(MenuId, PinId)>,
     show_all_pins_id: tray_icon::menu::MenuId,
     hide_all_pins_id: tray_icon::menu::MenuId,
     close_all_pins_id: tray_icon::menu::MenuId,
@@ -133,6 +145,9 @@ impl AppTray {
             if let Some(action) = diagnostics_action(&ev.id, &self.diagnostics_id) {
                 return Some(action);
             }
+            if let Some(action) = pin_list_action(&ev.id, &self.pin_list_ids) {
+                return Some(action);
+            }
             if ev.id == self.show_all_pins_id {
                 return Some(TrayAction::ShowAllPins);
             }
@@ -162,6 +177,37 @@ impl AppTray {
 
     pub fn set_undo_close_pin_available(&self, available: bool) {
         self.undo_close_pin_item.set_enabled(available);
+    }
+
+    /// 用当前贴图快照替换动态子菜单。失败只影响 tray 的可发现性，不能改变贴图状态。
+    pub(crate) fn set_pin_list(&mut self, entries: &[TrayPinListEntry]) -> Result<(), String> {
+        for item in &self.pin_list_items {
+            self.pin_list_menu
+                .remove(item)
+                .map_err(|error| format!("pin list remove: {error}"))?;
+        }
+        self.pin_list_items.clear();
+        self.pin_list_ids.clear();
+
+        let entries = ordered_pin_list_entries(entries);
+        if entries.is_empty() {
+            let item = MenuItem::new(EMPTY_PIN_LIST_LABEL, false, None);
+            self.pin_list_menu
+                .append(&item)
+                .map_err(|error| format!("pin list append empty: {error}"))?;
+            self.pin_list_items.push(item);
+            return Ok(());
+        }
+
+        for (index, entry) in entries.iter().enumerate() {
+            let item = MenuItem::new(pin_list_label(index, entry.visible), true, None);
+            self.pin_list_menu
+                .append(&item)
+                .map_err(|error| format!("pin list append item: {error}"))?;
+            self.pin_list_ids.push((item.id().clone(), entry.pin_id));
+            self.pin_list_items.push(item);
+        }
+        Ok(())
     }
 
     /// 标签表示已保存的有限热键配置；实际 OS 注册状态仍由能力摘要和诊断面板提供。
@@ -224,6 +270,8 @@ fn try_new_inner(
     let settings = MenuItem::new("设置", true, None);
     let history = MenuItem::new("历史", true, None);
     let diagnostics = MenuItem::new("诊断", true, None);
+    let pin_list_menu = Submenu::new("贴图列表", true);
+    let empty_pin_list = MenuItem::new(EMPTY_PIN_LIST_LABEL, false, None);
     let show_all_pins = MenuItem::new("显示全部贴图", true, None);
     let hide_all_pins = MenuItem::new("隐藏全部贴图", true, None);
     let close_all_pins = MenuItem::new("关闭全部贴图", true, None);
@@ -288,6 +336,11 @@ fn try_new_inner(
         .map_err(|e| format!("menu append diagnostics: {e}"))?;
     menu.append(&PredefinedMenuItem::separator())
         .map_err(|e| format!("menu sep pins: {e}"))?;
+    pin_list_menu
+        .append(&empty_pin_list)
+        .map_err(|e| format!("menu append empty pin list: {e}"))?;
+    menu.append(&pin_list_menu)
+        .map_err(|e| format!("menu append pin list: {e}"))?;
     menu.append(&show_all_pins)
         .map_err(|e| format!("menu append show pins: {e}"))?;
     menu.append(&hide_all_pins)
@@ -343,6 +396,9 @@ fn try_new_inner(
         settings_id,
         history_id,
         diagnostics_id,
+        pin_list_menu,
+        pin_list_items: vec![empty_pin_list],
+        pin_list_ids: Vec::new(),
         show_all_pins_id,
         hide_all_pins_id,
         close_all_pins_id,
@@ -407,6 +463,24 @@ fn window_capture_action(
 
 fn diagnostics_action(menu_id: &MenuId, diagnostics_id: &MenuId) -> Option<TrayAction> {
     (menu_id == diagnostics_id).then_some(TrayAction::Diagnostics)
+}
+
+fn pin_list_action(menu_id: &MenuId, pin_list_ids: &[(MenuId, PinId)]) -> Option<TrayAction> {
+    pin_list_ids
+        .iter()
+        .find(|(id, _)| id == menu_id)
+        .map(|(_, pin_id)| TrayAction::ActivatePin(*pin_id))
+}
+
+fn pin_list_label(index: usize, visible: bool) -> String {
+    let state = if visible { "可见" } else { "已隐藏" };
+    format!("贴图 {}（{state}）", index + 1)
+}
+
+fn ordered_pin_list_entries(entries: &[TrayPinListEntry]) -> Vec<TrayPinListEntry> {
+    let mut entries = entries.to_vec();
+    entries.sort_by_key(|entry| entry.pin_id.raw());
+    entries
 }
 
 fn delayed_capture_action(
@@ -597,6 +671,52 @@ mod tests {
             diagnostics_action(&MenuId::new("other"), &diagnostics_id),
             None
         );
+    }
+
+    #[test]
+    fn pin_list_action_preserves_only_the_internal_pin_identity() {
+        let menu_id = MenuId::new("pin-list-entry");
+        let entries = vec![(menu_id.clone(), PinId::from_raw(7))];
+
+        assert_eq!(
+            pin_list_action(&menu_id, &entries),
+            Some(TrayAction::ActivatePin(PinId::from_raw(7)))
+        );
+        assert!(pin_list_action(&MenuId::new("other"), &entries).is_none());
+    }
+
+    #[test]
+    fn pin_list_labels_are_generic_and_report_visibility_without_content() {
+        let visible = pin_list_label(0, true);
+        let hidden = pin_list_label(1, false);
+
+        assert_eq!(visible, "贴图 1（可见）");
+        assert_eq!(hidden, "贴图 2（已隐藏）");
+        for label in [visible, hidden] {
+            assert!(!label.contains("pin-"));
+            assert!(!label.contains("Pinora-pin-"));
+            assert!(!label.contains("/home/"));
+        }
+    }
+
+    #[test]
+    fn pin_list_entries_are_stably_ordered_by_internal_identity() {
+        let entries = [
+            TrayPinListEntry {
+                pin_id: PinId::from_raw(20),
+                visible: false,
+            },
+            TrayPinListEntry {
+                pin_id: PinId::from_raw(3),
+                visible: true,
+            },
+        ];
+
+        let ordered = ordered_pin_list_entries(&entries);
+        assert_eq!(ordered[0].pin_id, PinId::from_raw(3));
+        assert_eq!(ordered[1].pin_id, PinId::from_raw(20));
+        assert!(ordered[0].visible);
+        assert!(!ordered[1].visible);
     }
 
     #[test]

@@ -45,7 +45,7 @@ use crate::overlay_toolbar::{
 };
 use crate::settings_panel::{SettingsPanelAction, SettingsPanelKey};
 use crate::settings_window::SettingsWindow;
-use crate::tray::{AppTray, TrayAction};
+use crate::tray::{AppTray, TrayAction, TrayPinListEntry};
 use crate::tray_capabilities::TrayCapabilitySummary;
 use crate::tray_feedback::{TrayExportOperation, TrayFeedback};
 use crate::window_policy::{self, AuxiliaryWindowKind};
@@ -988,6 +988,7 @@ where
                     println!("pinora: tray → close all pins");
                     self.close_all_pins();
                 }
+                TrayAction::ActivatePin(pin_id) => self.activate_pin(pin_id),
                 TrayAction::UndoClosePin => self.restore_closed_pin(event_loop),
                 TrayAction::Quit => {
                     println!("pinora: tray → quit");
@@ -1132,6 +1133,34 @@ where
                 pin.visible = visible;
             }
         }
+        self.refresh_tray_pin_list();
+    }
+
+    fn refresh_tray_pin_list(&mut self) {
+        let entries: Vec<_> = self
+            .pins
+            .values()
+            .map(|pin| TrayPinListEntry {
+                pin_id: pin.pin_id,
+                visible: pin.visible,
+            })
+            .collect();
+        if let Some(tray) = self.tray.as_mut()
+            && let Err(error) = tray.set_pin_list(&entries)
+        {
+            eprintln!("pinora: tray pin list refresh unavailable: {error}");
+        }
+    }
+
+    fn activate_pin(&mut self, pin_id: PinId) {
+        let Some(pin) = self.pins.values_mut().find(|pin| pin.pin_id == pin_id) else {
+            return;
+        };
+        pin.visible = true;
+        window_policy::show_auxiliary_window(AuxiliaryWindowKind::Pin, &pin.window, &pin.title);
+        pin.window.focus_window();
+        pin.window.request_redraw();
+        self.refresh_tray_pin_list();
     }
 
     fn snapshot_visible_pin_ids(&self) -> Vec<WindowId> {
@@ -1205,9 +1234,10 @@ where
     fn close_all_pins(&mut self) {
         let window_ids: Vec<_> = self.pins.keys().copied().collect();
         for window_id in window_ids {
-            self.close_pin(window_id);
+            self.close_pin_without_tray_refresh(window_id);
         }
         self.set_recent_closed_pin(None);
+        self.refresh_tray_pin_list();
     }
 
     fn ensure_context(&mut self, event_loop: &ActiveEventLoop) {
@@ -4126,6 +4156,7 @@ where
         window.set_window_level(pin_window_level(always_on_top));
         window.focus_window();
         window.request_redraw();
+        self.refresh_tray_pin_list();
 
         println!(
             "pinora: pin window ready ({w}x{h}) at ({}, {}) title={title}",
@@ -4772,6 +4803,7 @@ where
             pin.visible = false;
             pin.window.set_visible(false);
         }
+        self.refresh_tray_pin_list();
         let target = pin_edit_target(&image, pin_id);
         if let Err(error) =
             self.open_overlay_with_preview(event_loop, prepare_preview(image), target)
@@ -4787,6 +4819,7 @@ where
             window_policy::show_auxiliary_window(AuxiliaryWindowKind::Pin, &pin.window, &pin.title);
             pin.window.request_redraw();
         }
+        self.refresh_tray_pin_list();
     }
 
     fn replace_pin_image(
@@ -4838,6 +4871,7 @@ where
         pin.visible = true;
         window_policy::show_auxiliary_window(AuxiliaryWindowKind::Pin, &pin.window, &pin.title);
         pin.window.request_redraw();
+        self.refresh_tray_pin_list();
         Ok(asset)
     }
 
@@ -4913,6 +4947,11 @@ where
     }
 
     fn close_pin(&mut self, window_id: WindowId) {
+        self.close_pin_without_tray_refresh(window_id);
+        self.refresh_tray_pin_list();
+    }
+
+    fn close_pin_without_tray_refresh(&mut self, window_id: WindowId) {
         self.finish_pin_resize(window_id);
         if let Some(pin) = self.pins.remove(&window_id) {
             let position = pin
