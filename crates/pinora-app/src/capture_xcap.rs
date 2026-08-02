@@ -270,6 +270,7 @@ fn is_pinora_window(app_name: &str, title: &str) -> bool {
                 | "Pinora History Edit"
                 | "Pinora Window Capture"
                 | "Pinora Virtual Desktop Capture"
+                | "Pinora Pin Edit"
         )
         || title.starts_with("Pinora-pin-")
         || title.starts_with("Pinora —")

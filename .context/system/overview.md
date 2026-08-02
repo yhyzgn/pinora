@@ -16,7 +16,7 @@
 | --- | --- |
 | 截屏尝试 | KDE 优先 spectacle/KWin；否则 xcap；两者不可用时返回 `CapabilityUnavailable`，不生成 fake 图像 |
 | 区域与全屏 Overlay | F2/Ctrl+N 拖选；F3/托盘默认全屏自动确认当前完整图像；多显示器 tray 可指定目标全屏；双击复制、中键/Enter 贴图；选区内标注/OCR |
-| 贴图窗口 | 无边框置顶、拖动、滚轮缩放、Esc 关闭；多贴图 |
+| 贴图窗口 | 无边框置顶、拖动、滚轮缩放、Esc 关闭；客户区右键菜单、锁定/压暗/置顶、原位编辑；多贴图 |
 | 导出 | PNG 文件 + 内存剪贴板 + 系统剪贴板（wl-copy/xclip） |
 | 全局热键 | F2/Ctrl+N/Ctrl+Shift+S 区域、F3 单显示器全屏（注册成功时）+ `pinora capture` IPC |
 | 单实例 | flock + Unix socket Activate/CAPTURE/QUIT |
@@ -42,6 +42,8 @@
 - 2026-08-02 的 057 实现为 `CaptureProvider` 增加了经快照验证的窗口枚举/捕获契约：xcap 在点击后按内部窗口 ID、几何、显示器和缩放重新枚举验证，最小化、消失或拓扑变化不会回退为显示器截图；tray 仅在启动时保存最多 20 个经过清洗的候选。窗口捕获和 Overlay 创建失败会回到 tray 空闲态，后台线程只回传稳定错误码，避免后端错误文本写入日志。提交 `b60ebf0` 的本地全量门禁与 GitHub CI `30736791038`（Linux/macOS/Windows）均通过；真实窗口像素、权限、任务栏/Dock 与合成器行为尚未验证。
 - 2026-08-02 的 058 实现取消了 `LoadingState` 向 `about_to_wait` 返回可恢复错误的路径：区域、全屏、指定显示器、窗口和延时截图的 worker 错误、断开、预览不一致和 Overlay 建立失败均释放当前会话并回到 tray；延时会话保留贴图恢复优先级，日志只输出稳定错误码。提交 `36ee681` 的全量离线门禁与 GitHub CI `30737231248`（Linux/macOS/Windows）均通过；真实桌面窗口销毁、tray 连续驻留和任务栏/Dock 行为仍未验证。
 - 2026-08-02 的 059 实现新增全虚拟桌面截图契约：`AllDisplays` 使用开始时显示器物理 bounds 的安全外接矩形和 `pinora:virtual-desktop` 来源，KDE 只接受尺寸严格匹配的单次 `spectacle -f` PNG，xcap 明确拒绝而不拼接多时刻帧。多显示器 tray 提供“所有显示器截图”；该路径不消费单屏帧缓存，成功时以经过 `window_policy` 隔离的无边框虚拟桌面 Overlay 呈现。提交 `085e615` 的本地严格门禁与 GitHub CI `30737751448`（Linux/macOS/Windows）通过；真实双屏 KDE 像素、空洞区域、Overlay 映射、tray、任务栏/Dock、HiDPI 和合成器行为仍未验证。
+- 2026-08-02 的 060 实现将贴图右键菜单限制在现有贴图客户区内，未使用原生平台菜单或额外 `Window`。编辑复用经 `window_policy` 创建的 Overlay，提交时保留 `PinId`、替换图片引用、推进 `AssetRef` generation、关闭旧 OCR/导出 owner 并刷新渲染缓存；取消、裁剪失败和重新截图恢复被隐藏的原贴图。离线测试覆盖事务、菜单和编辑路径；真实任务栏/Dock、KWin、HiDPI、置顶和输入延迟仍未验证。
+- 2026-08-02 的 061 删除了未受托盘监督的独立贴图会话、区域 Overlay 和区域工作流公开 API。`pinora-app` 的唯一公开 GUI 会话入口为 `run_desktop_shell`，它在构造 `DesktopApp` 前要求成功创建系统 tray；贴图尺寸计算迁移为纯 `pin_layout`。`window_policy` 单元测试扫描生产源，确保只有该模块构造 `EventLoop` 或直接调用 `create_window`。这些事实只证明代码可达路径与静态边界，不证明真实窗口管理器最终不会显示任务栏/Dock 项。
 - GitHub Actions CI `30732620836`、`30732765136`、`30732906042`、`30733684203`、`30734154282`、`30734583848`、`30734867309` 与 `30735354166` 已于 2026-08-02 在 Linux、macOS、Windows 原生 runner 通过格式、workspace 编译、严格 Clippy 和单元测试；这些运行未创建 GUI 会话，不能作为任务栏、Dock、窗口交互、KWin 行为、真实多显示器或渲染延迟的证据。
 - `pinora-core::asset` 已于 2026-08-01 新增 `AssetGeneration` 和 `AssetRef` 领域契约；它只组合既有 `ImageId`，可判定陈旧结果，已用于桌面贴图及 Overlay OCR、复制、保存任务的结果门禁。
 - `pinora-core::job` 与 `pinora-app::JobSupervisor` 已于 2026-08-01 新增：任务元数据绑定 `JobId`、关联 ID、`AssetRef`、领域 owner、类型和截止时间；监督器可协作式取消、关闭 owner、标记超时并拒绝终态或陈旧版本结果。桌面 OCR、导出和剪贴板均已接入，但这不代表所有后台进程均已在真实桌面环境验证。

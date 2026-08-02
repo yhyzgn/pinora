@@ -84,6 +84,10 @@ impl Pin {
     pub fn set_locked(&mut self, locked: bool) {
         self.locked = locked;
     }
+
+    pub fn set_always_on_top(&mut self, always_on_top: bool) {
+        self.always_on_top = always_on_top;
+    }
 }
 
 #[cfg(test)]

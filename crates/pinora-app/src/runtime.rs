@@ -243,6 +243,34 @@ where
                     DomainEventKind::PinUpdated { pin_id },
                 ));
             }
+            Command::ReplacePinImage { pin_id, image, .. } => {
+                self.require_running()?;
+                self.state.replace_pin_image(pin_id, image)?;
+                produced.push(event(
+                    correlation_id,
+                    DomainEventKind::PinUpdated { pin_id },
+                ));
+            }
+            Command::SetPinLocked { pin_id, locked, .. } => {
+                self.require_running()?;
+                self.state.set_pin_locked(pin_id, locked)?;
+                produced.push(event(
+                    correlation_id,
+                    DomainEventKind::PinUpdated { pin_id },
+                ));
+            }
+            Command::SetPinAlwaysOnTop {
+                pin_id,
+                always_on_top,
+                ..
+            } => {
+                self.require_running()?;
+                self.state.set_pin_always_on_top(pin_id, always_on_top)?;
+                produced.push(event(
+                    correlation_id,
+                    DomainEventKind::PinUpdated { pin_id },
+                ));
+            }
             Command::SavePng { image_id, path, .. } => {
                 self.require_running()?;
                 let image = self.state.image(image_id).cloned().ok_or_else(|| {
@@ -565,6 +593,56 @@ mod tests {
         .unwrap();
         rt.dispatch(Command::close_pin(pin_id)).unwrap();
         assert_eq!(rt.state().pin_count(), 0);
+    }
+
+    #[test]
+    fn pin_edit_commands_preserve_identity_and_publish_updates() {
+        let mut rt = runtime();
+        rt.bootstrap().unwrap();
+        let display = rt.capture_provider().primary_display_id();
+        let original = rt
+            .capture
+            .capture(CaptureRequest::Region {
+                display: display.clone(),
+                rect: PixelRect::new(0, 0, 16, 9),
+            })
+            .unwrap();
+        let original_id = original.id;
+        let created = rt
+            .dispatch(Command::create_pin(original, PixelPoint::new(40, 60)))
+            .unwrap();
+        let pin_id = match created.events[0].event.kind {
+            DomainEventKind::PinCreated { pin_id, .. } => pin_id,
+            ref other => panic!("{other:?}"),
+        };
+        let replacement = rt
+            .capture
+            .capture(CaptureRequest::Region {
+                display,
+                rect: PixelRect::new(1, 1, 8, 6),
+            })
+            .unwrap();
+        let replacement_id = replacement.id;
+
+        for command in [
+            Command::set_pin_locked(pin_id, true),
+            Command::set_pin_always_on_top(pin_id, false),
+            Command::replace_pin_image(pin_id, replacement),
+        ] {
+            let result = rt.dispatch(command).unwrap();
+            assert!(matches!(
+                result.events.as_slice(),
+                [event] if matches!(event.event.kind, DomainEventKind::PinUpdated { pin_id: updated } if updated == pin_id)
+            ));
+        }
+
+        let pin = rt.state().pin(pin_id).unwrap();
+        assert_eq!(pin.id, pin_id);
+        assert_eq!(pin.image_id, replacement_id);
+        assert!(pin.locked);
+        assert!(!pin.always_on_top);
+        assert!(rt.state().image(original_id).is_none());
+        assert!(rt.state().image(replacement_id).is_some());
     }
 
     #[test]

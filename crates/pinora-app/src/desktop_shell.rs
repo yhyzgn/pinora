@@ -56,7 +56,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::{CursorIcon, Fullscreen, Window, WindowId, WindowLevel};
 
-use crate::pin_window::scaled_window_size;
+use crate::pin_context_menu::{self, PinContextMenu, PinMenuAction};
+use crate::pin_layout::scaled_window_size;
 use crate::platform::CapabilityProbe;
 use crate::runtime::AppRuntime;
 use crate::single_instance::SingleInstance;
@@ -427,6 +428,7 @@ enum OverlayPresentation {
     VirtualDesktop,
     WindowCapture,
     HistoryEditor,
+    PinEditor,
 }
 
 /// 截屏中：后台抓当前屏（无全屏遮罩，避免截到自己）；完成后立刻开真实 overlay。
@@ -467,6 +469,7 @@ struct OverlayTarget {
     initial_selection: OverlayInitialSelection,
     presentation: OverlayPresentation,
     min_selection_edge: u32,
+    edit_pin_id: Option<PinId>,
 }
 
 fn history_edit_target(image: &CaptureImage) -> OverlayTarget {
@@ -479,6 +482,7 @@ fn history_edit_target(image: &CaptureImage) -> OverlayTarget {
         initial_selection: OverlayInitialSelection::FullImage,
         presentation: OverlayPresentation::HistoryEditor,
         min_selection_edge: 1,
+        edit_pin_id: None,
     }
 }
 
@@ -491,6 +495,20 @@ fn window_capture_overlay_target(window: &CaptureWindowInfo) -> OverlayTarget {
         initial_selection: OverlayInitialSelection::FullImage,
         presentation: OverlayPresentation::WindowCapture,
         min_selection_edge: 1,
+        edit_pin_id: None,
+    }
+}
+
+fn pin_edit_target(image: &CaptureImage, pin_id: PinId) -> OverlayTarget {
+    OverlayTarget {
+        display_id: image.metadata.display.clone(),
+        display_origin: image.source_rect.origin,
+        image_width: image.pixels.size.width,
+        image_height: image.pixels.size.height,
+        initial_selection: OverlayInitialSelection::FullImage,
+        presentation: OverlayPresentation::PinEditor,
+        min_selection_edge: 1,
+        edit_pin_id: Some(pin_id),
     }
 }
 
@@ -635,6 +653,8 @@ struct OverlayState {
     session_id: SessionId,
     /// 当前确认选区的派生图像身份；重选后必须更换。
     annotation_asset: Option<OverlayAssetIdentity>,
+    /// 编辑既有贴图时保留其稳定领域身份；取消必须恢复原窗口。
+    edit_pin_id: Option<PinId>,
 }
 
 struct PinWin {
@@ -646,6 +666,8 @@ struct PinWin {
     scale: f64,
     opacity: f64,
     locked: bool,
+    always_on_top: bool,
+    context_menu: Option<PinContextMenu>,
     /// winit 没有跨平台的实际可见性查询；这是 Pinora 对自己贴图可见状态的事实记录。
     visible: bool,
     window: Rc<Window>,
@@ -1188,6 +1210,7 @@ where
                     initial_selection,
                     presentation: OverlayPresentation::ScreenCapture,
                     min_selection_edge: 2,
+                    edit_pin_id: None,
                 },
             );
         }
@@ -1208,6 +1231,7 @@ where
                         initial_selection,
                         presentation: OverlayPresentation::VirtualDesktop,
                         min_selection_edge: 2,
+                        edit_pin_id: None,
                     },
                     "all displays".to_owned(),
                 )
@@ -1242,6 +1266,7 @@ where
                         initial_selection,
                         presentation: OverlayPresentation::ScreenCapture,
                         min_selection_edge: 2,
+                        edit_pin_id: None,
                     },
                     display_name,
                 )
@@ -2043,11 +2068,19 @@ where
             println!("pinora: capture request ignored while delayed capture is active");
             return;
         }
-        if let Some(ov) = self.overlay.take() {
+        let edited_pin = if let Some(ov) = self.overlay.take() {
+            let edited_pin = ov.edit_pin_id;
             self.ocr_jobs.close_owner(JobOwner::Session(ov.session_id));
             self.export_jobs
                 .close_owner(JobOwner::Session(ov.session_id));
             ov.window.set_visible(false);
+            edited_pin
+        } else {
+            None
+        };
+        if let Some(pin_id) = edited_pin {
+            // 再截图相当于取消贴图编辑，不能让原贴图永远保持隐藏。
+            self.restore_pin_visibility(pin_id);
         }
         self.close_settings();
         self.close_history();
@@ -2188,6 +2221,7 @@ where
             initial_selection,
             presentation,
             min_selection_edge,
+            edit_pin_id,
         } = target;
         self.ensure_context(event_loop);
         let context = self.context.as_ref().ok_or_else(|| {
@@ -2239,6 +2273,20 @@ where
             }
             OverlayPresentation::HistoryEditor => {
                 let title = "Pinora History Edit";
+                (
+                    title,
+                    Window::default_attributes()
+                        .with_title(title)
+                        .with_inner_size(PhysicalSize::new(img_w, img_h))
+                        .with_cursor(CursorIcon::Crosshair)
+                        .with_decorations(true)
+                        .with_resizable(true)
+                        .with_window_level(WindowLevel::AlwaysOnTop)
+                        .with_visible(true),
+                )
+            }
+            OverlayPresentation::PinEditor => {
+                let title = "Pinora Pin Edit";
                 (
                     title,
                     Window::default_attributes()
@@ -2333,6 +2381,7 @@ where
             full_image: prep.image,
             session_id: SessionId::new(),
             annotation_asset: None,
+            edit_pin_id,
         });
         if let Some(selection) = apply_initial_selection(
             &mut self
@@ -3040,45 +3089,58 @@ where
         action: OverlayFinish,
     ) -> Result<(), PinoraError> {
         self.commit_overlay_draft();
-        let ov = self
-            .overlay
-            .as_ref()
-            .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "overlay missing"))?;
-        let src_rect = if let Some(r) = ov.active_src_rect {
-            r
-        } else {
-            match ov.session.try_confirm() {
-                Ok(disp) => buf_rect_to_src(disp, ov.buf_w, ov.buf_h, ov.src_w, ov.src_h),
-                Err(_) => {
-                    println!("pinora: 尚无有效选区");
-                    return Ok(());
+        let (src_rect, display_id, session_owner, asset, global, edit_pin_id) = {
+            let ov = self
+                .overlay
+                .as_ref()
+                .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "overlay missing"))?;
+            let src_rect = if let Some(r) = ov.active_src_rect {
+                r
+            } else {
+                match ov.session.try_confirm() {
+                    Ok(disp) => buf_rect_to_src(disp, ov.buf_w, ov.buf_h, ov.src_w, ov.src_h),
+                    Err(_) => {
+                        println!("pinora: 尚无有效选区");
+                        return Ok(());
+                    }
                 }
+            };
+            let asset = overlay_current_asset(ov).ok_or_else(|| {
+                PinoraError::new(
+                    ErrorCode::InvalidState,
+                    "overlay selection asset is not initialized",
+                )
+            })?;
+            let global = PixelRect::new(
+                ov.display_origin.x.saturating_add(src_rect.origin.x),
+                ov.display_origin.y.saturating_add(src_rect.origin.y),
+                src_rect.size.width,
+                src_rect.size.height,
+            );
+            (
+                src_rect,
+                ov.display_id.clone(),
+                JobOwner::Session(ov.session_id),
+                asset,
+                global,
+                ov.edit_pin_id,
+            )
+        };
+        // 先裁切（仍持有 overlay），再立刻关窗
+        let image = match self.crop_overlay_image(true) {
+            Ok(image) => image,
+            Err(error) => {
+                // 贴图编辑的任何失败都恢复原窗口；普通截图仍按既有取消语义收尾。
+                self.cancel_overlay();
+                return Err(error);
             }
         };
-        let display_id = ov.display_id.clone();
-        let session_owner = JobOwner::Session(ov.session_id);
-        let asset = overlay_current_asset(ov).ok_or_else(|| {
-            PinoraError::new(
-                ErrorCode::InvalidState,
-                "overlay selection asset is not initialized",
-            )
-        })?;
-        let global = PixelRect::new(
-            ov.display_origin.x.saturating_add(src_rect.origin.x),
-            ov.display_origin.y.saturating_add(src_rect.origin.y),
-            src_rect.size.width,
-            src_rect.size.height,
-        );
-        // 先裁切（仍持有 overlay），再立刻关窗
-        let image = self.crop_overlay_image(true)?;
         let position = PixelPoint::new(global.origin.x, global.origin.y);
 
         if let Some(ov) = self.overlay.take() {
             self.ocr_jobs.close_owner(JobOwner::Session(ov.session_id));
-            if action == OverlayFinish::Pin {
-                self.export_jobs
-                    .close_owner(JobOwner::Session(ov.session_id));
-            }
+            self.export_jobs
+                .close_owner(JobOwner::Session(ov.session_id));
             ov.window.set_visible(false);
             drop(ov);
         }
@@ -3089,40 +3151,72 @@ where
             src_rect.size.width, src_rect.size.height, global.origin.x, global.origin.y
         );
 
-        match action {
-            OverlayFinish::Copy => {
-                if let Some(rt) = self.runtime.as_mut() {
-                    rt.dispatch(Command::create_pin(image.clone(), position))?;
+        if let Some(pin_id) = edit_pin_id {
+            let pin_asset = match self.replace_pin_image(pin_id, image.clone()) {
+                Ok(asset) => asset,
+                Err(error) => {
+                    self.restore_pin_visibility(pin_id);
+                    return Err(error);
                 }
-                self.submit_export_job(
-                    session_owner,
-                    asset,
-                    ExportJobInput::CopyImage { image },
-                    PendingExportAction::CopyImage,
-                )?;
-            }
-            OverlayFinish::Save => {
-                let path = self
-                    .runtime
-                    .as_ref()
-                    .map(|rt| rt.export_dir().join(format!("{}.png", image.id)))
-                    .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "runtime missing"))?;
-                if let Some(rt) = self.runtime.as_mut() {
-                    rt.dispatch(Command::create_pin(image.clone(), position))?;
+            };
+            match action {
+                OverlayFinish::Copy => {
+                    self.submit_export_job(
+                        JobOwner::Pin(pin_id),
+                        pin_asset,
+                        ExportJobInput::CopyImage { image },
+                        PendingExportAction::CopyImage,
+                    )?;
                 }
-                self.submit_export_job(
-                    session_owner,
-                    asset,
-                    ExportJobInput::SavePng {
-                        image,
-                        path: path.clone(),
-                    },
-                    PendingExportAction::SavePng(path),
-                )?;
+                OverlayFinish::Save => {
+                    let path = self
+                        .runtime
+                        .as_ref()
+                        .map(|rt| rt.export_dir().join(format!("{}.png", image.id)))
+                        .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "runtime missing"))?;
+                    self.submit_export_job(
+                        JobOwner::Pin(pin_id),
+                        pin_asset,
+                        ExportJobInput::SavePng {
+                            image,
+                            path: path.clone(),
+                        },
+                        PendingExportAction::SavePng(path),
+                    )?;
+                }
+                // 贴图编辑中的“贴图”就是应用改动，保留同一 PinId，不创建新窗口。
+                OverlayFinish::Pin => {}
             }
-            OverlayFinish::Pin => {
-                // 贴图：先出窗再异步保存/复制，避免主路径串行卡顿
-                self.open_pin_from_image(event_loop, image, position, true)?;
+        } else {
+            match action {
+                OverlayFinish::Copy => {
+                    self.submit_export_job(
+                        session_owner,
+                        asset,
+                        ExportJobInput::CopyImage { image },
+                        PendingExportAction::CopyImage,
+                    )?;
+                }
+                OverlayFinish::Save => {
+                    let path = self
+                        .runtime
+                        .as_ref()
+                        .map(|rt| rt.export_dir().join(format!("{}.png", image.id)))
+                        .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "runtime missing"))?;
+                    self.submit_export_job(
+                        session_owner,
+                        asset,
+                        ExportJobInput::SavePng {
+                            image,
+                            path: path.clone(),
+                        },
+                        PendingExportAction::SavePng(path),
+                    )?;
+                }
+                OverlayFinish::Pin => {
+                    // 贴图：先出窗再异步保存/复制，避免主路径串行卡顿
+                    self.open_pin_from_image(event_loop, image, position, true)?;
+                }
             }
         }
         Ok(())
@@ -3240,11 +3334,18 @@ where
     }
 
     fn cancel_overlay(&mut self) {
-        if let Some(ov) = self.overlay.take() {
+        let edited_pin = if let Some(ov) = self.overlay.take() {
+            let edited_pin = ov.edit_pin_id;
             self.ocr_jobs.close_owner(JobOwner::Session(ov.session_id));
             self.export_jobs
                 .close_owner(JobOwner::Session(ov.session_id));
             ov.window.set_visible(false);
+            edited_pin
+        } else {
+            None
+        };
+        if let Some(pin_id) = edited_pin {
+            self.restore_pin_visibility(pin_id);
         }
         // Esc 只取消选区，绝不自动再截；再截仅 F2 / Ctrl+N
         self.mode = Mode::Idle;
@@ -3326,6 +3427,8 @@ where
                 scale,
                 opacity: opacity.clamp(0.15, 1.0),
                 locked: false,
+                always_on_top: true,
+                context_menu: None,
                 visible: true,
                 window: window.clone(),
                 surface,
@@ -3398,15 +3501,7 @@ where
                 // L：锁定；[ ]：透明度；O：OCR；T：词框
                 if let Key::Character(c) = &event.logical_key {
                     if c == "l" || c == "L" {
-                        if let Some(pin) = self.pins.get_mut(&window_id) {
-                            pin.locked = !pin.locked;
-                            println!(
-                                "pinora: pin {} {}",
-                                pin.pin_id,
-                                if pin.locked { "LOCKED" } else { "unlocked" }
-                            );
-                            self.sync_pin_transform(window_id);
-                        }
+                        self.toggle_pin_locked(window_id);
                         return;
                     }
                     if c == "[" {
@@ -3443,29 +3538,55 @@ where
                 button: MouseButton::Left,
                 ..
             } => {
-                if let Some(pin) = self.pins.get(&window_id) {
-                    if self.modifiers.control_key() && pin.ocr_show_boxes && pin.ocr.is_some() {
-                        let cursor = pin.cursor_position;
-                        if let Some(pin) = self.pins.get_mut(&window_id) {
-                            pin.ocr_drag_start = Some(cursor);
-                            pin.ocr_selection = OcrTextSelection::default();
-                            pin.window.request_redraw();
-                        }
-                        self.drag_pin = None;
-                        return;
-                    }
-                    if pin.locked {
-                        println!("pinora: pin locked — press L to unlock");
-                        return;
-                    }
-                    // Wayland 下用协议级拖动
-                    if let Err(e) = pin.window.drag_window() {
-                        eprintln!("pinora: drag_window failed: {e:?}");
-                        self.drag_pin = Some(window_id);
-                    } else {
-                        self.drag_pin = None;
-                    }
+                let menu_hit = self.pins.get(&window_id).and_then(|pin| {
+                    let point = PixelPoint::new(
+                        pin.cursor_position.0.round() as i32,
+                        pin.cursor_position.1.round() as i32,
+                    );
+                    pin.context_menu
+                        .as_ref()
+                        .map(|menu| (menu.hit_test(point), menu.contains(point)))
+                });
+                let Some((menu_action, menu_contains_cursor)) = menu_hit else {
+                    // 菜单没有打开，继续正常贴图交互。
+                    self.handle_pin_left_press(window_id);
+                    return;
+                };
+                if let Some(action) = menu_action {
+                    self.handle_pin_menu_action(event_loop, window_id, action);
+                    return;
                 }
+                if menu_contains_cursor {
+                    // 禁用项目没有副作用，也不应意外开始拖动贴图。
+                    return;
+                }
+                if let Some(pin) = self.pins.get_mut(&window_id)
+                    && pin.context_menu.take().is_some()
+                {
+                    pin.window.request_redraw();
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                let Some(pin) = self.pins.get_mut(&window_id) else {
+                    return;
+                };
+                let size = pin.window.inner_size();
+                let anchor = PixelPoint::new(
+                    pin.cursor_position.0.round() as i32,
+                    pin.cursor_position.1.round() as i32,
+                );
+                pin.context_menu = Some(PinContextMenu::open(
+                    anchor,
+                    size.width,
+                    size.height,
+                    pin.locked,
+                ));
+                pin.window.request_redraw();
+                self.drag_pin = None;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -3580,6 +3701,237 @@ where
         self.submit_ocr_job(JobOwner::Pin(pin_id), image, asset);
     }
 
+    fn handle_pin_menu_action(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        action: PinMenuAction,
+    ) {
+        if let Some(pin) = self.pins.get_mut(&window_id) {
+            pin.context_menu = None;
+            pin.window.request_redraw();
+        }
+        match action {
+            PinMenuAction::Copy => self.copy_pin_image(window_id),
+            PinMenuAction::Ocr => self.run_pin_ocr(window_id),
+            PinMenuAction::Edit => self.begin_pin_edit(event_loop, window_id),
+            PinMenuAction::ToggleLock => self.toggle_pin_locked(window_id),
+            PinMenuAction::OpacityDown => self.nudge_pin_opacity(window_id, -0.1),
+            PinMenuAction::OpacityUp => self.nudge_pin_opacity(window_id, 0.1),
+            PinMenuAction::ToggleAlwaysOnTop => self.toggle_pin_always_on_top(window_id),
+            PinMenuAction::Save => self.save_pin_image(window_id),
+            PinMenuAction::Close => self.close_pin(window_id),
+        }
+    }
+
+    fn handle_pin_left_press(&mut self, window_id: WindowId) {
+        if let Some(pin) = self.pins.get(&window_id) {
+            if self.modifiers.control_key() && pin.ocr_show_boxes && pin.ocr.is_some() {
+                let cursor = pin.cursor_position;
+                if let Some(pin) = self.pins.get_mut(&window_id) {
+                    pin.ocr_drag_start = Some(cursor);
+                    pin.ocr_selection = OcrTextSelection::default();
+                    pin.window.request_redraw();
+                }
+                self.drag_pin = None;
+                return;
+            }
+            if pin.locked {
+                println!("pinora: pin locked — press L to unlock");
+                return;
+            }
+            // Wayland 下用协议级拖动
+            if let Err(error) = pin.window.drag_window() {
+                eprintln!("pinora: drag_window failed: {error:?}");
+                self.drag_pin = Some(window_id);
+            } else {
+                self.drag_pin = None;
+            }
+        }
+    }
+
+    fn copy_pin_image(&mut self, window_id: WindowId) {
+        let Some(pin) = self.pins.get(&window_id) else {
+            return;
+        };
+        let owner = JobOwner::Pin(pin.pin_id);
+        let asset = pin.asset;
+        let image = pin.image.clone();
+        if let Err(error) = self.submit_export_job(
+            owner,
+            asset,
+            ExportJobInput::CopyImage { image },
+            PendingExportAction::CopyImage,
+        ) {
+            eprintln!("pinora: pin copy submit failed: {error}");
+        }
+    }
+
+    fn save_pin_image(&mut self, window_id: WindowId) {
+        let Some(pin) = self.pins.get(&window_id) else {
+            return;
+        };
+        let Some(path) = self
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.export_dir().join(format!("{}.png", pin.image.id)))
+        else {
+            eprintln!("pinora: pin save skipped because runtime is unavailable");
+            return;
+        };
+        let owner = JobOwner::Pin(pin.pin_id);
+        let asset = pin.asset;
+        let image = pin.image.clone();
+        if let Err(error) = self.submit_export_job(
+            owner,
+            asset,
+            ExportJobInput::SavePng {
+                image,
+                path: path.clone(),
+            },
+            PendingExportAction::SavePng(path),
+        ) {
+            eprintln!("pinora: pin save submit failed: {error}");
+        }
+    }
+
+    fn toggle_pin_locked(&mut self, window_id: WindowId) {
+        let Some((pin_id, locked)) = self
+            .pins
+            .get(&window_id)
+            .map(|pin| (pin.pin_id, !pin.locked))
+        else {
+            return;
+        };
+        let result = self
+            .runtime
+            .as_mut()
+            .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "runtime missing"))
+            .and_then(|runtime| runtime.dispatch(Command::set_pin_locked(pin_id, locked)));
+        if let Err(error) = result {
+            eprintln!("pinora: pin lock update failed: {error}");
+            return;
+        }
+        if let Some(pin) = self.pins.get_mut(&window_id) {
+            pin.locked = locked;
+            pin.window.request_redraw();
+        }
+    }
+
+    fn toggle_pin_always_on_top(&mut self, window_id: WindowId) {
+        let Some((pin_id, always_on_top)) = self
+            .pins
+            .get(&window_id)
+            .map(|pin| (pin.pin_id, !pin.always_on_top))
+        else {
+            return;
+        };
+        let result = self
+            .runtime
+            .as_mut()
+            .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "runtime missing"))
+            .and_then(|runtime| {
+                runtime.dispatch(Command::set_pin_always_on_top(pin_id, always_on_top))
+            });
+        if let Err(error) = result {
+            eprintln!("pinora: pin level update failed: {error}");
+            return;
+        }
+        if let Some(pin) = self.pins.get_mut(&window_id) {
+            pin.always_on_top = always_on_top;
+            pin.window.set_window_level(if always_on_top {
+                WindowLevel::AlwaysOnTop
+            } else {
+                WindowLevel::Normal
+            });
+            pin.window.request_redraw();
+        }
+    }
+
+    fn begin_pin_edit(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId) {
+        let Some((pin_id, image, locked)) = self
+            .pins
+            .get(&window_id)
+            .map(|pin| (pin.pin_id, pin.image.clone(), pin.locked))
+        else {
+            return;
+        };
+        if locked {
+            return;
+        }
+        if let Some(pin) = self.pins.get_mut(&window_id) {
+            pin.visible = false;
+            pin.window.set_visible(false);
+        }
+        let target = pin_edit_target(&image, pin_id);
+        if let Err(error) =
+            self.open_overlay_with_preview(event_loop, prepare_preview(image), target)
+        {
+            self.restore_pin_visibility(pin_id);
+            eprintln!("pinora: pin editor open failed: {error}");
+        }
+    }
+
+    fn restore_pin_visibility(&mut self, pin_id: PinId) {
+        if let Some(pin) = self.pins.values_mut().find(|pin| pin.pin_id == pin_id) {
+            pin.visible = true;
+            pin.window.set_visible(true);
+            pin.window.request_redraw();
+        }
+    }
+
+    fn replace_pin_image(
+        &mut self,
+        pin_id: PinId,
+        image: CaptureImage,
+    ) -> Result<AssetRef, PinoraError> {
+        let (old_asset, scale) = self
+            .pins
+            .values()
+            .find(|pin| pin.pin_id == pin_id)
+            .map(|pin| (pin.asset, pin.scale))
+            .ok_or_else(|| PinoraError::new(ErrorCode::NotFound, "edited pin is no longer open"))?;
+        let generation = old_asset.generation.advance().ok_or_else(|| {
+            PinoraError::new(
+                ErrorCode::Internal,
+                "edited pin asset generation is exhausted",
+            )
+        })?;
+        let asset = AssetRef::new(image.id, generation);
+        let runtime = self
+            .runtime
+            .as_mut()
+            .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "runtime missing"))?;
+        runtime.dispatch(Command::replace_pin_image(pin_id, image.clone()))?;
+
+        self.ocr_jobs.close_owner(JobOwner::Pin(pin_id));
+        self.export_jobs.close_owner(JobOwner::Pin(pin_id));
+        let pin = self
+            .pins
+            .values_mut()
+            .find(|pin| pin.pin_id == pin_id)
+            .expect("edited pin was present before runtime replacement");
+        pin.image = image;
+        pin.asset = asset;
+        pin.pixels_xrgb = rgba_to_xrgb(&pin.image.pixels.bytes);
+        pin.render_cache = None;
+        pin.ocr = None;
+        pin.ocr_selection = OcrTextSelection::default();
+        pin.ocr_drag_start = None;
+        pin.context_menu = None;
+        let (width, height) = scaled_window_size(pin.image.size(), scale);
+        let _ = pin
+            .window
+            .request_inner_size(PhysicalSize::new(width, height));
+        if let (Some(width), Some(height)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
+            let _ = pin.surface.resize(width, height);
+        }
+        pin.visible = true;
+        pin.window.set_visible(true);
+        pin.window.request_redraw();
+        Ok(asset)
+    }
+
     fn finish_pin_text_selection(
         &mut self,
         window_id: WindowId,
@@ -3644,12 +3996,10 @@ where
             opacity: pin.opacity,
         }
         .clamped();
-        let locked = pin.locked;
         if let Some(rt) = self.runtime.as_mut()
-            && let Some(p) = rt.state_mut().pin_mut(pin_id)
+            && let Err(error) = rt.dispatch(Command::set_pin_transform(pin_id, transform))
         {
-            p.transform = transform;
-            p.locked = locked;
+            eprintln!("pinora: pin transform update failed: {error}");
         }
     }
 
@@ -3692,6 +4042,8 @@ where
         let sw = pin.image.pixels.size.width as usize;
         let sh = pin.image.pixels.size.height as usize;
         let locked = pin.locked;
+        let always_on_top = pin.always_on_top;
+        let context_menu = pin.context_menu.clone();
         let show_ocr = pin.ocr_show_boxes;
         let ocr_selection = pin.ocr_selection.clone();
         let ocr_drag = pin.ocr_drag_start.map(|start| (start, pin.cursor_position));
@@ -3782,6 +4134,9 @@ where
             0x00_40_A0_FF
         };
         draw_border(&mut buffer[..bw * bh], bw, bh, border);
+        if let Some(menu) = context_menu.as_ref() {
+            pin_context_menu::paint(&mut buffer[..bw * bh], bw, bh, menu, locked, always_on_top);
+        }
         buffer
             .present()
             .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("pin present: {e}")))?;
@@ -4606,6 +4961,30 @@ mod overlay_scale_tests {
         assert_eq!(target.initial_selection, OverlayInitialSelection::FullImage);
         assert_eq!(target.presentation, OverlayPresentation::WindowCapture);
         assert_eq!(target.min_selection_edge, 1);
+        assert_eq!(target.edit_pin_id, None);
+    }
+
+    #[test]
+    fn pin_edit_opens_a_full_image_editor_for_the_existing_pin() {
+        let pin_id = PinId::from_raw(37);
+        let image = CaptureImage::new(
+            ImageId::from_raw(38),
+            RgbaBuffer::solid(PixelSize::new(800, 600), [1, 2, 3, 255]),
+            PixelRect::new(240, -30, 800, 600),
+            CaptureMetadata::new(DisplayId::new("pin-display"), 1.25, 77),
+        )
+        .unwrap();
+
+        let target = pin_edit_target(&image, pin_id);
+
+        assert_eq!(target.display_id, image.metadata.display);
+        assert_eq!(target.display_origin, image.source_rect.origin);
+        assert_eq!(target.image_width, 800);
+        assert_eq!(target.image_height, 600);
+        assert_eq!(target.initial_selection, OverlayInitialSelection::FullImage);
+        assert_eq!(target.presentation, OverlayPresentation::PinEditor);
+        assert_eq!(target.min_selection_edge, 1);
+        assert_eq!(target.edit_pin_id, Some(pin_id));
     }
 
     #[test]
@@ -4708,6 +5087,7 @@ mod overlay_scale_tests {
         assert_eq!(target.initial_selection, OverlayInitialSelection::FullImage);
         assert_eq!(target.presentation, OverlayPresentation::HistoryEditor);
         assert_eq!(target.min_selection_edge, 1);
+        assert_eq!(target.edit_pin_id, None);
     }
 
     #[test]

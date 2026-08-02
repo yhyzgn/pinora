@@ -48,6 +48,21 @@ pub enum Command {
         pin_id: PinId,
         transform: PinTransform,
     },
+    ReplacePinImage {
+        correlation_id: CorrelationId,
+        pin_id: PinId,
+        image: CaptureImage,
+    },
+    SetPinLocked {
+        correlation_id: CorrelationId,
+        pin_id: PinId,
+        locked: bool,
+    },
+    SetPinAlwaysOnTop {
+        correlation_id: CorrelationId,
+        pin_id: PinId,
+        always_on_top: bool,
+    },
     /// 将已登记图像保存为 PNG。
     SavePng {
         correlation_id: CorrelationId,
@@ -78,6 +93,9 @@ impl Command {
             | Self::CreatePinFromImage { correlation_id, .. }
             | Self::ClosePin { correlation_id, .. }
             | Self::SetPinTransform { correlation_id, .. }
+            | Self::ReplacePinImage { correlation_id, .. }
+            | Self::SetPinLocked { correlation_id, .. }
+            | Self::SetPinAlwaysOnTop { correlation_id, .. }
             | Self::SavePng { correlation_id, .. }
             | Self::CopyImage { correlation_id, .. }
             | Self::InvokeAction { correlation_id, .. } => *correlation_id,
@@ -130,6 +148,30 @@ impl Command {
             correlation_id: CorrelationId::new(),
             image_id,
             position,
+        }
+    }
+
+    pub fn replace_pin_image(pin_id: PinId, image: CaptureImage) -> Self {
+        Self::ReplacePinImage {
+            correlation_id: CorrelationId::new(),
+            pin_id,
+            image,
+        }
+    }
+
+    pub fn set_pin_locked(pin_id: PinId, locked: bool) -> Self {
+        Self::SetPinLocked {
+            correlation_id: CorrelationId::new(),
+            pin_id,
+            locked,
+        }
+    }
+
+    pub fn set_pin_always_on_top(pin_id: PinId, always_on_top: bool) -> Self {
+        Self::SetPinAlwaysOnTop {
+            correlation_id: CorrelationId::new(),
+            pin_id,
+            always_on_top,
         }
     }
 

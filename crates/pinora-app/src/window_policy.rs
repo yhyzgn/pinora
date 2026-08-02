@@ -96,6 +96,8 @@ pub(crate) fn auxiliary_event_loop() -> Result<EventLoop<()>, EventLoopError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::Path;
 
     #[test]
     fn every_auxiliary_window_kind_requests_taskbar_isolation() {
@@ -119,5 +121,23 @@ mod tests {
             assert!(kind.requires_post_map_policy());
         }
         assert!(!AuxiliaryWindowKind::DisplayHandle.requires_post_map_policy());
+    }
+
+    #[test]
+    fn only_window_policy_may_construct_event_loops_or_windows() {
+        let source_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let sources = fs::read_dir(&source_dir).expect("read application source directory");
+        for entry in sources {
+            let entry = entry.expect("read application source entry");
+            let path = entry.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+                continue;
+            }
+            let source = fs::read_to_string(&path).expect("read application source file");
+            let file_name = path.file_name().and_then(|name| name.to_str());
+            if source.contains("EventLoop::builder") || source.contains(".create_window(") {
+                assert_eq!(file_name, Some("window_policy.rs"), "{path:?}");
+            }
+        }
     }
 }

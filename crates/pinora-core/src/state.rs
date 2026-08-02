@@ -140,6 +140,44 @@ impl AppState {
         Ok(())
     }
 
+    /// 原子替换既有贴图的图片引用，保留其 `PinId`、交互状态和窗口变换。
+    pub fn replace_pin_image(&mut self, id: PinId, image: CaptureImage) -> Result<(), PinoraError> {
+        let old_image_id = self
+            .pin(id)
+            .map(|pin| pin.image_id)
+            .ok_or_else(|| PinoraError::new(ErrorCode::NotFound, format!("pin not found: {id}")))?;
+        let new_image_id = image.id;
+        self.retain_image(image);
+        let pin = self
+            .pin_mut(id)
+            .expect("pin was validated before retaining the replacement image");
+        pin.image_id = new_image_id;
+        if old_image_id != new_image_id {
+            self.drop_image_if_unused(old_image_id);
+        }
+        Ok(())
+    }
+
+    pub fn set_pin_locked(&mut self, id: PinId, locked: bool) -> Result<(), PinoraError> {
+        let pin = self
+            .pin_mut(id)
+            .ok_or_else(|| PinoraError::new(ErrorCode::NotFound, format!("pin not found: {id}")))?;
+        pin.set_locked(locked);
+        Ok(())
+    }
+
+    pub fn set_pin_always_on_top(
+        &mut self,
+        id: PinId,
+        always_on_top: bool,
+    ) -> Result<(), PinoraError> {
+        let pin = self
+            .pin_mut(id)
+            .ok_or_else(|| PinoraError::new(ErrorCode::NotFound, format!("pin not found: {id}")))?;
+        pin.set_always_on_top(always_on_top);
+        Ok(())
+    }
+
     pub fn set_pin_transform(
         &mut self,
         id: PinId,
@@ -245,5 +283,28 @@ mod tests {
             .create_pin(sample_image(), PixelPoint::new(1, 1))
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::CommandRejected);
+    }
+
+    #[test]
+    fn replacing_a_pin_image_preserves_the_pin_and_releases_the_old_image() {
+        let mut state = AppState::new();
+        let old = sample_image();
+        let old_id = old.id;
+        let pin_id = state.create_pin(old, PixelPoint::new(9, 10)).unwrap();
+        state.set_pin_locked(pin_id, true).unwrap();
+        state.set_pin_always_on_top(pin_id, false).unwrap();
+        let replacement = sample_image();
+        let replacement_id = replacement.id;
+
+        state.replace_pin_image(pin_id, replacement).unwrap();
+
+        let pin = state.pin(pin_id).unwrap();
+        assert_eq!(pin.id, pin_id);
+        assert_eq!(pin.image_id, replacement_id);
+        assert_eq!(pin.transform.position, PixelPoint::new(9, 10));
+        assert!(pin.locked);
+        assert!(!pin.always_on_top);
+        assert!(state.image(replacement_id).is_some());
+        assert!(state.image(old_id).is_none());
     }
 }

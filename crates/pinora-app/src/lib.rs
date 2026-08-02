@@ -20,10 +20,9 @@ mod ocr;
 mod ocr_job;
 mod os_instance;
 mod overlay_toolbar;
-mod pin_window;
+mod pin_context_menu;
+mod pin_layout;
 mod platform;
-mod region_overlay;
-mod region_workflow;
 mod runtime;
 mod settings_panel;
 mod settings_store;
@@ -55,10 +54,8 @@ pub use job_supervisor::{
 pub use ocr::{recognize_image, recognize_image_with_cancellation, tesseract_available};
 pub use ocr_job::{LocalOcrRunner, OcrJobCompletion, OcrJobService, OcrRunner};
 pub use os_instance::{OsSingleInstance, forward_ipc_frame};
-pub use pin_window::{PinSessionEnd, PinView, run_pin_session, scaled_window_size};
+pub use pin_layout::scaled_window_size;
 pub use platform::{CapabilityProbe, FakeCapabilityProbe, RuntimeCapabilityProbe};
-pub use region_overlay::run_region_selection;
-pub use region_workflow::{RegionCaptureResult, capture_region_interactive};
 pub use runtime::{AppRuntime, BootstrapOutcome, DispatchResult};
 pub use settings_panel::{
     SettingField, SettingsPanel, SettingsPanelAction, SettingsPanelKey, SettingsPanelStatus,

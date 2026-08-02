@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/059_virtual_desktop_capture.md`
-- 任务：`.context/tasks/059_virtual_desktop_capture.md`
+- 计划：`.context/plans/061_tray_only_window_boundary.md`
+- 任务：`.context/tasks/061_tray_only_window_boundary.md`
 
 ## 交付要求
 
