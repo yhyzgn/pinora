@@ -616,6 +616,8 @@ struct OverlayState {
     /// 在选区内画标注。
     annotate_dragging: bool,
     annotate: AnnotateSession,
+    /// 当前 UI 选择；只索引当前文档，任何文档或选区变化都会清除。
+    selected_annotation: Option<usize>,
     /// 进入取色器前的绘图工具；采样后立即恢复，避免下次点击误进入取色模式。
     last_drawing_tool: AnnotateTool,
     /// 标注预览缓存（选区在缓冲分辨率下的 XRGB）。
@@ -2364,6 +2366,7 @@ where
             drag_anchor: PixelPoint::new(0, 0),
             annotate_dragging: false,
             annotate: AnnotateSession::new(1, 1),
+            selected_annotation: None,
             last_drawing_tool: AnnotateTool::Rect,
             annotate_cache: None,
             annotate_cache_wh: (0, 0),
@@ -2463,6 +2466,7 @@ where
                         let revision = ov.annotate.doc.revision();
                         ov.annotate.commit();
                         if ov.annotate.doc.revision() != revision {
+                            ov.selected_annotation = None;
                             ov.annotate_dirty = true;
                         }
                         ov.needs_redraw = true;
@@ -2547,6 +2551,7 @@ where
                             ov.toolbar_pressed = None;
                             ov.last_toolbar_bounds = None;
                             ov.annotate = AnnotateSession::new(1, 1);
+                            ov.selected_annotation = None;
                             ov.annotate_cache = None;
                             ov.annotate_preview_cache.clear();
                             ov.active_src_rect = None;
@@ -2666,10 +2671,22 @@ where
                         return;
                     }
                     if let Some(local) = overlay_annotate_local(ov, p) {
+                        if ov.annotate.tool == AnnotateTool::Select {
+                            let selected = ov.annotate.doc.hit_test(local);
+                            if ov.selected_annotation != selected {
+                                ov.selected_annotation = selected;
+                                ov.annotate_dirty = true;
+                                ov.needs_redraw = true;
+                            }
+                            return;
+                        }
                         ov.annotate.begin(local);
                         ov.annotate_dragging = !matches!(
                             ov.annotate.tool,
-                            AnnotateTool::Text | AnnotateTool::Number | AnnotateTool::ColorPicker
+                            AnnotateTool::Text
+                                | AnnotateTool::Number
+                                | AnnotateTool::ColorPicker
+                                | AnnotateTool::Select
                         );
                         ov.annotate_dirty = true;
                         ov.needs_redraw = true;
@@ -2740,6 +2757,7 @@ where
                         let shape_fill_enabled = ov.annotate.shape_fill_enabled();
                         // 标注坐标系 = 原图选区像素
                         ov.annotate = AnnotateSession::new(src_sel.size.width, src_sel.size.height);
+                        ov.selected_annotation = None;
                         ov.annotate.tool = tool;
                         ov.annotate.color = color;
                         ov.annotate.stroke = stroke;
@@ -2764,8 +2782,12 @@ where
                     }
                     ov.needs_redraw = true;
                 } else if ov.annotate_dragging {
+                    let revision = ov.annotate.doc.revision();
                     ov.annotate.commit();
                     ov.annotate_dragging = false;
+                    if ov.annotate.doc.revision() != revision {
+                        ov.selected_annotation = None;
+                    }
                     ov.annotate_dirty = true;
                     ov.needs_redraw = true;
                 } else if ov.annotate.is_text_editing() {
@@ -2800,7 +2822,8 @@ where
                 if let Some(ov) = self.overlay.as_mut() {
                     let had_draft = ov.annotate.draft.is_some();
                     ov.annotate.cancel_draft();
-                    if ov.annotate.doc.clear() || had_draft {
+                    let had_selection = ov.selected_annotation.take().is_some();
+                    if ov.annotate.doc.clear() || had_draft || had_selection {
                         ov.annotate_dirty = true;
                         ov.needs_redraw = true;
                     }
@@ -3098,6 +3121,7 @@ where
         ov.annotate.commit();
         ov.annotate_dragging = false;
         if ov.annotate.doc.revision() != revision {
+            ov.selected_annotation = None;
             ov.annotate_dirty = true;
             ov.needs_redraw = true;
         }
@@ -4303,6 +4327,22 @@ fn handle_overlay_key(
             AnnotationHistoryAction::Redo => ov.annotate.doc.redo().is_some(),
         };
         if changed {
+            ov.selected_annotation = None;
+            ov.annotate_dirty = true;
+            ov.needs_redraw = true;
+        }
+        return;
+    }
+
+    if ov.phase == OverlayPhase::Ready
+        && matches!(
+            event.logical_key,
+            Key::Named(NamedKey::Delete | NamedKey::Backspace)
+        )
+        && let Some(index) = ov.selected_annotation
+    {
+        if ov.annotate.doc.delete_at(index).is_some() {
+            ov.selected_annotation = None;
             ov.annotate_dirty = true;
             ov.needs_redraw = true;
         }
@@ -4356,6 +4396,10 @@ fn handle_overlay_key(
             ov.needs_redraw = true;
             println!("pinora: shape fill enabled={enabled}");
         }
+        Key::Character(c) if c == "v" || c == "V" => {
+            set_overlay_tool(ov, AnnotateTool::Select);
+            println!("pinora: tool = Select");
+        }
         Key::Character(c) if c == "1" || c == "r" || c == "R" => {
             set_overlay_tool(ov, AnnotateTool::Rect);
             println!("pinora: tool = Rect");
@@ -4405,12 +4449,15 @@ fn handle_overlay_key(
 }
 
 fn overlay_click_finishes_copy(tool: AnnotateTool, is_double_click: bool) -> bool {
-    is_double_click && tool != AnnotateTool::Number
+    is_double_click && !matches!(tool, AnnotateTool::Number | AnnotateTool::Select)
 }
 
 fn set_overlay_tool(ov: &mut OverlayState, tool: AnnotateTool) {
-    if tool != AnnotateTool::ColorPicker {
+    if !matches!(tool, AnnotateTool::ColorPicker | AnnotateTool::Select) {
         ov.last_drawing_tool = tool;
+    }
+    if tool != AnnotateTool::Select && ov.selected_annotation.take().is_some() {
+        ov.annotate_dirty = true;
     }
     ov.annotate.tool = tool;
     ov.toolbar_chrome_dirty = true;
@@ -4425,6 +4472,7 @@ fn refresh_overlay_ready(ov: &mut OverlayState) {
         let src_sel = buf_rect_to_src(sel, ov.buf_w, ov.buf_h, ov.src_w, ov.src_h);
         let source_changed = ov.active_src_rect != Some(src_sel);
         if source_changed {
+            ov.selected_annotation = None;
             ov.active_src_rect = Some(src_sel);
             ov.annotation_asset = Some(OverlayAssetIdentity::new());
             ov.annotate_cache = None;
@@ -4437,6 +4485,7 @@ fn refresh_overlay_ready(ov: &mut OverlayState) {
             let stroke = ov.annotate.stroke;
             let shape_fill_enabled = ov.annotate.shape_fill_enabled();
             ov.annotate = AnnotateSession::new(src_sel.size.width, src_sel.size.height);
+            ov.selected_annotation = None;
             ov.annotate.tool = tool;
             ov.annotate.color = color;
             ov.annotate.stroke = stroke;
@@ -4524,6 +4573,19 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
                 }
             } else {
                 blit_rect(&mut ov.frame, &ov.base, img_w, img_h, rect);
+            }
+            if let Some(bounds) = selected_annotation_display_bounds(ov, rect) {
+                draw_rect_outline_xrgb(
+                    &mut ov.frame,
+                    img_w,
+                    img_h,
+                    bounds.origin,
+                    PixelPoint::new(
+                        bounds.right().saturating_sub(1),
+                        bounds.bottom().saturating_sub(1),
+                    ),
+                    0x00_35_D0_FF,
+                );
             }
             draw_rect_border(&mut ov.frame, img_w, img_h, rect, 0x00_FF_CC_33);
             damage.push(expand_rect(rect, 3, ov.buf_w, ov.buf_h));
@@ -4624,6 +4686,43 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
     }
     ov.last_present = Instant::now();
     Ok(())
+}
+
+fn selected_annotation_display_bounds(
+    ov: &OverlayState,
+    display_rect: PixelRect,
+) -> Option<PixelRect> {
+    let index = ov.selected_annotation?;
+    let local = ov
+        .annotate
+        .doc
+        .selection_bounds(index)?
+        .clamp_to(PixelRect::new(
+            0,
+            0,
+            ov.annotate.image_w,
+            ov.annotate.image_h,
+        ))?;
+    let source_width = u64::from(ov.annotate.image_w);
+    let source_height = u64::from(ov.annotate.image_h);
+    let display_width = u64::from(display_rect.size.width);
+    let display_height = u64::from(display_rect.size.height);
+    if source_width == 0 || source_height == 0 || display_width == 0 || display_height == 0 {
+        return None;
+    }
+
+    let x0 = (u64::try_from(local.origin.x).ok()? * display_width / source_width) as i32;
+    let y0 = (u64::try_from(local.origin.y).ok()? * display_height / source_height) as i32;
+    let x1 = (u64::try_from(local.right()).ok()? * display_width).div_ceil(source_width) as i32;
+    let y1 = (u64::try_from(local.bottom()).ok()? * display_height).div_ceil(source_height) as i32;
+    let width = x1.saturating_sub(x0).max(1) as u32;
+    let height = y1.saturating_sub(y0).max(1) as u32;
+    Some(PixelRect::new(
+        display_rect.origin.x.saturating_add(x0),
+        display_rect.origin.y.saturating_add(y0),
+        width,
+        height,
+    ))
 }
 
 fn expand_rect(r: PixelRect, pad: i32, img_w: u32, img_h: u32) -> PixelRect {
@@ -5383,6 +5482,7 @@ mod overlay_scale_tests {
         assert!(overlay_click_finishes_copy(AnnotateTool::Rect, true));
         assert!(!overlay_click_finishes_copy(AnnotateTool::Rect, false));
         assert!(!overlay_click_finishes_copy(AnnotateTool::Number, true));
+        assert!(!overlay_click_finishes_copy(AnnotateTool::Select, true));
     }
 
     #[test]

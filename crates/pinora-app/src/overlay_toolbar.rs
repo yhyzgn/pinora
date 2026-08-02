@@ -38,6 +38,7 @@ pub fn layout_toolbar(selection: PixelRect, img_w: u32, img_h: u32) -> Vec<Toolb
         (ToolbarAction::Save, "保存"),
         (ToolbarAction::Ocr, "OCR"),
         (ToolbarAction::Clear, "清空"),
+        (ToolbarAction::Tool(AnnotateTool::Select), "选择"),
         (ToolbarAction::ToggleFill, "填充"),
         (ToolbarAction::Tool(AnnotateTool::Rect), "矩形"),
         (ToolbarAction::Tool(AnnotateTool::RoundedRect), "圆角矩形"),
@@ -187,6 +188,7 @@ fn button_mark(b: &ToolbarButton) -> &'static str {
         ToolbarAction::Ocr => "OCR",
         ToolbarAction::Clear => "X",
         ToolbarAction::ToggleFill => "F",
+        ToolbarAction::Tool(AnnotateTool::Select) => "SEL",
         ToolbarAction::Tool(AnnotateTool::Rect) => "R",
         ToolbarAction::Tool(AnnotateTool::RoundedRect) => "Q",
         ToolbarAction::Tool(AnnotateTool::Line) => "L",
@@ -400,6 +402,7 @@ mod tests {
         let buttons = layout_toolbar(PixelRect::new(50, 50, 400, 80), 1000, 800);
         for tool in [
             AnnotateTool::RoundedRect,
+            AnnotateTool::Select,
             AnnotateTool::Line,
             AnnotateTool::Number,
             AnnotateTool::Blur,

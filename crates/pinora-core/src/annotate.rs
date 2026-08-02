@@ -3,13 +3,15 @@
 use std::num::NonZeroU64;
 use std::sync::OnceLock;
 
-use crate::geometry::PixelPoint;
+use crate::geometry::{PixelPoint, PixelRect};
 use crate::ids::ImageId;
 use crate::image::{CaptureImage, RgbaBuffer};
 
 /// 标注工具。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum AnnotateTool {
+    /// 选择已提交标注；选择状态只属于 UI，不生成标注事务。
+    Select,
     #[default]
     Rect,
     RoundedRect,
@@ -138,6 +140,7 @@ pub struct AnnotationDoc {
 enum AnnotationTransaction {
     Add(Annotation),
     Clear(Vec<Annotation>),
+    Delete { index: usize, item: Annotation },
 }
 
 impl AnnotationDoc {
@@ -155,10 +158,21 @@ impl AnnotationDoc {
     pub fn undo(&mut self) -> Option<Annotation> {
         let transaction = self.undo.pop()?;
         let item = match &transaction {
-            AnnotationTransaction::Add(_) => self.items.pop()?,
+            AnnotationTransaction::Add(expected) => {
+                let item = self.items.pop().expect("add transaction must have an item");
+                debug_assert_eq!(&item, expected);
+                item
+            }
             AnnotationTransaction::Clear(items) => {
                 self.items = items.clone();
-                items.last()?.clone()
+                items
+                    .last()
+                    .expect("clear transaction must have at least one item")
+                    .clone()
+            }
+            AnnotationTransaction::Delete { index, item } => {
+                self.items.insert(*index, item.clone());
+                item.clone()
             }
         };
         self.redo.push(transaction);
@@ -176,7 +190,15 @@ impl AnnotationDoc {
             }
             AnnotationTransaction::Clear(items) => {
                 self.items.clear();
-                items.last()?.clone()
+                items
+                    .last()
+                    .expect("clear transaction must have at least one item")
+                    .clone()
+            }
+            AnnotationTransaction::Delete { index, item } => {
+                let removed = self.items.remove(*index);
+                debug_assert_eq!(&removed, item);
+                removed
             }
         };
         self.undo.push(transaction);
@@ -198,6 +220,33 @@ impl AnnotationDoc {
         true
     }
 
+    /// 删除给定索引的标注，并保留其原始绘制位置供 undo 精确恢复。
+    pub fn delete_at(&mut self, index: usize) -> Option<Annotation> {
+        let item = self.items.get(index)?.clone();
+        self.items.remove(index);
+        self.redo.clear();
+        self.undo.push(AnnotationTransaction::Delete {
+            index,
+            item: item.clone(),
+        });
+        self.revision = self.revision.advance();
+        Some(item)
+    }
+
+    /// 返回视觉上最顶层、可由选择工具命中的标注索引。
+    pub fn hit_test(&self, point: PixelPoint) -> Option<usize> {
+        self.items
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, item)| item.contains_selection_point(point).then_some(index))
+    }
+
+    /// 返回标注的局部选择框；仅供 UI chrome 使用，不参与导出合成。
+    pub fn selection_bounds(&self, index: usize) -> Option<PixelRect> {
+        self.items.get(index).map(Annotation::selection_bounds)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
@@ -217,6 +266,322 @@ impl AnnotationDoc {
     pub const fn revision(&self) -> AnnotationRevision {
         self.revision
     }
+}
+
+const SELECTION_HIT_TOLERANCE: f64 = 6.0;
+
+impl Annotation {
+    fn contains_selection_point(&self, point: PixelPoint) -> bool {
+        match self {
+            Self::Rect {
+                a, b, stroke, fill, ..
+            } => rect_contains_selection_point(*a, *b, *stroke, fill.is_some(), point),
+            Self::RoundedRect {
+                a,
+                b,
+                stroke,
+                radius,
+                fill,
+                ..
+            } => rounded_rect_contains_selection_point(
+                RoundedRectGeometry {
+                    a: *a,
+                    b: *b,
+                    radius: *radius,
+                },
+                *stroke,
+                fill.is_some(),
+                point,
+            ),
+            Self::Line {
+                from, to, stroke, ..
+            } => line_contains_selection_point(*from, *to, *stroke, point),
+            Self::Arrow {
+                from, to, stroke, ..
+            } => arrow_contains_selection_point(*from, *to, *stroke, point),
+            Self::Pen { points, stroke, .. } => {
+                points.first().is_some_and(|start| {
+                    distance(point, *start)
+                        <= (f64::from(*stroke) * 0.5).max(0.75) + SELECTION_HIT_TOLERANCE
+                }) || points.windows(2).any(|segment| {
+                    line_contains_selection_point(segment[0], segment[1], *stroke, point)
+                })
+            }
+            Self::Ellipse {
+                a, b, stroke, fill, ..
+            } => ellipse_contains_selection_point(*a, *b, *stroke, fill.is_some(), point),
+            Self::Number {
+                center, diameter, ..
+            } => distance(point, *center) <= f64::from(*diameter) * 0.5 + SELECTION_HIT_TOLERANCE,
+            Self::Mosaic { a, b, .. } | Self::Blur { a, b, .. } => {
+                inclusive_rect(*a, *b).contains_point(point)
+            }
+            Self::Text {
+                origin,
+                content,
+                size,
+                ..
+            } => expand_pixel_rect(
+                text_bounds(*origin, content, *size),
+                SELECTION_HIT_TOLERANCE as i32,
+            )
+            .contains_point(point),
+        }
+    }
+
+    fn selection_bounds(&self) -> PixelRect {
+        match self {
+            Self::Rect { a, b, stroke, .. } | Self::Ellipse { a, b, stroke, .. } => {
+                expand_pixel_rect(inclusive_rect(*a, *b), (*stroke as i32 / 2).max(1))
+            }
+            Self::Mosaic { a, b, .. } | Self::Blur { a, b, .. } => inclusive_rect(*a, *b),
+            Self::RoundedRect { a, b, stroke, .. } => {
+                expand_pixel_rect(inclusive_rect(*a, *b), (*stroke as i32 / 2).max(1))
+            }
+            Self::Line {
+                from, to, stroke, ..
+            } => expand_pixel_rect(points_bounds(&[*from, *to]), (*stroke as i32 / 2).max(1)),
+            Self::Arrow {
+                from, to, stroke, ..
+            } => {
+                let (left, right) = arrow_wings(*from, *to, *stroke);
+                expand_pixel_rect(
+                    points_bounds(&[*from, *to, left, right]),
+                    (*stroke as i32 / 2).max(1),
+                )
+            }
+            Self::Pen { points, stroke, .. } => {
+                expand_pixel_rect(points_bounds(points), (*stroke as i32 / 2).max(1))
+            }
+            Self::Number {
+                center, diameter, ..
+            } => {
+                let radius = (*diameter as i32 / 2).max(1);
+                PixelRect::new(
+                    center.x - radius,
+                    center.y - radius,
+                    (radius.saturating_mul(2).saturating_add(1)) as u32,
+                    (radius.saturating_mul(2).saturating_add(1)) as u32,
+                )
+            }
+            Self::Text {
+                origin,
+                content,
+                size,
+                ..
+            } => text_bounds(*origin, content, *size),
+        }
+    }
+}
+
+fn inclusive_rect(a: PixelPoint, b: PixelPoint) -> PixelRect {
+    let x0 = a.x.min(b.x);
+    let y0 = a.y.min(b.y);
+    let x1 = a.x.max(b.x);
+    let y1 = a.y.max(b.y);
+    PixelRect::new(
+        x0,
+        y0,
+        x1.saturating_sub(x0).saturating_add(1) as u32,
+        y1.saturating_sub(y0).saturating_add(1) as u32,
+    )
+}
+
+fn points_bounds(points: &[PixelPoint]) -> PixelRect {
+    let Some(first) = points.first().copied() else {
+        return PixelRect::new(0, 0, 1, 1);
+    };
+    let (x0, y0, x1, y1) = points.iter().skip(1).fold(
+        (first.x, first.y, first.x, first.y),
+        |(x0, y0, x1, y1), point| {
+            (
+                x0.min(point.x),
+                y0.min(point.y),
+                x1.max(point.x),
+                y1.max(point.y),
+            )
+        },
+    );
+    PixelRect::new(
+        x0,
+        y0,
+        x1.saturating_sub(x0).saturating_add(1) as u32,
+        y1.saturating_sub(y0).saturating_add(1) as u32,
+    )
+}
+
+fn expand_pixel_rect(rect: PixelRect, padding: i32) -> PixelRect {
+    let padding = padding.max(0);
+    PixelRect::new(
+        rect.origin.x.saturating_sub(padding),
+        rect.origin.y.saturating_sub(padding),
+        rect.size
+            .width
+            .saturating_add(padding.unsigned_abs().saturating_mul(2)),
+        rect.size
+            .height
+            .saturating_add(padding.unsigned_abs().saturating_mul(2)),
+    )
+}
+
+fn distance(a: PixelPoint, b: PixelPoint) -> f64 {
+    let dx = f64::from(a.x) - f64::from(b.x);
+    let dy = f64::from(a.y) - f64::from(b.y);
+    (dx * dx + dy * dy).sqrt()
+}
+
+fn line_contains_selection_point(
+    from: PixelPoint,
+    to: PixelPoint,
+    stroke: u32,
+    point: PixelPoint,
+) -> bool {
+    dist_point_segment(
+        f64::from(point.x),
+        f64::from(point.y),
+        f64::from(from.x),
+        f64::from(from.y),
+        f64::from(to.x),
+        f64::from(to.y),
+    ) <= (f64::from(stroke) * 0.5).max(0.75) + SELECTION_HIT_TOLERANCE
+}
+
+fn rect_contains_selection_point(
+    a: PixelPoint,
+    b: PixelPoint,
+    stroke: u32,
+    filled: bool,
+    point: PixelPoint,
+) -> bool {
+    let rect = inclusive_rect(a, b);
+    if filled && rect.contains_point(point) {
+        return true;
+    }
+    let x0 = a.x.min(b.x);
+    let y0 = a.y.min(b.y);
+    let x1 = a.x.max(b.x);
+    let y1 = a.y.max(b.y);
+    line_contains_selection_point(
+        PixelPoint::new(x0, y0),
+        PixelPoint::new(x1, y0),
+        stroke,
+        point,
+    ) || line_contains_selection_point(
+        PixelPoint::new(x1, y0),
+        PixelPoint::new(x1, y1),
+        stroke,
+        point,
+    ) || line_contains_selection_point(
+        PixelPoint::new(x1, y1),
+        PixelPoint::new(x0, y1),
+        stroke,
+        point,
+    ) || line_contains_selection_point(
+        PixelPoint::new(x0, y1),
+        PixelPoint::new(x0, y0),
+        stroke,
+        point,
+    )
+}
+
+fn rounded_rect_signed_distance(geometry: RoundedRectGeometry, point: PixelPoint) -> f64 {
+    let x0 = f64::from(geometry.a.x.min(geometry.b.x));
+    let y0 = f64::from(geometry.a.y.min(geometry.b.y));
+    let x1 = f64::from(geometry.a.x.max(geometry.b.x));
+    let y1 = f64::from(geometry.a.y.max(geometry.b.y));
+    let half_width = (x1 - x0) * 0.5;
+    let half_height = (y1 - y0) * 0.5;
+    let radius = f64::from(geometry.radius).min(half_width).min(half_height);
+    if radius < 0.5 {
+        let dx = (f64::from(point.x) - (x0 + x1) * 0.5).abs() - half_width;
+        let dy = (f64::from(point.y) - (y0 + y1) * 0.5).abs() - half_height;
+        return (dx.max(0.0).powi(2) + dy.max(0.0).powi(2)).sqrt() + dx.max(dy).min(0.0);
+    }
+    let center_x = (x0 + x1) * 0.5;
+    let center_y = (y0 + y1) * 0.5;
+    let qx = (f64::from(point.x) - center_x).abs() - (half_width - radius).max(0.0);
+    let qy = (f64::from(point.y) - center_y).abs() - (half_height - radius).max(0.0);
+    (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - radius
+}
+
+fn rounded_rect_contains_selection_point(
+    geometry: RoundedRectGeometry,
+    stroke: u32,
+    filled: bool,
+    point: PixelPoint,
+) -> bool {
+    let signed_distance = rounded_rect_signed_distance(geometry, point);
+    (filled && signed_distance <= 0.0)
+        || signed_distance.abs() <= (f64::from(stroke) * 0.5).max(0.75) + SELECTION_HIT_TOLERANCE
+}
+
+fn ellipse_signed_distance(a: PixelPoint, b: PixelPoint, point: PixelPoint) -> f64 {
+    let x0 = f64::from(a.x.min(b.x));
+    let y0 = f64::from(a.y.min(b.y));
+    let x1 = f64::from(a.x.max(b.x));
+    let y1 = f64::from(a.y.max(b.y));
+    let cx = (x0 + x1) * 0.5;
+    let cy = (y0 + y1) * 0.5;
+    let rx = ((x1 - x0) * 0.5).max(1.0);
+    let ry = ((y1 - y0) * 0.5).max(1.0);
+    let nx = (f64::from(point.x) - cx) / rx;
+    let ny = (f64::from(point.y) - cy) / ry;
+    let r_norm = (nx * nx + ny * ny).sqrt();
+    if r_norm < 1e-6 {
+        -rx.min(ry)
+    } else {
+        let gradient = ((nx / rx).powi(2) + (ny / ry).powi(2)).sqrt().max(1e-6);
+        (r_norm - 1.0) / gradient
+    }
+}
+
+fn ellipse_contains_selection_point(
+    a: PixelPoint,
+    b: PixelPoint,
+    stroke: u32,
+    filled: bool,
+    point: PixelPoint,
+) -> bool {
+    let signed_distance = ellipse_signed_distance(a, b, point);
+    (filled && signed_distance <= 0.0)
+        || signed_distance.abs() <= (f64::from(stroke) * 0.5).max(0.75) + SELECTION_HIT_TOLERANCE
+}
+
+fn arrow_wings(from: PixelPoint, to: PixelPoint, stroke: u32) -> (PixelPoint, PixelPoint) {
+    let dx = f64::from(to.x - from.x);
+    let dy = f64::from(to.y - from.y);
+    let length = (dx * dx + dy * dy).sqrt();
+    if length < 1.0 {
+        return (to, to);
+    }
+    let ux = dx / length;
+    let uy = dy / length;
+    let head = 14.0_f64.max(f64::from(stroke) * 3.5);
+    let bx = f64::from(to.x) - ux * head;
+    let by = f64::from(to.y) - uy * head;
+    let wing = head * 0.48;
+    (
+        PixelPoint::new(
+            (bx - uy * wing).round() as i32,
+            (by + ux * wing).round() as i32,
+        ),
+        PixelPoint::new(
+            (bx + uy * wing).round() as i32,
+            (by - ux * wing).round() as i32,
+        ),
+    )
+}
+
+fn arrow_contains_selection_point(
+    from: PixelPoint,
+    to: PixelPoint,
+    stroke: u32,
+    point: PixelPoint,
+) -> bool {
+    let (left, right) = arrow_wings(from, to, stroke);
+    line_contains_selection_point(from, to, stroke, point)
+        || line_contains_selection_point(to, left, stroke, point)
+        || line_contains_selection_point(to, right, stroke, point)
 }
 
 /// 默认描边色（亮红）。
@@ -357,7 +722,7 @@ impl AnnotateSession {
 
     pub fn begin(&mut self, p: PixelPoint) {
         let p = self.clamp_point(p);
-        if self.tool == AnnotateTool::ColorPicker {
+        if matches!(self.tool, AnnotateTool::ColorPicker | AnnotateTool::Select) {
             return;
         }
         if self.tool == AnnotateTool::Number {
@@ -399,7 +764,7 @@ impl AnnotateSession {
             AnnotateTool::Mosaic => DraftShape::Mosaic { a: p, b: p },
             AnnotateTool::Blur => DraftShape::Blur { a: p, b: p },
             AnnotateTool::Text => unreachable!(),
-            AnnotateTool::Number | AnnotateTool::ColorPicker => return,
+            AnnotateTool::Number | AnnotateTool::ColorPicker | AnnotateTool::Select => return,
         });
     }
 
@@ -1630,6 +1995,51 @@ fn draw_text(
     }
 }
 
+fn text_bounds(origin: PixelPoint, content: &str, size: f32) -> PixelRect {
+    let fallback = || {
+        PixelRect::new(
+            origin.x,
+            origin.y.saturating_sub(2),
+            (content.chars().count() as u32).saturating_mul(8).max(8),
+            5,
+        )
+    };
+    let Some(cache) = load_font() else {
+        return fallback();
+    };
+
+    let mut pen_x = origin.x as f32;
+    let size = size.clamp(8.0, 96.0);
+    let mut bounds: Option<(i32, i32, i32, i32)> = None;
+    for character in content.chars() {
+        if character == '\n' {
+            continue;
+        }
+        let (metrics, _) = cache.font.rasterize(character, size);
+        let x0 = (pen_x + metrics.xmin as f32).round() as i32;
+        let y0 = origin.y.saturating_add(metrics.ymin);
+        let x1 = x0.saturating_add(metrics.width as i32);
+        let y1 = y0.saturating_add(metrics.height as i32);
+        if metrics.width > 0 && metrics.height > 0 {
+            bounds = Some(match bounds {
+                Some((left, top, right, bottom)) => {
+                    (left.min(x0), top.min(y0), right.max(x1), bottom.max(y1))
+                }
+                None => (x0, y0, x1, y1),
+            });
+        }
+        pen_x += metrics.advance_width;
+    }
+    bounds.map_or_else(fallback, |(x0, y0, x1, y1)| {
+        PixelRect::new(
+            x0,
+            y0,
+            x1.saturating_sub(x0).max(1) as u32,
+            y1.saturating_sub(y0).max(1) as u32,
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2137,6 +2547,11 @@ mod tests {
         assert!(session.draft.is_none());
         assert_eq!(session.doc.revision(), revision);
         assert_eq!(session.color, [0x12, 0xA0, 0xFE, 0x80]);
+
+        session.tool = AnnotateTool::Select;
+        session.begin(PixelPoint::new(1, 0));
+        assert!(session.draft.is_none());
+        assert_eq!(session.doc.revision(), revision);
     }
 
     #[test]
@@ -2277,6 +2692,210 @@ mod tests {
         assert_eq!(empty.revision(), empty_revision);
         assert!(empty.can_redo());
         assert_eq!(doc.revision(), revision);
+    }
+
+    #[test]
+    fn selection_hit_test_covers_every_annotation_kind_and_prefers_the_topmost_item() {
+        let mut doc = AnnotationDoc::new();
+        let annotations = [
+            (
+                Annotation::Rect {
+                    a: PixelPoint::new(4, 4),
+                    b: PixelPoint::new(16, 16),
+                    color: DEFAULT_STROKE,
+                    stroke: 3,
+                    fill: None,
+                },
+                PixelPoint::new(4, 10),
+            ),
+            (
+                Annotation::RoundedRect {
+                    a: PixelPoint::new(24, 4),
+                    b: PixelPoint::new(42, 20),
+                    color: DEFAULT_STROKE,
+                    stroke: 3,
+                    radius: 5,
+                    fill: None,
+                },
+                PixelPoint::new(33, 4),
+            ),
+            (
+                Annotation::Line {
+                    from: PixelPoint::new(4, 30),
+                    to: PixelPoint::new(16, 30),
+                    color: DEFAULT_STROKE,
+                    stroke: 3,
+                },
+                PixelPoint::new(10, 30),
+            ),
+            (
+                Annotation::Arrow {
+                    from: PixelPoint::new(24, 30),
+                    to: PixelPoint::new(42, 30),
+                    color: DEFAULT_STROKE,
+                    stroke: 3,
+                },
+                PixelPoint::new(30, 30),
+            ),
+            (
+                Annotation::Pen {
+                    points: vec![PixelPoint::new(4, 44), PixelPoint::new(16, 48)],
+                    color: DEFAULT_STROKE,
+                    stroke: 3,
+                },
+                PixelPoint::new(10, 46),
+            ),
+            (
+                Annotation::Ellipse {
+                    a: PixelPoint::new(24, 42),
+                    b: PixelPoint::new(42, 58),
+                    color: DEFAULT_STROKE,
+                    stroke: 3,
+                    fill: None,
+                },
+                PixelPoint::new(33, 42),
+            ),
+            (
+                Annotation::Number {
+                    center: PixelPoint::new(54, 12),
+                    value: 1,
+                    color: DEFAULT_STROKE,
+                    diameter: 20,
+                },
+                PixelPoint::new(54, 12),
+            ),
+            (
+                Annotation::Mosaic {
+                    a: PixelPoint::new(50, 28),
+                    b: PixelPoint::new(64, 40),
+                    block: 4,
+                },
+                PixelPoint::new(56, 34),
+            ),
+            (
+                Annotation::Blur {
+                    a: PixelPoint::new(50, 46),
+                    b: PixelPoint::new(64, 58),
+                    radius: 5,
+                },
+                PixelPoint::new(56, 52),
+            ),
+            (
+                Annotation::Text {
+                    origin: PixelPoint::new(70, 24),
+                    content: "Text".to_owned(),
+                    color: DEFAULT_STROKE,
+                    size: 18.0,
+                },
+                PixelPoint::new(74, 24),
+            ),
+        ];
+
+        for (index, (annotation, point)) in annotations.iter().enumerate() {
+            doc.push(annotation.clone());
+            assert_eq!(
+                doc.hit_test(*point),
+                Some(index),
+                "annotation index {index}"
+            );
+        }
+
+        doc.push(Annotation::Rect {
+            a: PixelPoint::new(4, 4),
+            b: PixelPoint::new(16, 16),
+            color: [32, 32, 32, 255],
+            stroke: 3,
+            fill: Some([32, 32, 32, 96]),
+        });
+        assert_eq!(
+            doc.hit_test(PixelPoint::new(10, 10)),
+            Some(annotations.len())
+        );
+        assert_eq!(doc.hit_test(PixelPoint::new(100, 100)), None);
+    }
+
+    #[test]
+    fn delete_transaction_restores_the_original_index_and_preserves_redo_rules() {
+        let first = Annotation::Line {
+            from: PixelPoint::new(1, 1),
+            to: PixelPoint::new(4, 4),
+            color: DEFAULT_STROKE,
+            stroke: DEFAULT_WIDTH,
+        };
+        let second = Annotation::Mosaic {
+            a: PixelPoint::new(6, 2),
+            b: PixelPoint::new(12, 8),
+            block: 4,
+        };
+        let third = Annotation::Blur {
+            a: PixelPoint::new(14, 4),
+            b: PixelPoint::new(22, 12),
+            radius: 5,
+        };
+        let mut doc = AnnotationDoc::new();
+        doc.push(first.clone());
+        doc.push(second.clone());
+        doc.push(third.clone());
+        let before_delete = doc.revision();
+
+        assert_eq!(doc.delete_at(1), Some(second.clone()));
+        assert_eq!(doc.items(), [first.clone(), third.clone()]);
+        assert_eq!(doc.revision(), before_delete.advance());
+        assert_eq!(doc.undo(), Some(second.clone()));
+        assert_eq!(doc.items(), [first.clone(), second.clone(), third.clone()]);
+        assert_eq!(doc.redo(), Some(second.clone()));
+        assert_eq!(doc.items(), [first.clone(), third.clone()]);
+
+        assert_eq!(doc.undo(), Some(second.clone()));
+        assert_eq!(doc.items(), [first.clone(), second, third]);
+        doc.push(Annotation::Number {
+            center: PixelPoint::new(28, 8),
+            value: 1,
+            color: DEFAULT_STROKE,
+            diameter: 20,
+        });
+        assert!(!doc.can_redo());
+        let revision = doc.revision();
+        assert_eq!(doc.delete_at(99), None);
+        assert_eq!(doc.revision(), revision);
+    }
+
+    #[test]
+    fn delete_and_clear_transactions_keep_their_original_order_across_undo_and_redo() {
+        let first = Annotation::Line {
+            from: PixelPoint::new(1, 1),
+            to: PixelPoint::new(4, 4),
+            color: DEFAULT_STROKE,
+            stroke: DEFAULT_WIDTH,
+        };
+        let second = Annotation::Mosaic {
+            a: PixelPoint::new(6, 2),
+            b: PixelPoint::new(12, 8),
+            block: 4,
+        };
+        let third = Annotation::Blur {
+            a: PixelPoint::new(14, 4),
+            b: PixelPoint::new(22, 12),
+            radius: 5,
+        };
+        let mut doc = AnnotationDoc::new();
+        doc.push(first.clone());
+        doc.push(second.clone());
+        doc.push(third.clone());
+
+        assert_eq!(doc.delete_at(0), Some(first.clone()));
+        assert_eq!(doc.items(), [second.clone(), third.clone()]);
+        assert!(doc.clear());
+        assert!(doc.is_empty());
+
+        assert_eq!(doc.undo(), Some(third.clone()));
+        assert_eq!(doc.items(), [second.clone(), third.clone()]);
+        assert_eq!(doc.undo(), Some(first.clone()));
+        assert_eq!(doc.items(), [first.clone(), second.clone(), third.clone()]);
+        assert_eq!(doc.redo(), Some(first));
+        assert_eq!(doc.items(), [second.clone(), third.clone()]);
+        assert_eq!(doc.redo(), Some(third));
+        assert!(doc.is_empty());
     }
 
     #[test]
