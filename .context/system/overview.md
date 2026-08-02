@@ -21,7 +21,7 @@
 | 全局热键 | F2/Ctrl+N/Ctrl+Shift+S 区域、F3 单显示器全屏（注册成功时）+ `pinora capture` IPC |
 | 单实例 | flock + Unix socket Activate/CAPTURE/QUIT |
 | 帧缓存 | 空闲预截；热键命中以所有权移交预处理帧，避免复制全屏图像与双 XRGB 缓冲；暂停以代际拒绝晚到帧 |
-| 基础标注 | Overlay 选区内：矩形/直线/箭头/画笔/椭圆/序号/马赛克/文本/截图内取色；`L` 直线，`N` 序号，C 颜色，I 取色，+/- 线宽；`Ctrl+Z` 撤销，`Ctrl+Shift+Z`/`Ctrl+Y` 重做 |
+| 基础标注 | Overlay 选区内：矩形/圆角矩形/直线/箭头/画笔/椭圆/序号/马赛克/文本/截图内取色；`Q` 圆角矩形，`L` 直线，`N` 序号，C 颜色，I 取色，+/- 线宽；`Ctrl+Z` 撤销，`Ctrl+Shift+Z`/`Ctrl+Y` 重做 |
 | 系统托盘 | 截图、1/3/5 秒延时区域截图及取消、显示器指定全屏、可用 xcap 后端的最多 20 个经清洗窗口截图候选、设置、历史、显示/隐藏/关闭全部贴图、退出（tray-icon；真实跨平台菜单与窗口枚举仍待探针） |
 | 后台驻留与窗口隔离 | 启动后只保留托盘、可用全局热键、IPC 与帧缓存，不自动截图；无法创建托盘时以 `CapabilityUnavailable` 退出；所有辅助窗口必须由 `window_policy` 工厂创建并请求跳过任务栏/Dock，真实桌面验证仍待完成 |
 | 贴图控制 | L 锁定，`[` `]` 透明度（压暗近似）；`O` 本地 OCR；`T` 词框 |
@@ -32,7 +32,7 @@
 - 生产入口仍是 `src/main.rs`，但使用 `std::os::unix::net::UnixStream`；没有平台条件编译，因此 Windows target 无法完成 workspace 检查。
 - `crates/pinora-app/src/desktop_shell.rs` 当前约 3679 行，仍集中承载 winit/softbuffer 窗口事件、截图编排、Overlay 绘制、标注输入、贴图生命周期、OCR 触发、托盘和 IPC 轮询；045/046 已将历史和设置窗口的资源、草稿/预览缓存、resize、存储调用和呈现迁至专属适配器，但 Overlay/贴图仍在 shell 中，单体化风险保持开放。
 - 当前依赖树把 `gtk`/`tray-icon`、`xcap`/PipeWire、`winit`/`softbuffer` 和 Linux CLI 后端直接放入 `pinora-app`；没有 Windows/macOS/Linux 适配器边界。
-- `cargo fmt --check`、`cargo check --workspace` 和 `cargo clippy --workspace --all-targets -- -D warnings` 已于 2026-08-02 通过；当前 `PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace` 通过 app 168 个、core 67 个单元测试，另有 2 个真实桌面测试被忽略；仍没有 GUI 端到端测试。
+- `cargo fmt --check`、`cargo check --workspace` 和 `cargo clippy --workspace --all-targets -- -D warnings` 已于 2026-08-02 通过；当前 `PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace` 通过 app 168 个、core 69 个单元测试，另有 2 个真实桌面测试被忽略；仍没有 GUI 端到端测试。
 - `cargo check --workspace --target x86_64-pc-windows-msvc` 失败于 GTK 的 `gdk-pixbuf-sys`/`glib-sys` pkg-config 交叉编译，尚未进入应用代码编译阶段。
 - OCR 通过 `tesseract` 子进程和临时 PNG 工作；适配器已持有自身 `Child`，支持协作式取消、30 秒截止时间、16 MiB 输出上限和 RAII 临时文件清理，不再调用外部 `kill`。贴图与 Overlay UI 已经通过 `OcrJobService` 提交到 `JobSupervisor`，结果交付受 owner、终态和 `AssetRef` generation 门禁保护；worker 不触碰窗口或剪贴板。
 - 截图后端自动选择 KDE `spectacle` → xcap → `Unavailable`；两者不可用时保留后端失败摘要并由 provider 返回 `CapabilityUnavailable`，`fake` 只能通过显式测试/开发注入使用。
@@ -46,6 +46,7 @@
 - 2026-08-02 的 061 删除了未受托盘监督的独立贴图会话、区域 Overlay 和区域工作流公开 API。`pinora-app` 的唯一公开 GUI 会话入口为 `run_desktop_shell`，它在构造 `DesktopApp` 前要求成功创建系统 tray；贴图尺寸计算迁移为纯 `pin_layout`。`window_policy` 单元测试扫描生产源，确保只有该模块构造 `EventLoop` 或直接调用 `create_window`。这些事实只证明代码可达路径与静态边界，不证明真实窗口管理器最终不会显示任务栏/Dock 项。
 - 2026-08-02 的 062 为 Overlay 新增截图内取色：`I` 或工具栏滴管进入取色器，点击当前选区将原始 RGBA 像素设为后续画笔颜色、恢复原工具并通过当前会话的受监督剪贴板任务复制 `#RRGGBB`。取色不烧录预览、不重捕获、不新建窗口，也不推进标注文档 revision。工具栏依据画布宽度换行，空间不足时不绘制裁切控件；真实剪贴板、HiDPI 和输入延迟尚未验证。
 - 2026-08-02 的 063 为 Overlay 增加 `L` 直线和 `N` 序号：直线仅在有效拖拽后提交；序号一次点击立即提交，使用当前颜色/线宽派生的圆形标记与对比色数字，起始值可在 `1..=99_999` 设置，达到上限后停止新建以避免重复值。两工具均复用现有标注文档、草稿预览与栅格化路径；序号双击不会复制图片，且没有新窗口、事件循环、截图或后台任务路径。真实工具栏、HiDPI、输入帧时间、tray 与任务栏/Dock 行为尚未验证。
+- 2026-08-02 的 064 为 Overlay 增加 `Q` 圆角矩形：一次有效拖拽提交，提交时把当前线宽派生且受短边约束的半径保存到对象；距离场描边对已存半径再次钳制，草稿预览与最终合成保持一致。该工具没有新窗口、事件循环、截图或后台任务路径，生产建窗仍只经 `window_policy`；真实圆角视觉、HiDPI、输入帧时间、tray 与任务栏/Dock 行为尚未验证。
 - GitHub Actions CI `30732620836`、`30732765136`、`30732906042`、`30733684203`、`30734154282`、`30734583848`、`30734867309` 与 `30735354166` 已于 2026-08-02 在 Linux、macOS、Windows 原生 runner 通过格式、workspace 编译、严格 Clippy 和单元测试；这些运行未创建 GUI 会话，不能作为任务栏、Dock、窗口交互、KWin 行为、真实多显示器或渲染延迟的证据。
 - `pinora-core::asset` 已于 2026-08-01 新增 `AssetGeneration` 和 `AssetRef` 领域契约；它只组合既有 `ImageId`，可判定陈旧结果，已用于桌面贴图及 Overlay OCR、复制、保存任务的结果门禁。
 - `pinora-core::job` 与 `pinora-app::JobSupervisor` 已于 2026-08-01 新增：任务元数据绑定 `JobId`、关联 ID、`AssetRef`、领域 owner、类型和截止时间；监督器可协作式取消、关闭 owner、标记超时并拒绝终态或陈旧版本结果。桌面 OCR、导出和剪贴板均已接入，但这不代表所有后台进程均已在真实桌面环境验证。

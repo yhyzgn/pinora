@@ -4313,6 +4313,10 @@ fn handle_overlay_key(
             set_overlay_tool(ov, AnnotateTool::Rect);
             println!("pinora: tool = Rect");
         }
+        Key::Character(c) if c == "q" || c == "Q" => {
+            set_overlay_tool(ov, AnnotateTool::RoundedRect);
+            println!("pinora: tool = RoundedRect");
+        }
         Key::Character(c) if c == "l" || c == "L" => {
             set_overlay_tool(ov, AnnotateTool::Line);
             println!("pinora: tool = Line");

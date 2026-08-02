@@ -1,4 +1,4 @@
-//! 标注：矩形/箭头/画笔/椭圆/马赛克/文本；颜色与线宽；栅格化到 RGBA。
+//! 标注：矩形/圆角矩形/箭头/画笔/椭圆/马赛克/文本；颜色与线宽；栅格化到 RGBA。
 
 use std::num::NonZeroU64;
 use std::sync::OnceLock;
@@ -12,6 +12,7 @@ use crate::image::{CaptureImage, RgbaBuffer};
 pub enum AnnotateTool {
     #[default]
     Rect,
+    RoundedRect,
     Line,
     Arrow,
     Pen,
@@ -31,6 +32,13 @@ pub enum Annotation {
         b: PixelPoint,
         color: [u8; 4],
         stroke: u32,
+    },
+    RoundedRect {
+        a: PixelPoint,
+        b: PixelPoint,
+        color: [u8; 4],
+        stroke: u32,
+        radius: u32,
     },
     Line {
         from: PixelPoint,
@@ -184,6 +192,7 @@ pub const STROKE_PALETTE: [[u8; 4]; 8] = [
 #[derive(Debug, Clone, PartialEq)]
 pub enum DraftShape {
     Rect { a: PixelPoint, b: PixelPoint },
+    RoundedRect { a: PixelPoint, b: PixelPoint },
     Line { from: PixelPoint, to: PixelPoint },
     Arrow { from: PixelPoint, to: PixelPoint },
     Pen { points: Vec<PixelPoint> },
@@ -313,6 +322,7 @@ impl AnnotateSession {
         }
         self.draft = Some(match self.tool {
             AnnotateTool::Rect => DraftShape::Rect { a: p, b: p },
+            AnnotateTool::RoundedRect => DraftShape::RoundedRect { a: p, b: p },
             AnnotateTool::Line => DraftShape::Line { from: p, to: p },
             AnnotateTool::Arrow => DraftShape::Arrow { from: p, to: p },
             AnnotateTool::Pen => DraftShape::Pen { points: vec![p] },
@@ -327,6 +337,7 @@ impl AnnotateSession {
         let p = self.clamp_point(p);
         match &mut self.draft {
             Some(DraftShape::Rect { b, .. }) => *b = p,
+            Some(DraftShape::RoundedRect { b, .. }) => *b = p,
             Some(DraftShape::Line { to, .. }) => *to = p,
             Some(DraftShape::Arrow { to, .. }) => *to = p,
             Some(DraftShape::Ellipse { b, .. }) => *b = p,
@@ -386,6 +397,18 @@ impl AnnotateSession {
                     b,
                     color,
                     stroke,
+                }
+            }
+            DraftShape::RoundedRect { a, b } => {
+                if (a.x - b.x).abs() < 2 || (a.y - b.y).abs() < 2 {
+                    return;
+                }
+                Annotation::RoundedRect {
+                    a,
+                    b,
+                    color,
+                    stroke,
+                    radius: rounded_rect_radius(a, b, stroke),
                 }
             }
             DraftShape::Line { from, to } => {
@@ -501,6 +524,24 @@ pub fn bake_annotations(source: &CaptureImage, doc: &AnnotationDoc) -> CaptureIm
                 color,
                 stroke,
             } => draw_rect_outline(&mut bytes, w, h, *a, *b, *color, *stroke),
+            Annotation::RoundedRect {
+                a,
+                b,
+                color,
+                stroke,
+                radius,
+            } => draw_rounded_rect_outline(
+                &mut bytes,
+                w,
+                h,
+                RoundedRectGeometry {
+                    a: *a,
+                    b: *b,
+                    radius: *radius,
+                },
+                *color,
+                *stroke,
+            ),
             Annotation::Line {
                 from,
                 to,
@@ -565,6 +606,13 @@ pub fn render_preview_rgba(source: &CaptureImage, session: &AnnotateSession) -> 
                 b: *b,
                 color,
                 stroke,
+            }),
+            DraftShape::RoundedRect { a, b } => doc.push(Annotation::RoundedRect {
+                a: *a,
+                b: *b,
+                color,
+                stroke,
+                radius: rounded_rect_radius(*a, *b, stroke),
             }),
             DraftShape::Line { from, to } => doc.push(Annotation::Line {
                 from: *from,
@@ -765,6 +813,74 @@ fn draw_rect_outline(
         color,
         stroke,
     );
+}
+
+fn rounded_rect_radius(a: PixelPoint, b: PixelPoint, stroke: u32) -> u32 {
+    let width = a.x.abs_diff(b.x);
+    let height = a.y.abs_diff(b.y);
+    let half_short_edge = width.min(height) / 2;
+    stroke.saturating_mul(4).clamp(4, 48).min(half_short_edge)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RoundedRectGeometry {
+    a: PixelPoint,
+    b: PixelPoint,
+    radius: u32,
+}
+
+/// 抗锯齿圆角矩形描边：圆角半径由已提交对象冻结，并钳制到短边的一半。
+fn draw_rounded_rect_outline(
+    buf: &mut [u8],
+    w: i32,
+    h: i32,
+    geometry: RoundedRectGeometry,
+    color: [u8; 4],
+    stroke: u32,
+) {
+    let x0 = geometry.a.x.min(geometry.b.x) as f64;
+    let y0 = geometry.a.y.min(geometry.b.y) as f64;
+    let x1 = geometry.a.x.max(geometry.b.x) as f64;
+    let y1 = geometry.a.y.max(geometry.b.y) as f64;
+    let half_width = (x1 - x0) * 0.5;
+    let half_height = (y1 - y0) * 0.5;
+    if half_width < 1.0 || half_height < 1.0 {
+        return;
+    }
+
+    let radius = f64::from(geometry.radius).min(half_width).min(half_height);
+    if radius < 0.5 {
+        draw_rect_outline(buf, w, h, geometry.a, geometry.b, color, stroke);
+        return;
+    }
+
+    let center_x = (x0 + x1) * 0.5;
+    let center_y = (y0 + y1) * 0.5;
+    let inner_width = (half_width - radius).max(0.0);
+    let inner_height = (half_height - radius).max(0.0);
+    let half_stroke = (stroke as f64 * 0.5).max(0.75);
+    let aa = 1.0;
+    let pad = (half_stroke + aa + 1.0).ceil() as i32;
+    let min_x = (x0.floor() as i32 - pad).max(0);
+    let max_x = (x1.ceil() as i32 + pad).min(w - 1);
+    let min_y = (y0.floor() as i32 - pad).max(0);
+    let max_y = (y1.ceil() as i32 + pad).min(h - 1);
+
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let px = x as f64 + 0.5;
+            let py = y as f64 + 0.5;
+            let qx = (px - center_x).abs() - inner_width;
+            let qy = (py - center_y).abs() - inner_height;
+            let outside = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt();
+            let inside = qx.max(qy).min(0.0);
+            let distance_to_edge = (outside + inside - radius).abs();
+            let coverage = ((half_stroke + aa * 0.5 - distance_to_edge) / aa).clamp(0.0, 1.0);
+            if coverage > 0.0 {
+                blend_coverage(buf, w, h, x, y, color, coverage);
+            }
+        }
+    }
 }
 
 fn draw_polyline(
@@ -1142,6 +1258,62 @@ mod tests {
         s.drag(PixelPoint::new(40, 30));
         s.commit();
         assert_eq!(s.doc.len(), 1);
+    }
+
+    #[test]
+    fn rounded_rect_freezes_its_radius_and_preview_matches_the_committed_render() {
+        let source = solid(100, 80);
+        let mut session = AnnotateSession::new(100, 80);
+        session.tool = AnnotateTool::RoundedRect;
+        session.stroke = 5;
+        session.begin(PixelPoint::new(10, 10));
+        session.drag(PixelPoint::new(90, 70));
+
+        let preview = render_preview_rgba(&source, &session);
+        assert!(session.doc.is_empty());
+        session.commit();
+        assert!(matches!(
+            session.doc.items(),
+            [Annotation::RoundedRect {
+                radius: 20,
+                stroke: 5,
+                ..
+            }]
+        ));
+
+        session.stroke = 1;
+        let baked = bake_annotations(&source, &session.doc);
+        assert_eq!(preview, baked.pixels.bytes);
+        assert_ne!(baked.pixels.bytes, source.pixels.bytes);
+    }
+
+    #[test]
+    fn rounded_rect_rejects_short_edges_and_clamps_an_oversized_radius_safely() {
+        let mut session = AnnotateSession::new(24, 20);
+        session.tool = AnnotateTool::RoundedRect;
+        let initial = session.doc.revision();
+        session.begin(PixelPoint::new(5, 3));
+        session.drag(PixelPoint::new(6, 18));
+        session.commit();
+        assert!(session.doc.is_empty());
+        assert_eq!(session.doc.revision(), initial);
+
+        let source = solid(24, 20);
+        let mut doc = AnnotationDoc::new();
+        doc.push(Annotation::RoundedRect {
+            a: PixelPoint::new(2, 2),
+            b: PixelPoint::new(21, 17),
+            color: [30, 120, 220, 255],
+            stroke: 3,
+            radius: u32::MAX,
+        });
+        let baked = bake_annotations(&source, &doc);
+        assert_eq!(baked.pixels.bytes.len(), source.pixels.bytes.len());
+        assert_ne!(baked.pixels.bytes, source.pixels.bytes);
+        assert_eq!(
+            rounded_rect_radius(PixelPoint::new(2, 2), PixelPoint::new(21, 17), 99),
+            7
+        );
     }
 
     #[test]

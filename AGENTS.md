@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/063_line_number_annotations.md`
-- 任务：`.context/tasks/063_line_number_annotations.md`
+- 计划：`.context/plans/064_rounded_rectangle_annotation.md`
+- 任务：`.context/tasks/064_rounded_rectangle_annotation.md`
 
 ## 交付要求
 

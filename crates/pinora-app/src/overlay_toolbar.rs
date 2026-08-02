@@ -36,6 +36,7 @@ pub fn layout_toolbar(selection: PixelRect, img_w: u32, img_h: u32) -> Vec<Toolb
         (ToolbarAction::Save, "保存"),
         (ToolbarAction::Ocr, "OCR"),
         (ToolbarAction::Tool(AnnotateTool::Rect), "矩形"),
+        (ToolbarAction::Tool(AnnotateTool::RoundedRect), "圆角矩形"),
         (ToolbarAction::Tool(AnnotateTool::Line), "直线"),
         (ToolbarAction::Tool(AnnotateTool::Arrow), "箭头"),
         (ToolbarAction::Tool(AnnotateTool::Pen), "画笔"),
@@ -176,6 +177,7 @@ fn button_mark(b: &ToolbarButton) -> &'static str {
         ToolbarAction::Save => "Sav",
         ToolbarAction::Ocr => "OCR",
         ToolbarAction::Tool(AnnotateTool::Rect) => "R",
+        ToolbarAction::Tool(AnnotateTool::RoundedRect) => "Q",
         ToolbarAction::Tool(AnnotateTool::Line) => "L",
         ToolbarAction::Tool(AnnotateTool::Arrow) => "A",
         ToolbarAction::Tool(AnnotateTool::Pen) => "P",
@@ -298,6 +300,7 @@ fn draw_mark(
         ('p', [0b110, 0b101, 0b110, 0b100, 0b100]),
         ('y', [0b101, 0b101, 0b010, 0b010, 0b010]),
         ('P', [0b110, 0b101, 0b110, 0b100, 0b100]),
+        ('Q', [0b111, 0b101, 0b101, 0b111, 0b001]),
         ('i', [0b010, 0b000, 0b010, 0b010, 0b010]),
         ('n', [0b000, 0b110, 0b101, 0b101, 0b101]),
         ('S', [0b111, 0b100, 0b111, 0b001, 0b111]),
@@ -370,7 +373,11 @@ mod tests {
     #[test]
     fn line_and_number_tools_are_available_and_hittable() {
         let buttons = layout_toolbar(PixelRect::new(50, 50, 400, 80), 1000, 800);
-        for tool in [AnnotateTool::Line, AnnotateTool::Number] {
+        for tool in [
+            AnnotateTool::RoundedRect,
+            AnnotateTool::Line,
+            AnnotateTool::Number,
+        ] {
             let button = buttons
                 .iter()
                 .find(|button| button.action == ToolbarAction::Tool(tool))
