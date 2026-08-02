@@ -1,6 +1,6 @@
 # 计划 058：可恢复截图失败的 tray 常驻边界
 
-- 状态：进行中
+- 状态：已完成
 - 负责人：Codex
 - 当前任务：`.context/tasks/058_tray_residency_capture_failures.md`
 
@@ -64,5 +64,5 @@
 ## 完成记录
 
 - 已实现：`LoadingState` 失败恢复改为无错误返回；`about_to_wait` 不再因它调用 `event_loop.exit()`。普通、窗口和延时捕获通过显式恢复范围清理 loading、模式、等待和帧缓存；延时范围优先且在像素已取得后 Overlay 失败时仍保留其恢复语义。
-- 已验证：`cargo fmt --check`、`cargo check --workspace`、严格 Clippy、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`（app 155 通过、2 忽略；core 57 通过）、`git diff --check` 与 `ctx validate` 通过。
-- 待验证：本次 GitHub Linux/macOS/Windows CI；真实桌面上的 tray 连续驻留、窗口销毁、任务栏/Dock 与合成器可见性仍需原生会话。
+- 已验证：`cargo fmt --check`、`cargo check --workspace`、严格 Clippy、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`（app 155 通过、2 忽略；core 57 通过）、`git diff --check` 与 `ctx validate` 通过；提交 `36ee681` 的 GitHub CI `30737231248` 已在 Linux/macOS/Windows 通过。
+- 未覆盖：真实桌面上的 tray 连续驻留、窗口销毁、任务栏/Dock 与合成器可见性仍需原生会话。

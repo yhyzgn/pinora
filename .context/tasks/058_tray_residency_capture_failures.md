@@ -1,6 +1,6 @@
 # 任务 058：可恢复截图失败保持 tray 常驻
 
-- 状态：进行中
+- 状态：已完成
 - 计划：`.context/plans/058_tray_residency_capture_failures.md`
 - 规模：中
 - 依赖：`.context/tasks/054_auxiliary_window_boundary.md`、`.context/tasks/056_delayed_capture.md`、`.context/tasks/057_window_capture.md`
@@ -59,4 +59,5 @@
 
 - 已实现：以 `CaptureFailureScope` 固定普通、窗口或延时恢复范围；`poll_loading_to_overlay` 对 worker 错误、worker 断开、双渲染缓冲不一致和 Overlay 建立错误均在本地清理并返回。`about_to_wait` 仅轮询该方法，不能再接收其错误并退出事件循环。捕获失败日志只保留稳定错误码。
 - 已验证：`cargo test -p pinora-app desktop_shell::overlay_scale_tests -- --nocapture`（22 通过）、`cargo test -p pinora-app window_policy::tests -- --nocapture`（2 通过）、`cargo fmt --check`、`cargo check --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`（app 155 通过、2 忽略；core 57 通过）、`git diff --check` 和 `ctx validate` 通过。
-- 待验证：本次 GitHub 三平台 CI，以及真实 Windows/macOS/X11/KDE Wayland 中的捕获失败、tray、热键、IPC、Overlay 析构与任务栏/Dock 行为。
+- 已验证：提交 `36ee681` 的 GitHub CI `30737231248` 已在 Linux/macOS/Windows 通过。
+- 未覆盖：真实 Windows/macOS/X11/KDE Wayland 中的捕获失败、tray、热键、IPC、Overlay 析构与任务栏/Dock 行为仍需原生会话；三平台 CI 不构成这些 GUI 行为的证据。
