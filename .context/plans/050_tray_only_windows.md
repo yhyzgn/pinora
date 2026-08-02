@@ -78,4 +78,4 @@
 - Windows 请求 `with_skip_taskbar(true)`；X11 请求 Utility 类型；macOS 事件循环使用 `Accessory` 且 app bundle 写入 `LSUIElement`；KDE Wayland 在映射后按 Pinora 标题请求 `skipTaskbar`/`skipPager`。
 - KWin 临时脚本在 load/run 失败时仍卸载并删除自身文件；本地定向与严格质量门禁及 GitHub CI `30732620836` 的 Linux、macOS、Windows 质量任务均通过。其他 Wayland 和真实任务栏/Dock/KWin 会话仍未验证。
 - 2026-08-02：验收复核发现托盘创建失败时会留下无可见入口的后台进程，已重新打开任务以将该状态改为明确的 `CapabilityUnavailable` 启动失败。
-- 托盘失败分支已由离线测试锁定；本地 workspace 门禁通过，待本次修复提交的 GitHub CI。此前 `30732620836` 与 `30732765136` 的 Linux、macOS、Windows 质量任务均通过。
+- 托盘失败分支已由离线测试锁定；本地 workspace 门禁通过。GitHub CI `30732906042` 已在 Linux、macOS、Windows 原生 runner 通过格式、workspace 编译、严格 Clippy 和单元测试；该证据不覆盖真实任务栏、Dock 或合成器会话。
