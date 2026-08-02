@@ -20,9 +20,10 @@ use crate::frame_cache::{FrameCache, rgba_to_xrgb_and_dim};
 use crate::history_browser::{HistoryPanelAction, HistoryPanelKey};
 use crate::history_export::{
     HistoryExportCandidate, cleanup_history_tombstones, clear_history_entries,
-    delete_history_entry, history_candidate_for_export, load_history_image, load_history_index,
+    delete_history_entry, history_candidate_for_export, load_history_index,
     record_history_candidate,
 };
+use crate::history_load_job::{HistoryLoadCompletion, HistoryLoadInput, HistoryLoadJobService};
 use crate::history_store::{HistoryStore, default_history_path};
 use crate::history_window::HistoryWindow;
 use crate::hotkey::GlobalHotkeyHub;
@@ -39,9 +40,9 @@ use crate::window_policy::{self, AuxiliaryWindowKind};
 use pinora_core::{
     ActionId, AnnotateSession, AnnotateTool, AnnotationRevision, AssetGeneration, AssetRef,
     CaptureImage, CaptureProvider, CaptureRequest, Command, CorrelationId, DisplayId,
-    DomainEventKind, ErrorCode, HistoryIndex, ImageId, ImageSink, JobId, JobKind, JobOwner,
-    JobSpec, OcrResult, OcrTextSelection, OcrWordRef, PinId, PinTransform, PinoraError, PixelPoint,
-    PixelRect, SelectionSession, SessionId, bake_annotations, render_preview_rgba,
+    DomainEventKind, ErrorCode, HistoryEntry, HistoryIndex, ImageId, ImageSink, JobId, JobKind,
+    JobOwner, JobSpec, OcrResult, OcrTextSelection, OcrWordRef, PinId, PinTransform, PinoraError,
+    PixelPoint, PixelRect, SelectionSession, SessionId, bake_annotations, render_preview_rgba,
 };
 use softbuffer::{Context, Rect as DamageRect, Surface};
 use winit::application::ApplicationHandler;
@@ -59,6 +60,7 @@ use crate::single_instance::SingleInstance;
 const MIN_FRAME_INTERVAL: Duration = Duration::from_micros(16_666);
 const OCR_JOB_TIMEOUT_MS: u64 = 30_000;
 const EXPORT_JOB_TIMEOUT_MS: u64 = 30_000;
+const HISTORY_LOAD_TIMEOUT_MS: u64 = 30_000;
 const HISTORY_MAX_BYTES: u64 = u64::MAX;
 
 fn monotonic_ms() -> u64 {
@@ -189,7 +191,10 @@ where
         frame_cache: Some(frame_cache),
         ocr_jobs: OcrJobService::new(),
         export_jobs: ExportJobService::new(),
+        history_load_jobs: HistoryLoadJobService::new(),
         pending_exports: HashMap::new(),
+        active_history_load: None,
+        queued_history_load: None,
         history_store,
         history_index,
         start_capture_wait: None,
@@ -214,6 +219,16 @@ where
         export_shutdown.joined,
         export_shutdown.panicked,
         export_shutdown.unfinished
+    );
+    let history_load_shutdown = app
+        .history_load_jobs
+        .cancel_all_and_wait(Duration::from_secs(2));
+    println!(
+        "pinora: history load shutdown cancelled={} joined={} panicked={} unfinished={}",
+        history_load_shutdown.cancelled,
+        history_load_shutdown.joined,
+        history_load_shutdown.panicked,
+        history_load_shutdown.unfinished
     );
     if let Some(err) = app.error {
         return Err(err);
@@ -383,6 +398,40 @@ struct PendingExport {
     history: Option<HistoryExportCandidate>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HistoryLoadIntent {
+    Preview,
+    Reopen,
+    Edit,
+}
+
+#[derive(Debug, Clone)]
+struct HistoryLoadRequest {
+    entry: HistoryEntry,
+    intent: HistoryLoadIntent,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveHistoryLoad {
+    job_id: JobId,
+    request: HistoryLoadRequest,
+}
+
+fn current_history_load_asset(
+    active: Option<&ActiveHistoryLoad>,
+    selected: Option<&HistoryEntry>,
+    job_id: JobId,
+    owner: JobOwner,
+) -> Option<AssetRef> {
+    let active = active?;
+    let selected = selected?;
+    (active.job_id == job_id
+        && owner == JobOwner::History(active.request.entry.image_id)
+        && selected.image_id == active.request.entry.image_id
+        && selected.generation == active.request.entry.generation)
+        .then_some(AssetRef::new(selected.image_id, selected.generation))
+}
+
 struct OverlayState {
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
@@ -482,7 +531,10 @@ struct DesktopApp<L, P, C, S> {
     frame_cache: Option<FrameCache>,
     ocr_jobs: OcrJobService,
     export_jobs: ExportJobService,
+    history_load_jobs: HistoryLoadJobService,
     pending_exports: HashMap<JobId, PendingExport>,
+    active_history_load: Option<ActiveHistoryLoad>,
+    queued_history_load: Option<HistoryLoadRequest>,
     history_store: HistoryStore,
     history_index: HistoryIndex,
     /// 等待 frame-cache 首帧的起始时间；超时走 cold path。
@@ -560,6 +612,7 @@ where
         self.poll_external_actions(event_loop);
         self.poll_ocr_jobs();
         self.poll_export_jobs();
+        self.poll_history_load_jobs(event_loop);
 
         for msg in self.pending_messages.drain(..) {
             println!("{msg}");
@@ -1054,6 +1107,14 @@ where
                     {
                         eprintln!("pinora: history quota cleanup deferred");
                     }
+                    self.cancel_history_loads();
+                    let active_entries = self.history_index.active_entries().cloned().collect();
+                    if let Some(history) = self.history.as_mut() {
+                        history.clear_preview();
+                        history.panel_mut().replace_entries(active_entries);
+                        history.request_redraw();
+                    }
+                    self.queue_history_load(HistoryLoadIntent::Preview);
                 }
                 if let Some(settings) = self.settings.as_mut() {
                     settings.mark_saved();
@@ -1095,18 +1156,19 @@ where
         history.focus();
         history.request_redraw();
         self.history = Some(history);
-        self.refresh_history_preview();
+        self.queue_history_load(HistoryLoadIntent::Preview);
         println!("pinora: history opened (Enter pin, Delete remove, Esc close)");
         Ok(())
     }
 
     fn close_history(&mut self) {
+        self.cancel_history_loads();
         if let Some(history) = self.history.take() {
             history.close();
         }
     }
 
-    fn refresh_history_preview(&mut self) {
+    fn queue_history_load(&mut self, intent: HistoryLoadIntent) {
         let Some(entry) = self
             .history
             .as_ref()
@@ -1115,25 +1177,158 @@ where
         else {
             return;
         };
-        let Some(export_dir) = self.runtime.as_ref().map(|rt| rt.export_dir().clone()) else {
+        self.history_load_jobs.cancel_all();
+        self.active_history_load = None;
+        self.queued_history_load = Some(HistoryLoadRequest { entry, intent });
+        if let Some(history) = self.history.as_mut() {
+            history.panel_mut().mark_loading();
+            history.request_redraw();
+        }
+    }
+
+    fn cancel_history_loads(&mut self) {
+        let cancelled = self.history_load_jobs.cancel_all();
+        self.active_history_load = None;
+        self.queued_history_load = None;
+        if cancelled > 0 {
+            println!("pinora: cancelled {cancelled} history load job(s)");
+        }
+    }
+
+    fn start_queued_history_load(&mut self) {
+        if !self.history_load_jobs.is_idle() {
+            return;
+        }
+        let Some(request) = self.queued_history_load.take() else {
             return;
         };
-        match load_history_image(&export_dir, &entry) {
-            Ok(image) => {
-                if let Some(history) = self.history.as_mut() {
-                    history.cache_preview(entry.image_id, &image.pixels.bytes, image.pixels.size);
-                    history.panel_mut().clear_error();
-                    history.request_redraw();
-                }
+        let still_selected = self
+            .history
+            .as_ref()
+            .and_then(|history| history.panel().selected_entry())
+            .is_some_and(|entry| {
+                entry.image_id == request.entry.image_id
+                    && entry.generation == request.entry.generation
+            });
+        if !still_selected {
+            return;
+        }
+        let Some(export_dir) = self
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.export_dir().clone())
+        else {
+            self.mark_history_load_error("history_load_failed");
+            return;
+        };
+        let asset = AssetRef::new(request.entry.image_id, request.entry.generation);
+        let spec = JobSpec::new(
+            JobId::new(),
+            CorrelationId::new(),
+            asset,
+            JobOwner::History(request.entry.image_id),
+            JobKind::HistoryLoad,
+            monotonic_ms().saturating_add(HISTORY_LOAD_TIMEOUT_MS),
+        );
+        let input = HistoryLoadInput {
+            export_dir,
+            entry: request.entry.clone(),
+        };
+        match self.history_load_jobs.start(spec, input) {
+            Ok(ticket) => {
+                println!(
+                    "pinora: history load {} started image={} intent={:?}",
+                    ticket.id, request.entry.image_id, request.intent
+                );
+                self.active_history_load = Some(ActiveHistoryLoad {
+                    job_id: ticket.id,
+                    request,
+                });
             }
-            Err(_) => {
-                if let Some(history) = self.history.as_mut() {
-                    history.clear_preview();
-                    history.panel_mut().mark_error("history_load_failed");
-                    history.request_redraw();
+            Err(error) => {
+                eprintln!("pinora: history load start failed: {error}");
+                self.mark_history_load_error("history_load_failed");
+            }
+        }
+    }
+
+    fn take_active_history_load(&mut self, job_id: JobId) -> Option<HistoryLoadRequest> {
+        (self
+            .active_history_load
+            .as_ref()
+            .is_some_and(|active| active.job_id == job_id))
+        .then(|| self.active_history_load.take().map(|active| active.request))
+        .flatten()
+    }
+
+    fn mark_history_load_error(&mut self, code: &'static str) {
+        if let Some(history) = self.history.as_mut() {
+            history.clear_preview();
+            history.panel_mut().mark_error(code);
+            history.request_redraw();
+        }
+    }
+
+    fn poll_history_load_jobs(&mut self, event_loop: &ActiveEventLoop) {
+        let active = self.active_history_load.clone();
+        let selected = self
+            .history
+            .as_ref()
+            .and_then(|history| history.panel().selected_entry())
+            .cloned();
+        let completions = self
+            .history_load_jobs
+            .poll(monotonic_ms(), |job_id, owner| {
+                current_history_load_asset(active.as_ref(), selected.as_ref(), job_id, owner)
+            });
+
+        for completion in completions {
+            match completion {
+                HistoryLoadCompletion::Completed { job, image } => {
+                    let Some(request) = self.take_active_history_load(job.id) else {
+                        continue;
+                    };
+                    match request.intent {
+                        HistoryLoadIntent::Preview => {
+                            if let Some(history) = self.history.as_mut() {
+                                history.cache_preview(
+                                    request.entry.image_id,
+                                    &image.pixels.bytes,
+                                    image.pixels.size,
+                                );
+                                history.panel_mut().clear_error();
+                                history.request_redraw();
+                            }
+                        }
+                        HistoryLoadIntent::Reopen => {
+                            self.open_loaded_history_pin(event_loop, request.entry, image);
+                        }
+                        HistoryLoadIntent::Edit => {
+                            self.open_loaded_history_editor(event_loop, request.entry, image);
+                        }
+                    }
+                }
+                HistoryLoadCompletion::Failed {
+                    job_id,
+                    owner,
+                    error,
+                } => {
+                    if self.take_active_history_load(job_id).is_some() {
+                        eprintln!("pinora: history load {job_id} failed owner={owner:?}: {error}");
+                        self.mark_history_load_error("history_load_failed");
+                    }
+                }
+                HistoryLoadCompletion::Discarded { job_id, terminal } => {
+                    if self.take_active_history_load(job_id).is_some() {
+                        println!("pinora: history load {job_id} discarded ({terminal:?})");
+                        if !matches!(terminal, pinora_core::JobTerminalState::Cancelled) {
+                            self.mark_history_load_error("history_load_failed");
+                        }
+                    }
                 }
             }
         }
+        self.start_queued_history_load();
     }
 
     fn handle_history_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
@@ -1193,16 +1388,12 @@ where
                         Key::Character(text) => Some(text.as_str()),
                         _ => None,
                     };
-                    let mut changed = false;
                     if let Some(text) = text
                         && let Some(history) = self.history.as_mut()
                     {
                         for character in text.chars() {
-                            changed |= history.panel_mut().input_char(character);
+                            let _ = history.panel_mut().input_char(character);
                         }
-                    }
-                    if changed {
-                        self.refresh_history_preview();
                     }
                     None
                 } else {
@@ -1211,7 +1402,7 @@ where
                 if let Some(action) = action {
                     self.apply_history_action(event_loop, action);
                 } else {
-                    self.refresh_history_preview();
+                    self.queue_history_load(HistoryLoadIntent::Preview);
                 }
                 if let Some(history) = self.history.as_ref() {
                     history.request_redraw();
@@ -1232,18 +1423,18 @@ where
         }
     }
 
-    fn apply_history_action(&mut self, event_loop: &ActiveEventLoop, action: HistoryPanelAction) {
+    fn apply_history_action(&mut self, _event_loop: &ActiveEventLoop, action: HistoryPanelAction) {
         match action {
             HistoryPanelAction::Select(index) => {
                 if let Some(history) = self.history.as_mut() {
                     history.panel_mut().select(index);
                     history.clear_preview();
                 }
-                self.refresh_history_preview();
+                self.queue_history_load(HistoryLoadIntent::Preview);
             }
             HistoryPanelAction::Close => self.close_history(),
-            HistoryPanelAction::Reopen => self.reopen_history_entry(event_loop),
-            HistoryPanelAction::Edit => self.edit_history_entry(event_loop),
+            HistoryPanelAction::Reopen => self.reopen_history_entry(),
+            HistoryPanelAction::Edit => self.edit_history_entry(),
             HistoryPanelAction::Delete => self.delete_selected_history_entry(),
             HistoryPanelAction::RequestClear => {
                 if let Some(history) = self.history.as_mut() {
@@ -1262,6 +1453,7 @@ where
     }
 
     fn clear_all_history_entries(&mut self) {
+        self.cancel_history_loads();
         let Some(export_dir) = self.runtime.as_ref().map(|rt| rt.export_dir().clone()) else {
             return;
         };
@@ -1289,29 +1481,16 @@ where
         }
     }
 
-    fn reopen_history_entry(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(entry) = self
-            .history
-            .as_ref()
-            .and_then(|history| history.panel().selected_entry())
-            .cloned()
-        else {
-            return;
-        };
-        let Some(export_dir) = self.runtime.as_ref().map(|rt| rt.export_dir().clone()) else {
-            return;
-        };
-        let image = match load_history_image(&export_dir, &entry) {
-            Ok(image) => image,
-            Err(_) => {
-                if let Some(history) = self.history.as_mut() {
-                    history.panel_mut().mark_error("history_load_failed");
-                    history.clear_preview();
-                    history.request_redraw();
-                }
-                return;
-            }
-        };
+    fn reopen_history_entry(&mut self) {
+        self.queue_history_load(HistoryLoadIntent::Reopen);
+    }
+
+    fn open_loaded_history_pin(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        entry: HistoryEntry,
+        image: CaptureImage,
+    ) {
         match self.open_pin_from_image(event_loop, image, entry.source_rect.origin, false) {
             Ok(()) => self.close_history(),
             Err(error) => {
@@ -1324,30 +1503,16 @@ where
         }
     }
 
-    fn edit_history_entry(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(entry) = self
-            .history
-            .as_ref()
-            .and_then(|history| history.panel().selected_entry())
-            .cloned()
-        else {
-            return;
-        };
-        let Some(export_dir) = self.runtime.as_ref().map(|rt| rt.export_dir().clone()) else {
-            return;
-        };
-        let image = match load_history_image(&export_dir, &entry) {
-            Ok(image) => image,
-            Err(_) => {
-                if let Some(history) = self.history.as_mut() {
-                    history.panel_mut().mark_error("history_load_failed");
-                    history.clear_preview();
-                    history.request_redraw();
-                }
-                return;
-            }
-        };
+    fn edit_history_entry(&mut self) {
+        self.queue_history_load(HistoryLoadIntent::Edit);
+    }
 
+    fn open_loaded_history_editor(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _entry: HistoryEntry,
+        image: CaptureImage,
+    ) {
         // 历史编辑使用已验证的图像，既不能触发屏幕捕获，也不能复用旧显示器的全屏语义。
         let target = history_edit_target(&image);
         let preview = prepare_preview(image);
@@ -1368,6 +1533,7 @@ where
     }
 
     fn delete_selected_history_entry(&mut self) {
+        self.cancel_history_loads();
         let Some(image_id) = self
             .history
             .as_ref()
@@ -1402,7 +1568,7 @@ where
                 .replace_entries(self.history_index.active_entries().cloned().collect());
             history.request_redraw();
         }
-        self.refresh_history_preview();
+        self.queue_history_load(HistoryLoadIntent::Preview);
     }
 
     fn paint_history(&mut self) -> Result<(), PinoraError> {
@@ -2074,6 +2240,7 @@ where
             JobOwner::Session(session_id) => overlay_asset
                 .filter(|(id, _)| *id == session_id)
                 .map(|(_, asset)| asset),
+            JobOwner::History(_) => None,
         });
 
         for completion in completions {
@@ -2145,6 +2312,7 @@ where
                     .filter(|(id, _)| *id == session_id)
                     .map(|(_, asset)| asset)
                     .or_else(|| pending_asset_for_owner(&pending_assets, job_id, owner)),
+                JobOwner::History(_) => None,
             });
         for completion in completions {
             match completion {
@@ -3639,9 +3807,25 @@ mod overlay_scale_tests {
     use super::*;
     use crate::job_supervisor::{JobResultDisposition, JobSupervisor};
     use pinora_core::{
-        Annotation, AnnotationDoc, CaptureImage, CaptureMetadata, DEFAULT_STROKE, DEFAULT_WIDTH,
-        DisplayId, ImageId, JobResultRef, PixelSize, RgbaBuffer,
+        Annotation, AnnotationDoc, AssetGeneration, CaptureImage, CaptureMetadata, ContentDigest,
+        DEFAULT_STROKE, DEFAULT_WIDTH, DisplayId, HistoryEntry, HistoryEntrySpec, HistoryOcrState,
+        ImageId, JobResultRef, PixelSize, RgbaBuffer,
     };
+
+    fn history_entry(id: u64) -> HistoryEntry {
+        HistoryEntry::new(HistoryEntrySpec {
+            image_id: ImageId::from_raw(id),
+            generation: AssetGeneration::INITIAL,
+            created_at_ms: id,
+            display: DisplayId::new("test-history"),
+            source_rect: PixelRect::new(0, 0, 2, 2),
+            file_name: format!("{id}.png"),
+            byte_len: 1,
+            digest: ContentDigest::of(b"history"),
+            ocr: HistoryOcrState::Unknown,
+        })
+        .expect("history entry")
+    }
 
     #[test]
     fn buf_to_src_identity_when_1to1() {
@@ -3737,6 +3921,51 @@ mod overlay_scale_tests {
         );
         assert_eq!(
             pending_asset_for_owner(&pending, job_id, JobOwner::Session(SessionId::from_raw(10))),
+            None
+        );
+    }
+
+    #[test]
+    fn history_load_result_requires_current_selected_entry() {
+        let entry = history_entry(31);
+        let active = ActiveHistoryLoad {
+            job_id: JobId::from_raw(32),
+            request: HistoryLoadRequest {
+                entry: entry.clone(),
+                intent: HistoryLoadIntent::Preview,
+            },
+        };
+        let asset = AssetRef::new(entry.image_id, entry.generation);
+
+        assert_eq!(
+            current_history_load_asset(
+                Some(&active),
+                Some(&entry),
+                JobId::from_raw(32),
+                JobOwner::History(entry.image_id),
+            ),
+            Some(asset)
+        );
+        assert_eq!(
+            current_history_load_asset(
+                Some(&active),
+                Some(&entry),
+                JobId::from_raw(33),
+                JobOwner::History(entry.image_id),
+            ),
+            None
+        );
+        let changed = HistoryEntry {
+            generation: entry.generation.advance().expect("advance generation"),
+            ..entry
+        };
+        assert_eq!(
+            current_history_load_asset(
+                Some(&active),
+                Some(&changed),
+                JobId::from_raw(32),
+                JobOwner::History(changed.image_id),
+            ),
             None
         );
     }

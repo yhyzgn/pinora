@@ -4,13 +4,15 @@
 //! 管理取消与结果提交，平台适配器则负责回收自己创建的实际工作单元。
 
 use crate::asset::AssetRef;
-use crate::ids::{CorrelationId, JobId, PinId, SessionId};
+use crate::ids::{CorrelationId, ImageId, JobId, PinId, SessionId};
 
 /// 任务所属的领域实体；不包含窗口或线程句柄。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum JobOwner {
     Session(SessionId),
     Pin(PinId),
+    /// 历史条目读取。身份是持久化条目的图像 ID，不是运行时解码后的新图像 ID。
+    History(ImageId),
 }
 
 /// 任务的业务类别，用于后续按类别配置并发与超时策略。
@@ -20,6 +22,7 @@ pub enum JobKind {
     Ocr,
     Export,
     Clipboard,
+    HistoryLoad,
 }
 
 /// 提交任务时冻结的不可变元数据。

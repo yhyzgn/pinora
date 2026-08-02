@@ -47,6 +47,7 @@ pub enum HistoryPanelKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryPanelStatus {
     Ready,
+    Loading,
     Empty,
     Error(&'static str),
 }
@@ -122,6 +123,12 @@ impl HistoryPanel {
         } else {
             HistoryPanelStatus::Ready
         };
+    }
+
+    pub fn mark_loading(&mut self) {
+        if !self.entries.is_empty() {
+            self.status = HistoryPanelStatus::Loading;
+        }
     }
 
     pub fn select(&mut self, index: usize) {
@@ -355,6 +362,7 @@ pub fn paint(
     } else {
         match panel.status() {
             HistoryPanelStatus::Ready => "HISTORY  ENTER PIN  E EDIT  DELETE REMOVE",
+            HistoryPanelStatus::Loading => "HISTORY LOADING  ESC CLOSE",
             HistoryPanelStatus::Empty => "HISTORY EMPTY  ESC CLOSE",
             HistoryPanelStatus::Error(_) => "HISTORY ACTION FAILED  RETRY OR CLOSE",
         }
@@ -430,13 +438,17 @@ pub fn paint(
     if let Some(preview) = preview {
         draw_preview(frame, stride, height, preview);
     } else if panel.selected_entry().is_some() {
+        let message = match panel.status() {
+            HistoryPanelStatus::Loading => "LOADING...",
+            _ => "NO PREVIEW",
+        };
         draw_text(
             frame,
             stride,
             height,
             PREVIEW.origin.x + 82,
             PREVIEW.origin.y + 168,
-            "NO PREVIEW",
+            message,
             0x00A0B2C4,
         );
     }
@@ -643,5 +655,18 @@ mod tests {
         assert!(panel.confirming_clear());
         panel.cancel_clear();
         assert!(!panel.confirming_clear());
+    }
+
+    #[test]
+    fn loading_status_is_only_available_while_entries_exist() {
+        let mut panel = HistoryPanel::new(vec![entry(1)]);
+        panel.mark_loading();
+        assert_eq!(panel.status(), &HistoryPanelStatus::Loading);
+        panel.clear_error();
+        assert_eq!(panel.status(), &HistoryPanelStatus::Ready);
+
+        let mut empty = HistoryPanel::new(Vec::new());
+        empty.mark_loading();
+        assert_eq!(empty.status(), &HistoryPanelStatus::Empty);
     }
 }

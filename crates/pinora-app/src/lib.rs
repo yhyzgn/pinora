@@ -9,6 +9,7 @@ mod export_job;
 mod frame_cache;
 mod history_browser;
 mod history_export;
+mod history_load_job;
 mod history_store;
 mod history_window;
 mod hotkey;
