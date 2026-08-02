@@ -33,6 +33,9 @@ use crate::hotkey::GlobalHotkeyHub;
 use crate::ocr::tesseract_available;
 use crate::ocr_job::{OcrJobCompletion, OcrJobService};
 use crate::overlay_preview_cache::OverlayPreviewCache;
+use crate::overlay_selection_readout::{
+    SelectionReadout, layout_selection_readout, paint_selection_readout,
+};
 use crate::overlay_toolbar::{
     ToolbarAction, ToolbarButton, hit_test as toolbar_hit, layout_toolbar, paint_toolbar,
     toolbar_bounds,
@@ -635,6 +638,9 @@ struct OverlayState {
     /// 按下工具栏按钮，抬起时若仍命中则触发。
     toolbar_pressed: Option<ToolbarAction>,
     last_toolbar_bounds: Option<PixelRect>,
+    /// 上一帧选区物理像素读数；用于恢复变更前的像素区域。
+    last_selection_readout: Option<SelectionReadout>,
+    last_selection_readout_bounds: Option<PixelRect>,
     /// 仅工具栏外观变化（高亮），不重烤选区。
     toolbar_chrome_dirty: bool,
     /// softbuffer 是否已与 frame 全量同步过（之后只传脏区）。
@@ -2390,6 +2396,8 @@ where
             toolbar: Vec::new(),
             toolbar_pressed: None,
             last_toolbar_bounds: None,
+            last_selection_readout: None,
+            last_selection_readout_bounds: None,
             toolbar_chrome_dirty: false,
             buffer_synced: false,
             last_cursor: PixelPoint::new(0, 0),
@@ -4666,6 +4674,31 @@ fn refresh_overlay_ready(ov: &mut OverlayState) {
     ov.needs_redraw = true;
 }
 
+fn overlay_selection_readout(ov: &OverlayState, selection: PixelRect) -> SelectionReadout {
+    selection_readout_from_display(
+        selection,
+        ov.buf_w,
+        ov.buf_h,
+        ov.src_w,
+        ov.src_h,
+        ov.display_origin,
+    )
+}
+
+fn selection_readout_from_display(
+    selection: PixelRect,
+    buf_w: u32,
+    buf_h: u32,
+    src_w: u32,
+    src_h: u32,
+    display_origin: PixelPoint,
+) -> SelectionReadout {
+    SelectionReadout::new(
+        buf_rect_to_src(selection, buf_w, buf_h, src_w, src_h),
+        display_origin,
+    )
+}
+
 fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
     // softbuffer 缓冲 = 截图尺寸（与 frame 一致）；鼠标用 win_* 做坐标映射
     let img_w = ov.buf_w as usize;
@@ -4676,17 +4709,28 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
     } else {
         None
     };
+    let new_readout = new_rect.map(|selection| overlay_selection_readout(ov, selection));
+    let new_readout_text = new_readout.map(SelectionReadout::text);
+    let new_readout_layout = new_rect
+        .zip(new_readout_text.as_deref())
+        .map(|(selection, text)| {
+            layout_selection_readout(selection, ov.buf_w, ov.buf_h, new_tb, text)
+        });
+    let new_readout_bounds = new_readout_layout.map(|layout| layout.panel);
 
     let sel_changed = ov.last_drawn_rect != new_rect;
     let tb_layout_changed = ov.last_toolbar_bounds != new_tb;
+    let readout_changed = ov.last_selection_readout != new_readout
+        || ov.last_selection_readout_bounds != new_readout_bounds;
     let selection_chrome_padding = SELECTION_HANDLE_RENDER_RADIUS + 3;
     let chrome_only = ov.toolbar_chrome_dirty
         && !ov.annotate_dirty
         && !sel_changed
         && !tb_layout_changed
+        && !readout_changed
         && ov.buffer_synced;
 
-    let mut damage: Vec<PixelRect> = Vec::with_capacity(4);
+    let mut damage: Vec<PixelRect> = Vec::with_capacity(6);
 
     if chrome_only {
         if let Some(tb) = ov.last_toolbar_bounds.or(new_tb) {
@@ -4705,7 +4749,12 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
             damage.push(tb);
         }
         ov.toolbar_chrome_dirty = false;
-    } else if ov.annotate_dirty || sel_changed || tb_layout_changed || !ov.buffer_synced {
+    } else if ov.annotate_dirty
+        || sel_changed
+        || tb_layout_changed
+        || readout_changed
+        || !ov.buffer_synced
+    {
         if let Some(old) = ov.last_drawn_rect {
             let expanded = expand_rect(old, selection_chrome_padding, ov.buf_w, ov.buf_h);
             blit_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, expanded);
@@ -4714,6 +4763,10 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
         if let Some(old_tb) = ov.last_toolbar_bounds {
             blit_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, old_tb);
             damage.push(old_tb);
+        }
+        if let Some(old_readout) = ov.last_selection_readout_bounds {
+            blit_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, old_readout);
+            damage.push(old_readout);
         }
 
         if let Some(rect) = new_rect {
@@ -4766,6 +4819,11 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
             ));
         }
 
+        if let (Some(layout), Some(text)) = (new_readout_layout, new_readout_text.as_deref()) {
+            paint_selection_readout(&mut ov.frame, img_w, img_h, layout, text);
+            damage.push(layout.panel);
+        }
+
         if ov.phase == OverlayPhase::Ready && !ov.toolbar.is_empty() {
             paint_toolbar(
                 &mut ov.frame,
@@ -4783,6 +4841,8 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
 
         ov.last_drawn_rect = new_rect;
         ov.last_toolbar_bounds = new_tb;
+        ov.last_selection_readout = new_readout;
+        ov.last_selection_readout_bounds = new_readout_bounds;
         ov.annotate_dirty = false;
         ov.toolbar_chrome_dirty = false;
     } else {
@@ -5440,6 +5500,20 @@ mod overlay_scale_tests {
         assert!(selection_resize_allowed(true, false));
         assert!(!selection_resize_allowed(false, false));
         assert!(!selection_resize_allowed(true, true));
+    }
+
+    #[test]
+    fn selection_readout_maps_buffer_pixels_to_the_source_and_global_origin() {
+        let readout = selection_readout_from_display(
+            PixelRect::new(100, 50, 400, 200),
+            1_000,
+            500,
+            2_000,
+            1_000,
+            PixelPoint::new(-2_560, -100),
+        );
+
+        assert_eq!(readout.text(), "W800 H400 X-2360 Y0");
     }
 
     #[test]

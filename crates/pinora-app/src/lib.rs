@@ -20,6 +20,7 @@ mod ocr;
 mod ocr_job;
 mod os_instance;
 mod overlay_preview_cache;
+mod overlay_selection_readout;
 mod overlay_toolbar;
 mod pin_context_menu;
 mod pin_layout;
