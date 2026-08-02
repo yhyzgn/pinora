@@ -1,6 +1,6 @@
 # 任务 057：托盘窗口截图与安全候选快照
 
-- 状态：进行中
+- 状态：已完成
 - 计划：`.context/plans/057_window_capture.md`
 - 规模：大
 - 依赖：`.context/tasks/054_auxiliary_window_boundary.md`、`.context/tasks/055_display_targeted_capture.md`、`.context/tasks/056_delayed_capture.md`
@@ -61,4 +61,5 @@
 
 - 已实现：窗口候选的内部 ID 与本地菜单文本分离，候选标签清洗/截断且最多 20 项；xcap 在实际取像前按 ID、几何、显示器、缩放和最小化状态重验，任何不匹配均明确失败且不回退为显示器截图。所有成功 Overlay 继续经 `window_policy` 创建；窗口捕获的同步启动、worker 错误、worker 断开、渲染缓冲不一致和 Overlay 创建失败均返回 tray 空闲态。
 - 已验证：`cargo fmt`；`cargo test -p pinora-core capture -- --nocapture`（6 通过）；`cargo test -p pinora-app desktop_shell::overlay_scale_tests -- --nocapture`（21 通过）；`cargo test -p pinora-app tray::tests -- --nocapture`（6 通过）；`cargo test -p pinora-app capture_xcap::tests -- --nocapture`（1 通过、1 个真实桌面测试忽略）；`cargo check --workspace` 与 `cargo clippy -p pinora-core -p pinora-app --all-targets -- -D warnings` 通过。
-- 待验证：全量 workspace 门禁、`ctx validate`、本次 GitHub 三平台 CI，以及真实 Windows/macOS/X11/KDE Wayland 桌面会话中的窗口候选、权限、像素、Overlay 与任务栏/Dock 行为。
+- 已验证：`cargo fmt --check`、`cargo check --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`（app 154 通过、2 忽略；core 57 通过）、`git diff --check` 和 `ctx validate` 通过；提交 `b60ebf0` 的 GitHub CI `30736791038` 已在 Linux/macOS/Windows 通过。
+- 未覆盖风险：真实 GUI 会话仍未验证 Windows/macOS/X11/KDE Wayland 中的窗口候选、权限、真实像素、Overlay、tray 菜单与任务栏/Dock 行为；GitHub runner 的静态门禁不构成这些桌面行为的证据。

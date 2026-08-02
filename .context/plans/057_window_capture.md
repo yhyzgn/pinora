@@ -1,6 +1,6 @@
 # 计划 057：托盘窗口截图与安全候选快照
 
-- 状态：进行中
+- 状态：已完成
 - 负责人：Codex
 - 当前任务：`.context/tasks/057_window_capture.md`
 
@@ -71,5 +71,5 @@
 ## 完成记录
 
 - 已实现：core 窗口快照/请求契约、fake/xcap/KDE/select 后端路径、候选清洗和最多 20 项 tray 菜单、点击后二次验证、冷捕获到既有 Overlay 的交接，以及窗口捕获失败回 tray。
-- 已验证：`cargo fmt`、窗口契约/托盘/xcap/desktop shell 定向测试、`cargo check --workspace` 与严格 Clippy 通过。
-- 待验证：本次 GitHub Linux/macOS/Windows CI；真实窗口枚举、屏幕权限、像素来源和任务栏/Dock 行为仍需原生桌面会话。
+- 已验证：`cargo fmt --check`、窗口契约/托盘/xcap/desktop shell 定向测试、`cargo check --workspace`、严格 Clippy、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`、`git diff --check` 和 `ctx validate` 通过；提交 `b60ebf0` 的 GitHub CI `30736791038` 已在 Linux/macOS/Windows 通过。
+- 未覆盖：真实窗口枚举、屏幕权限、像素来源和任务栏/Dock 行为仍需原生桌面会话。
