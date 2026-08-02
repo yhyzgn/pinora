@@ -12,6 +12,7 @@ use winit::dpi::PhysicalSize;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId, WindowLevel};
 
+use crate::panel_theme::{PanelThemeState, SystemAppearance};
 use crate::settings_panel::{
     self, SettingField, SettingsPanel, SettingsPanelAction, SettingsPanelKey,
 };
@@ -23,6 +24,7 @@ pub(crate) struct SettingsWindow {
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
     panel: SettingsPanel,
+    theme: PanelThemeState,
     store: SettingsStore,
     cursor: PixelPoint,
     width: u32,
@@ -62,6 +64,10 @@ impl SettingsWindow {
             })?;
         }
         let settings = Self {
+            theme: PanelThemeState::new(
+                current.theme,
+                SystemAppearance::from_winit(window.theme()),
+            ),
             window,
             surface,
             panel: SettingsPanel::new(current),
@@ -103,11 +109,14 @@ impl SettingsWindow {
     }
 
     pub(crate) fn handle_key(&mut self, key: SettingsPanelKey) -> Option<SettingsPanelAction> {
-        self.panel.handle_key(key)
+        let action = self.panel.handle_key(key);
+        self.theme.set_preference(self.panel.draft().theme);
+        action
     }
 
     pub(crate) fn apply_action(&mut self, action: SettingsPanelAction) {
         self.panel.apply_action(action);
+        self.theme.set_preference(self.panel.draft().theme);
     }
 
     pub(crate) fn start_hotkey_recording(&mut self) {
@@ -142,6 +151,15 @@ impl SettingsWindow {
         self.panel.mark_save_failed(code);
     }
 
+    pub(crate) fn handle_system_theme_change(&mut self, theme: winit::window::Theme) {
+        if self
+            .theme
+            .update_system_appearance(SystemAppearance::from_winit(Some(theme)))
+        {
+            self.request_redraw();
+        }
+    }
+
     pub(crate) fn resize(&mut self, width: u32, height: u32) {
         self.width = width.max(1);
         self.height = height.max(1);
@@ -173,7 +191,13 @@ impl SettingsWindow {
         if buffer.len() < width.saturating_mul(height) {
             return Ok(());
         }
-        settings_panel::paint(&self.panel, &mut buffer[..width * height], width, height);
+        settings_panel::paint(
+            &self.panel,
+            self.theme.palette(),
+            &mut buffer[..width * height],
+            width,
+            height,
+        );
         buffer
             .present()
             .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("settings present: {e}")))?;

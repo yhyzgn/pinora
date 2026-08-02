@@ -5,6 +5,7 @@
 
 use pinora_core::{HistoryEntry, PixelPoint, PixelRect, PixelSize};
 
+use crate::panel_theme::PanelTheme;
 use crate::settings_panel::{draw_outline, draw_text, fill};
 
 pub const PANEL_WIDTH: u32 = 820;
@@ -332,6 +333,7 @@ pub const fn close_rect() -> PixelRect {
 pub fn paint(
     panel: &HistoryPanel,
     preview: Option<HistoryPreview<'_>>,
+    theme: PanelTheme,
     frame: &mut [u32],
     stride: usize,
     height: usize,
@@ -341,21 +343,21 @@ pub fn paint(
         stride,
         height,
         PixelRect::new(0, 0, PANEL_WIDTH, PANEL_HEIGHT),
-        0x00141820,
+        theme.background,
     );
     fill(
         frame,
         stride,
         height,
         PixelRect::new(0, 0, PANEL_WIDTH, 48),
-        0x00202B3A,
+        theme.header,
     );
     draw_outline(
         frame,
         stride,
         height,
         PixelRect::new(0, 0, PANEL_WIDTH, PANEL_HEIGHT),
-        0x005A718A,
+        theme.border,
     );
     let title = if panel.confirming_clear() {
         "CLEAR ALL HISTORY?  ENTER CONFIRM  ESC CANCEL"
@@ -367,10 +369,10 @@ pub fn paint(
             HistoryPanelStatus::Error(_) => "HISTORY ACTION FAILED  RETRY OR CLOSE",
         }
     };
-    draw_text(frame, stride, height, 24, 22, title, 0x00D8E6F3);
+    draw_text(frame, stride, height, 24, 22, title, theme.primary_text);
 
-    fill(frame, stride, height, SEARCH, 0x00202A36);
-    draw_outline(frame, stride, height, SEARCH, 0x004B637A);
+    fill(frame, stride, height, SEARCH, theme.surface);
+    draw_outline(frame, stride, height, SEARCH, theme.control_border);
     draw_text(
         frame,
         stride,
@@ -378,7 +380,7 @@ pub fn paint(
         SEARCH.origin.x + 10,
         SEARCH.origin.y + 11,
         "SEARCH",
-        0x00AFC8DC,
+        theme.accent_text,
     );
     let query_x = SEARCH.origin.x + 78;
     draw_text(
@@ -388,12 +390,20 @@ pub fn paint(
         query_x,
         SEARCH.origin.y + 11,
         panel.query(),
-        0x00F2F7FA,
+        theme.primary_text,
     );
 
     if panel.entries().is_empty() {
-        draw_outline(frame, stride, height, PREVIEW, 0x004B637A);
-        draw_text(frame, stride, height, 330, 220, "NO ITEMS", 0x00A0B2C4);
+        draw_outline(frame, stride, height, PREVIEW, theme.control_border);
+        draw_text(
+            frame,
+            stride,
+            height,
+            330,
+            220,
+            "NO ITEMS",
+            theme.muted_text,
+        );
     }
     for row in 0..panel.visible_count() {
         let index = panel.first_visible + row;
@@ -407,9 +417,13 @@ pub fn paint(
             stride,
             height,
             rect,
-            if selected { 0x002B5270 } else { 0x00202A36 },
+            if selected {
+                theme.selected_surface
+            } else {
+                theme.surface
+            },
         );
-        draw_outline(frame, stride, height, rect, 0x004B637A);
+        draw_outline(frame, stride, height, rect, theme.control_border);
         draw_text(
             frame,
             stride,
@@ -417,7 +431,7 @@ pub fn paint(
             rect.origin.x + 12,
             rect.origin.y + 14,
             &format!("IMG {}", entry.image_id.raw()),
-            0x00E5EDF5,
+            theme.primary_text,
         );
         draw_text(
             frame,
@@ -429,12 +443,12 @@ pub fn paint(
                 "{} X {}",
                 entry.source_rect.size.width, entry.source_rect.size.height
             ),
-            0x00B5D8FF,
+            theme.secondary_text,
         );
     }
 
-    fill(frame, stride, height, PREVIEW, 0x001D2630);
-    draw_outline(frame, stride, height, PREVIEW, 0x004B637A);
+    fill(frame, stride, height, PREVIEW, theme.recessed_surface);
+    draw_outline(frame, stride, height, PREVIEW, theme.control_border);
     if let Some(preview) = preview {
         draw_preview(frame, stride, height, preview);
     } else if panel.selected_entry().is_some() {
@@ -449,30 +463,64 @@ pub fn paint(
             PREVIEW.origin.x + 82,
             PREVIEW.origin.y + 168,
             message,
-            0x00A0B2C4,
+            theme.muted_text,
         );
     }
 
-    fill(frame, stride, height, reopen_rect(), 0x002C6EA3);
-    fill(frame, stride, height, edit_rect(), 0x00467A50);
-    fill(frame, stride, height, delete_rect(), 0x007A3B3B);
+    fill(frame, stride, height, reopen_rect(), theme.primary_action);
+    fill(frame, stride, height, edit_rect(), theme.success_action);
+    fill(frame, stride, height, delete_rect(), theme.danger_action);
     fill(
         frame,
         stride,
         height,
         clear_rect(),
         if panel.confirming_clear() {
-            0x00A65C32
+            theme.danger_action
         } else {
-            0x006A3D32
+            theme.warning_action
         },
     );
-    fill(frame, stride, height, close_rect(), 0x00434D59);
-    draw_outline(frame, stride, height, reopen_rect(), 0x0096C8FF);
-    draw_outline(frame, stride, height, edit_rect(), 0x0090D79D);
-    draw_outline(frame, stride, height, delete_rect(), 0x00E39A9A);
-    draw_outline(frame, stride, height, clear_rect(), 0x00E3B18A);
-    draw_outline(frame, stride, height, close_rect(), 0x007A8998);
+    fill(frame, stride, height, close_rect(), theme.secondary_action);
+    draw_outline(
+        frame,
+        stride,
+        height,
+        reopen_rect(),
+        theme.primary_action_border,
+    );
+    draw_outline(
+        frame,
+        stride,
+        height,
+        edit_rect(),
+        theme.success_action_border,
+    );
+    draw_outline(
+        frame,
+        stride,
+        height,
+        delete_rect(),
+        theme.danger_action_border,
+    );
+    draw_outline(
+        frame,
+        stride,
+        height,
+        clear_rect(),
+        if panel.confirming_clear() {
+            theme.danger_action_border
+        } else {
+            theme.warning_action_border
+        },
+    );
+    draw_outline(
+        frame,
+        stride,
+        height,
+        close_rect(),
+        theme.secondary_action_border,
+    );
     draw_text(
         frame,
         stride,
@@ -480,7 +528,7 @@ pub fn paint(
         reopen_rect().origin.x + 26,
         reopen_rect().origin.y + 17,
         "PIN",
-        0x00FFFFFF,
+        theme.on_action_text,
     );
     draw_text(
         frame,
@@ -489,7 +537,7 @@ pub fn paint(
         edit_rect().origin.x + 27,
         edit_rect().origin.y + 17,
         "EDIT",
-        0x00FFFFFF,
+        theme.on_action_text,
     );
     draw_text(
         frame,
@@ -498,7 +546,7 @@ pub fn paint(
         delete_rect().origin.x + 35,
         delete_rect().origin.y + 17,
         "DELETE",
-        0x00FFFFFF,
+        theme.on_action_text,
     );
     draw_text(
         frame,
@@ -511,7 +559,7 @@ pub fn paint(
         } else {
             "CLEAR ALL"
         },
-        0x00FFFFFF,
+        theme.on_action_text,
     );
     draw_text(
         frame,
@@ -520,7 +568,7 @@ pub fn paint(
         close_rect().origin.x + 32,
         close_rect().origin.y + 17,
         "CLOSE",
-        0x00FFFFFF,
+        theme.on_action_text,
     );
 }
 
@@ -559,6 +607,7 @@ fn draw_preview(frame: &mut [u32], stride: usize, height: usize, preview: Histor
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::panel_theme::PanelTheme;
     use pinora_core::{
         AssetGeneration, ContentDigest, DisplayId, HistoryEntrySpec, HistoryOcrState, ImageId,
     };
@@ -628,6 +677,38 @@ mod tests {
             panel.hit_test(PixelPoint::new(clear_rect().origin.x + 4, BUTTON_Y + 4)),
             Some(HistoryPanelAction::RequestClear)
         );
+    }
+
+    #[test]
+    fn light_and_dark_palettes_produce_distinct_history_frames() {
+        let panel = HistoryPanel::new(vec![entry(1)]);
+        let mut dark_frame = vec![0; PANEL_WIDTH as usize * PANEL_HEIGHT as usize];
+        let mut light_frame = vec![0; PANEL_WIDTH as usize * PANEL_HEIGHT as usize];
+
+        paint(
+            &panel,
+            None,
+            PanelTheme::dark(),
+            &mut dark_frame,
+            PANEL_WIDTH as usize,
+            PANEL_HEIGHT as usize,
+        );
+        paint(
+            &panel,
+            None,
+            PanelTheme::light(),
+            &mut light_frame,
+            PANEL_WIDTH as usize,
+            PANEL_HEIGHT as usize,
+        );
+
+        let background_pixel = 60 * PANEL_WIDTH as usize + 10;
+        assert_eq!(dark_frame[background_pixel], PanelTheme::dark().background);
+        assert_eq!(
+            light_frame[background_pixel],
+            PanelTheme::light().background
+        );
+        assert_ne!(dark_frame, light_frame);
     }
 
     #[test]

@@ -5,6 +5,7 @@
 
 use pinora_core::{CapabilitySnapshot, ErrorCode, PixelRect};
 
+use crate::panel_theme::PanelTheme;
 use crate::settings_panel::{draw_outline, draw_text, fill};
 use crate::tray_feedback::TrayFeedback;
 
@@ -126,27 +127,33 @@ const fn platform_label() -> &'static str {
 
 /// 将受控状态绘制到诊断窗口。所有行使用固定 ASCII，避免依赖平台字体和意外
 /// 将用户来源文本带入像素缓冲。
-pub(crate) fn paint(panel: &DiagnosticsPanel, frame: &mut [u32], stride: usize, height: usize) {
+pub(crate) fn paint(
+    panel: &DiagnosticsPanel,
+    theme: PanelTheme,
+    frame: &mut [u32],
+    stride: usize,
+    height: usize,
+) {
     fill(
         frame,
         stride,
         height,
         PixelRect::new(0, 0, PANEL_WIDTH, PANEL_HEIGHT),
-        0x00131A24,
+        theme.background,
     );
     fill(
         frame,
         stride,
         height,
         PixelRect::new(0, 0, PANEL_WIDTH, 52),
-        0x00213142,
+        theme.header,
     );
     draw_outline(
         frame,
         stride,
         height,
         PixelRect::new(0, 0, PANEL_WIDTH, PANEL_HEIGHT),
-        0x005A718A,
+        theme.border,
     );
     draw_text(
         frame,
@@ -155,20 +162,56 @@ pub(crate) fn paint(panel: &DiagnosticsPanel, frame: &mut [u32], stride: usize, 
         22,
         22,
         "PINORA DIAGNOSTICS",
-        0x00E5EDF5,
+        theme.primary_text,
     );
-    draw_text(frame, stride, height, 22, 38, "LOCAL STATUS", 0x009DC4F0);
+    draw_text(
+        frame,
+        stride,
+        height,
+        22,
+        38,
+        "LOCAL STATUS",
+        theme.accent_text,
+    );
 
-    draw_text(frame, stride, height, 24, 74, "PLATFORM", 0x00B9C7D8);
-    draw_text(frame, stride, height, 220, 74, panel.platform(), 0x00E5EDF5);
+    draw_text(
+        frame,
+        stride,
+        height,
+        24,
+        74,
+        "PLATFORM",
+        theme.secondary_text,
+    );
+    draw_text(
+        frame,
+        stride,
+        height,
+        220,
+        74,
+        panel.platform(),
+        theme.primary_text,
+    );
 
     for (index, (label, available)) in panel.capability_rows().into_iter().enumerate() {
         let top = 96 + index as i32 * 36;
         let rect = PixelRect::new(18, top, PANEL_WIDTH - 36, 28);
-        fill(frame, stride, height, rect, 0x001D2937);
-        draw_outline(frame, stride, height, rect, 0x003F596E);
-        draw_text(frame, stride, height, 30, top + 11, label, 0x00D4E0ED);
-        let color = if available { 0x007DD7A0 } else { 0x00F0B777 };
+        fill(frame, stride, height, rect, theme.recessed_surface);
+        draw_outline(frame, stride, height, rect, theme.control_border);
+        draw_text(
+            frame,
+            stride,
+            height,
+            30,
+            top + 11,
+            label,
+            theme.primary_text,
+        );
+        let color = if available {
+            theme.available_status
+        } else {
+            theme.restricted_status
+        };
         draw_text(
             frame,
             stride,
@@ -188,7 +231,7 @@ pub(crate) fn paint(panel: &DiagnosticsPanel, frame: &mut [u32], stride: usize, 
         24,
         feedback_top,
         "RECENT STATUS",
-        0x00B9C7D8,
+        theme.secondary_text,
     );
     draw_text(
         frame,
@@ -197,7 +240,7 @@ pub(crate) fn paint(panel: &DiagnosticsPanel, frame: &mut [u32], stride: usize, 
         24,
         feedback_top + 18,
         panel.feedback_label(),
-        0x00E5EDF5,
+        theme.primary_text,
     );
     if let Some(error) = panel.error_code() {
         draw_text(
@@ -207,7 +250,7 @@ pub(crate) fn paint(panel: &DiagnosticsPanel, frame: &mut [u32], stride: usize, 
             24,
             feedback_top + 48,
             "ERROR CODE",
-            0x00F0B777,
+            theme.restricted_status,
         );
         draw_text(
             frame,
@@ -216,7 +259,7 @@ pub(crate) fn paint(panel: &DiagnosticsPanel, frame: &mut [u32], stride: usize, 
             120,
             feedback_top + 48,
             error.as_str(),
-            0x00F0B777,
+            theme.restricted_status,
         );
     }
     if let Some(recovery) = panel.recovery_suggestion() {
@@ -227,7 +270,7 @@ pub(crate) fn paint(panel: &DiagnosticsPanel, frame: &mut [u32], stride: usize, 
             24,
             feedback_top + 72,
             "RECOVERY",
-            0x009DC4F0,
+            theme.accent_text,
         );
         draw_text(
             frame,
@@ -236,7 +279,7 @@ pub(crate) fn paint(panel: &DiagnosticsPanel, frame: &mut [u32], stride: usize, 
             24,
             feedback_top + 90,
             recovery,
-            0x00D4E0ED,
+            theme.primary_text,
         );
     }
 }
@@ -244,6 +287,7 @@ pub(crate) fn paint(panel: &DiagnosticsPanel, frame: &mut [u32], stride: usize, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::panel_theme::PanelTheme;
     use crate::tray_feedback::TrayExportOperation;
 
     fn runtime_with_notes(notes: Vec<String>) -> CapabilitySnapshot {
@@ -310,5 +354,40 @@ mod tests {
         assert_eq!(panel.feedback_label(), "OCR COMPLETED");
         assert_eq!(panel.error_code(), None);
         assert_eq!(panel.recovery_suggestion(), None);
+    }
+
+    #[test]
+    fn light_and_dark_palettes_produce_distinct_diagnostics_frames() {
+        let panel = DiagnosticsPanel::from_runtime(
+            &CapabilitySnapshot::default(),
+            true,
+            true,
+            TrayFeedback::Ready,
+        );
+        let mut dark_frame = vec![0; PANEL_WIDTH as usize * PANEL_HEIGHT as usize];
+        let mut light_frame = vec![0; PANEL_WIDTH as usize * PANEL_HEIGHT as usize];
+
+        paint(
+            &panel,
+            PanelTheme::dark(),
+            &mut dark_frame,
+            PANEL_WIDTH as usize,
+            PANEL_HEIGHT as usize,
+        );
+        paint(
+            &panel,
+            PanelTheme::light(),
+            &mut light_frame,
+            PANEL_WIDTH as usize,
+            PANEL_HEIGHT as usize,
+        );
+
+        let background_pixel = 60 * PANEL_WIDTH as usize + 10;
+        assert_eq!(dark_frame[background_pixel], PanelTheme::dark().background);
+        assert_eq!(
+            light_frame[background_pixel],
+            PanelTheme::light().background
+        );
+        assert_ne!(dark_frame, light_frame);
     }
 }

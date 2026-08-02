@@ -6,13 +6,16 @@
 use std::num::NonZeroU32;
 use std::rc::Rc;
 
-use pinora_core::{ErrorCode, HistoryEntry, ImageId, PinoraError, PixelPoint, PixelSize};
+use pinora_core::{
+    ErrorCode, HistoryEntry, ImageId, PinoraError, PixelPoint, PixelSize, ThemeMode,
+};
 use softbuffer::{Context, Surface};
 use winit::dpi::PhysicalSize;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId, WindowLevel};
 
 use crate::history_browser::{self, HistoryPanel, HistoryPreview};
+use crate::panel_theme::{PanelThemeState, SystemAppearance};
 use crate::window_policy::{self, AuxiliaryWindowKind};
 
 struct HistoryPreviewCache {
@@ -26,6 +29,7 @@ pub(crate) struct HistoryWindow {
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
     panel: HistoryPanel,
+    theme: PanelThemeState,
     cursor: PixelPoint,
     width: u32,
     height: u32,
@@ -37,6 +41,7 @@ impl HistoryWindow {
         event_loop: &ActiveEventLoop,
         context: &Context<Rc<Window>>,
         entries: Vec<HistoryEntry>,
+        theme_preference: ThemeMode,
     ) -> Result<Self, PinoraError> {
         let attrs = Window::default_attributes()
             .with_title("Pinora History")
@@ -65,6 +70,10 @@ impl HistoryWindow {
             })?;
         }
         let history = Self {
+            theme: PanelThemeState::new(
+                theme_preference,
+                SystemAppearance::from_winit(window.theme()),
+            ),
             window,
             surface,
             panel: HistoryPanel::new(entries),
@@ -95,6 +104,21 @@ impl HistoryWindow {
 
     pub(crate) fn request_redraw(&self) {
         self.window.request_redraw();
+    }
+
+    pub(crate) fn set_theme_preference(&mut self, preference: ThemeMode) {
+        if self.theme.set_preference(preference) {
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn handle_system_theme_change(&mut self, theme: winit::window::Theme) {
+        if self
+            .theme
+            .update_system_appearance(SystemAppearance::from_winit(Some(theme)))
+        {
+            self.request_redraw();
+        }
     }
 
     pub(crate) fn cursor(&self) -> PixelPoint {
@@ -171,6 +195,7 @@ impl HistoryWindow {
         history_browser::paint(
             &self.panel,
             preview,
+            self.theme.palette(),
             &mut buffer[..width * height],
             width,
             height,

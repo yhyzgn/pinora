@@ -23,6 +23,7 @@
 | 帧缓存 | 空闲预截；热键命中以所有权移交预处理帧，避免复制全屏图像与双 XRGB 缓冲；暂停以代际拒绝晚到帧 |
 | 基础标注 | Overlay 选区内：选择、矩形/圆角矩形/直线/箭头/画笔/椭圆/序号/马赛克/区域模糊/文本/截图内取色；文本 `Shift+Enter` 换行、`Enter` 提交、`Esc` 取消，非空草稿在重选/切换工具前提交；`V` 选择，选中对象可拖动或以方向键移动（Shift 为 10 像素），`Q` 圆角矩形，`L` 直线，`N` 序号，`B` 区域模糊，`F` 切换后续封闭图形的半透明填充，C 颜色，I 取色，+/- 线宽，Delete/Backspace 删除选中项；`Ctrl+Z` 撤销，`Ctrl+Shift+Z`/`Ctrl+Y` 重做，工具栏“清空”可一次撤销/重做整个标注文档 |
 | 系统托盘 | 截图、1/3/5 秒延时区域截图及取消、显示器指定全屏、可用 xcap 后端的最多 20 个经清洗窗口截图候选、设置、历史、诊断、显示/隐藏/关闭全部贴图、退出；菜单禁用状态项与图标 tooltip 显示最近一次受控截图/OCR/导出状态，另有本次启动的截图/热键/图像剪贴板/OCR 能力摘要；诊断面板只显示受控能力、固定状态、稳定错误码和恢复建议（tray-icon；真实跨平台菜单与窗口枚举仍待探针） |
+| 辅助面板主题 | 设置、历史和诊断三个自绘 `Panel` 使用共享 `PanelTheme` token；`Light`/`Dark` 强制覆盖系统外观，`System` 读取窗口初始主题并仅对 `ThemeChanged` 的明确事件刷新，未知系统外观稳定回退 Dark。设置草稿即时预览；历史/诊断仅在原子保存成功后同步。Overlay、贴图、原生菜单和标题栏不在此主题范围内 |
 | 后台驻留与窗口隔离 | 启动后只保留托盘、可用全局热键、IPC 与帧缓存，不自动截图；无法创建托盘时以 `CapabilityUnavailable` 退出；所有辅助窗口必须由 `window_policy` 工厂创建并请求跳过任务栏/Dock，真实桌面验证仍待完成 |
 | 贴图控制 | L 锁定，`[` `]` 透明度（压暗近似）；`O` 本地 OCR；`T` 词框 |
 | OCR | 系统 `tesseract` CLI；可持久化选择 Auto、English、SimplifiedChinese；同资产版本和语言的 accepted 结果进程内复用；全文复制剪贴板；词框叠加；缺引擎或指定本机模型时受控降级 |
@@ -32,7 +33,7 @@
 - 接管初期 Unix 单实例路径直接依赖 Unix socket；后续实现已将 `OsSingleInstance` 与 `forward_ipc_frame` 按 Unix/非 Unix 条件编译，根 `src/main.rs` 只依赖其抽象入口。真实 Windows/macOS 的并发启动、权限和异常恢复仍待桌面探针。
 - `crates/pinora-app/src/desktop_shell.rs` 当前约 3679 行，仍集中承载 winit/softbuffer 窗口事件、截图编排、Overlay 绘制、标注输入、贴图生命周期、OCR 触发、托盘和 IPC 轮询；045/046 已将历史和设置窗口的资源、草稿/预览缓存、resize、存储调用和呈现迁至专属适配器，但 Overlay/贴图仍在 shell 中，单体化风险保持开放。
 - 当前依赖树把 `gtk`/`tray-icon`、`xcap`/PipeWire、`winit`/`softbuffer` 和 Linux CLI 后端直接放入 `pinora-app`；没有 Windows/macOS/Linux 适配器边界。
-- `cargo fmt --check`、`cargo check --workspace` 和 `cargo clippy --workspace --all-targets -- -D warnings` 已于 2026-08-02 通过；当前 `PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace` 通过 app 207 个、core 85 个单元测试，另有 2 个真实桌面测试被忽略；仍没有 GUI 端到端测试。
+- `cargo fmt --check`、`cargo check --workspace` 和 `cargo clippy --workspace --all-targets -- -D warnings` 已于 2026-08-02 通过；当前 `PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace` 通过 app 240 个、core 88 个单元测试，另有 2 个真实桌面测试被忽略；仍没有 GUI 端到端测试。
 - 接管早期 Windows target 曾被 GTK 的 `gdk-pixbuf-sys`/`glib-sys` pkg-config 阻塞；GTK 已改为 Linux target 依赖，2026-08-02 的 `cargo check --workspace --target x86_64-pc-windows-msvc` 已通过。该事实只证明交叉编译，不证明 GUI 能力。
 - OCR 通过 `tesseract` 子进程和临时 PNG 工作；适配器已持有自身 `Child`，支持协作式取消、30 秒截止时间、16 MiB 输出上限和 RAII 临时文件清理，不再调用外部 `kill`。贴图与 Overlay UI 已经通过 `OcrJobService` 提交到 `JobSupervisor`，结果交付受 owner、终态和 `AssetRef` generation 门禁保护；worker 不触碰窗口或剪贴板。
 - 截图后端自动选择 KDE `spectacle` → xcap → `Unavailable`；两者不可用时保留后端失败摘要并由 provider 返回 `CapabilityUnavailable`，`fake` 只能通过显式测试/开发注入使用。
@@ -67,6 +68,7 @@
 - 2026-08-02 的 082 将设置 schema 升级为 v2：18 字节 v1 记录保留既有字段并以 `Auto` 迁移，后续原子保存写入 19 字节 v2。设置窗口可选择 Auto、English、SimplifiedChinese；桌面壳在提交 OCR worker 前冻结 runtime 中的预设。自动模式仅组合本机 `chi_sim`/`eng`，指定模式缺模型时返回 `CapabilityUnavailable`，不下载模型、不回退；OCR 失败日志只写稳定错误码。离线 codec、面板、模型选择、worker 冻结和 workspace 门禁已通过，真实模型安装、设置输入、剪贴板与桌面体验仍未验证。
 - 2026-08-02 的 084 将设置 schema 升级为 v3：v1/v2 文件保留既有字段并新增默认区域 F2、全屏 F3 主键；v3 以受限物理键和修饰键编码两个主键。设置窗口使用同一辅助窗口进入录制状态，录制优先于窗口内截图快捷键，拒绝裸字母、重复或占用 Ctrl+N/Ctrl+Shift+S 的组合。热键 hub 在新键全部预注册后才释放旧键，设置写入失败时尝试恢复旧键；不可用后端仍可保存配置但不报告已注册。没有新增窗口、事件循环、线程、网络或权限绕过；真实平台注册、冲突与任务栏/Dock 行为仍未验证。
 - 2026-08-02 的 085 增加 tray“诊断”入口和短生命周期的本地 `Panel`：诊断内容只由平台常量、公开能力布尔值、`GlobalHotkeyHub` 实际注册结果、`tesseract_available` 和 `TrayFeedback` 固定枚举生成；`CapabilitySnapshot.notes`、原始错误、路径、截图像素、OCR 文本、剪贴板内容和窗口/显示器标识均不会进入模型或渲染。失败只显示稳定 `ErrorCode` 与固定恢复建议，成功/进行中不伪造错误；打开期间受控 tray 反馈会刷新面板。窗口仍由 `window_policy` 先隐藏创建并在关闭/Esc/截图时释放，未新增事件循环、线程、网络或持久化。离线测试与静态策略门禁通过；真实 tray、焦点、读屏、权限状态及任务栏/Dock/分页器隔离仍未验证。
+- 2026-08-02 的 087 为设置、历史和诊断 `Panel` 建立共享 `PanelTheme`/`PanelThemeState`：`Light`/`Dark` 不受系统外观影响，`System` 使用窗口创建时的 `Window::theme()` 与后续 `ThemeChanged`，未知状态稳定回退 Dark。设置面板从草稿即时解析调色板；历史/诊断只在原子设置保存成功后收到新偏好，失败不会传播。三个窗口仍使用已有 `window_policy` 创建和展示，没有新增窗口、事件循环、线程、网络、持久化形状或设置 schema。浅深 XRGB 帧、草稿预览、保存成功/失败、主题事件解析、窗口策略、workspace 严格门禁和 Windows target 编译已验证；真实系统主题事件、原生标题栏、tray、读屏、色彩管理、HiDPI 与任务栏/Dock/分页器行为仍需桌面会话验证。
 - 2026-08-02 的 086 使 tray 区域/全屏截图菜单使用当前已保存的受限 `HotkeyBinding`，初始化及设置原子写入成功后都会原地更新两个既有 `MenuItem`。热键重绑失败或设置保存失败发生在更新前，因此保留旧菜单文字与旧运行时映射；菜单文字不表示 OS 注册成功，能力摘要和诊断仍读取 `GlobalHotkeyHub` 实际状态。未新增 tray、窗口、事件循环、线程、进程、网络或依赖；真实原生 tray 文本刷新与桌面行为仍未验证。
 - 2026-08-02 的 083 为 `OcrJobService` 增加进程内结果复用：只有通过 owner、终态和 `AssetRef` generation 门禁的成功 OCR 才以完整 asset 与冻结语言进入缓存。缓存为最多 8 条、2 MiB 估算总量、512 KiB 单条上限的内存 LRU 风格队列；命中由 service 保证不创建新 worker，桌面壳仍走原有词框、全文复制与 tray 成功交付。缓存不持久化、不感知外部模型文件变化；离线缓存、服务和 workspace 门禁已通过，真实连续操作、内存峰值和桌面体验仍未验证。
 - GitHub Actions CI `30732620836`、`30732765136`、`30732906042`、`30733684203`、`30734154282`、`30734583848`、`30734867309` 与 `30735354166` 已于 2026-08-02 在 Linux、macOS、Windows 原生 runner 通过格式、workspace 编译、严格 Clippy 和单元测试；这些运行未创建 GUI 会话，不能作为任务栏、Dock、窗口交互、KWin 行为、真实多显示器或渲染延迟的证据。

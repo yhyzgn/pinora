@@ -8,6 +8,8 @@ use pinora_core::{
     REGION_SECONDARY_HOTKEY, ThemeMode,
 };
 
+use crate::panel_theme::PanelTheme;
+
 pub const PANEL_WIDTH: u32 = 560;
 pub const PANEL_HEIGHT: u32 = 610;
 
@@ -430,44 +432,50 @@ fn sanitize_error(error: String) -> String {
 }
 
 /// 将设置面板绘制到 XRGB 缓冲。文字使用短 ASCII 标记，避免依赖平台字体。
-pub fn paint(panel: &SettingsPanel, frame: &mut [u32], stride: usize, height: usize) {
+pub fn paint(
+    panel: &SettingsPanel,
+    theme: PanelTheme,
+    frame: &mut [u32],
+    stride: usize,
+    height: usize,
+) {
     fill(
         frame,
         stride,
         height,
         PixelRect::new(0, 0, PANEL_WIDTH, PANEL_HEIGHT),
-        0x00141820,
+        theme.background,
     );
     fill(
         frame,
         stride,
         height,
         PixelRect::new(0, 0, PANEL_WIDTH, 48),
-        0x00202B3A,
+        theme.header,
     );
     draw_outline(
         frame,
         stride,
         height,
         PixelRect::new(0, 0, PANEL_WIDTH, PANEL_HEIGHT),
-        0x005A718A,
+        theme.border,
     );
     for field in SettingField::ALL {
         let row = field.row_rect();
         let bg = if panel.selected() == field {
-            0x002B5270
+            theme.selected_surface
         } else {
-            0x00202A36
+            theme.surface
         };
         fill(frame, stride, height, row, bg);
-        draw_outline(frame, stride, height, row, 0x004B637A);
+        draw_outline(frame, stride, height, row, theme.control_border);
         let minus = PixelRect::new(row.right() - 82, row.origin.y + 9, 30, 36);
         let plus = PixelRect::new(row.right() - 42, row.origin.y + 9, 30, 36);
         if !field.is_hotkey() {
-            fill(frame, stride, height, minus, 0x00344250);
-            fill(frame, stride, height, plus, 0x00344250);
-            draw_outline(frame, stride, height, minus, 0x007E9AB2);
-            draw_outline(frame, stride, height, plus, 0x007E9AB2);
+            fill(frame, stride, height, minus, theme.control_surface);
+            fill(frame, stride, height, plus, theme.control_surface);
+            draw_outline(frame, stride, height, minus, theme.control_border);
+            draw_outline(frame, stride, height, plus, theme.control_border);
         }
         draw_text(
             frame,
@@ -476,7 +484,7 @@ pub fn paint(panel: &SettingsPanel, frame: &mut [u32], stride: usize, height: us
             row.origin.x + 14,
             row.origin.y + 16,
             field.label(),
-            0x00E5EDF5,
+            theme.primary_text,
         );
         draw_text(
             frame,
@@ -485,7 +493,7 @@ pub fn paint(panel: &SettingsPanel, frame: &mut [u32], stride: usize, height: us
             row.origin.x + 190,
             row.origin.y + 16,
             &panel.value_label(field),
-            0x00B5D8FF,
+            theme.secondary_text,
         );
         if !field.is_hotkey() {
             draw_text(
@@ -495,7 +503,7 @@ pub fn paint(panel: &SettingsPanel, frame: &mut [u32], stride: usize, height: us
                 minus.origin.x + 11,
                 minus.origin.y + 15,
                 "-",
-                0x00FFFFFF,
+                theme.on_action_text,
             );
             draw_text(
                 frame,
@@ -504,19 +512,35 @@ pub fn paint(panel: &SettingsPanel, frame: &mut [u32], stride: usize, height: us
                 plus.origin.x + 11,
                 plus.origin.y + 15,
                 "+",
-                0x00FFFFFF,
+                theme.on_action_text,
             );
         }
     }
     let save_color = if matches!(panel.status(), SettingsPanelStatus::Saved) {
-        0x002A7C52
+        theme.success_action
     } else {
-        0x002C6EA3
+        theme.primary_action
     };
     fill(frame, stride, height, save_rect(), save_color);
-    fill(frame, stride, height, cancel_rect(), 0x00434D59);
-    draw_outline(frame, stride, height, save_rect(), 0x0096C8FF);
-    draw_outline(frame, stride, height, cancel_rect(), 0x007A8998);
+    fill(frame, stride, height, cancel_rect(), theme.secondary_action);
+    draw_outline(
+        frame,
+        stride,
+        height,
+        save_rect(),
+        if matches!(panel.status(), SettingsPanelStatus::Saved) {
+            theme.success_action_border
+        } else {
+            theme.primary_action_border
+        },
+    );
+    draw_outline(
+        frame,
+        stride,
+        height,
+        cancel_rect(),
+        theme.secondary_action_border,
+    );
     draw_text(
         frame,
         stride,
@@ -524,7 +548,7 @@ pub fn paint(panel: &SettingsPanel, frame: &mut [u32], stride: usize, height: us
         save_rect().origin.x + 30,
         save_rect().origin.y + 17,
         "SAVE",
-        0x00FFFFFF,
+        theme.on_action_text,
     );
     draw_text(
         frame,
@@ -533,7 +557,7 @@ pub fn paint(panel: &SettingsPanel, frame: &mut [u32], stride: usize, height: us
         cancel_rect().origin.x + 23,
         cancel_rect().origin.y + 17,
         "CANCEL",
-        0x00FFFFFF,
+        theme.on_action_text,
     );
     let status = match panel.status() {
         SettingsPanelStatus::Editing if panel.selected().is_hotkey() => "ENTER RECORD  ESC CANCEL",
@@ -545,7 +569,7 @@ pub fn paint(panel: &SettingsPanel, frame: &mut [u32], stride: usize, height: us
         }
         SettingsPanelStatus::Error(_) => "SAVE FAILED - RETRY OR CANCEL",
     };
-    draw_text(frame, stride, height, 28, 24, status, 0x00D8E6F3);
+    draw_text(frame, stride, height, 28, 24, status, theme.primary_text);
 }
 
 /// 共享的自绘 XRGB 填充原语；仅用于应用内小型工具窗口。
@@ -680,6 +704,7 @@ fn draw_glyph(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::panel_theme::{PanelTheme, SystemAppearance};
     use pinora_core::{HotkeyCode, HotkeyModifiers};
 
     #[test]
@@ -701,6 +726,41 @@ mod tests {
         assert_eq!(panel.draft().theme, ThemeMode::Dark);
         panel.step(1);
         assert_eq!(panel.draft().theme, ThemeMode::System);
+    }
+
+    #[test]
+    fn theme_draft_immediately_changes_the_settings_frame() {
+        let mut panel = SettingsPanel::new(AppSettings::default());
+        let mut system_frame = vec![0; PANEL_WIDTH as usize * PANEL_HEIGHT as usize];
+        paint(
+            &panel,
+            PanelTheme::resolve(panel.draft().theme, SystemAppearance::Unknown),
+            &mut system_frame,
+            PANEL_WIDTH as usize,
+            PANEL_HEIGHT as usize,
+        );
+
+        panel.step(1);
+        assert_eq!(panel.draft().theme, ThemeMode::Light);
+        let mut light_frame = vec![0; PANEL_WIDTH as usize * PANEL_HEIGHT as usize];
+        paint(
+            &panel,
+            PanelTheme::resolve(panel.draft().theme, SystemAppearance::Unknown),
+            &mut light_frame,
+            PANEL_WIDTH as usize,
+            PANEL_HEIGHT as usize,
+        );
+
+        let background_pixel = 60 * PANEL_WIDTH as usize + 10;
+        assert_eq!(
+            system_frame[background_pixel],
+            PanelTheme::dark().background
+        );
+        assert_eq!(
+            light_frame[background_pixel],
+            PanelTheme::light().background
+        );
+        assert_ne!(system_frame, light_frame);
     }
 
     #[test]

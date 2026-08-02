@@ -6,13 +6,14 @@
 use std::num::NonZeroU32;
 use std::rc::Rc;
 
-use pinora_core::{ErrorCode, PinoraError};
+use pinora_core::{ErrorCode, PinoraError, ThemeMode};
 use softbuffer::{Context, Surface};
 use winit::dpi::PhysicalSize;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId, WindowLevel};
 
 use crate::diagnostics_panel::{self, DiagnosticsPanel};
+use crate::panel_theme::{PanelThemeState, SystemAppearance};
 use crate::tray_feedback::TrayFeedback;
 use crate::window_policy::{self, AuxiliaryWindowKind};
 
@@ -21,6 +22,7 @@ pub(crate) struct DiagnosticsWindow {
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
     panel: DiagnosticsPanel,
+    theme: PanelThemeState,
     width: u32,
     height: u32,
 }
@@ -30,6 +32,7 @@ impl DiagnosticsWindow {
         event_loop: &ActiveEventLoop,
         context: &Context<Rc<Window>>,
         panel: DiagnosticsPanel,
+        theme_preference: ThemeMode,
     ) -> Result<Self, PinoraError> {
         let attrs = Window::default_attributes()
             .with_title("Pinora Diagnostics")
@@ -58,6 +61,10 @@ impl DiagnosticsWindow {
             })?;
         }
         let diagnostics = Self {
+            theme: PanelThemeState::new(
+                theme_preference,
+                SystemAppearance::from_winit(window.theme()),
+            ),
             window,
             surface,
             panel,
@@ -92,6 +99,21 @@ impl DiagnosticsWindow {
     pub(crate) fn set_feedback(&mut self, feedback: TrayFeedback) {
         self.panel.set_feedback(feedback);
         self.request_redraw();
+    }
+
+    pub(crate) fn set_theme_preference(&mut self, preference: ThemeMode) {
+        if self.theme.set_preference(preference) {
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn handle_system_theme_change(&mut self, theme: winit::window::Theme) {
+        if self
+            .theme
+            .update_system_appearance(SystemAppearance::from_winit(Some(theme)))
+        {
+            self.request_redraw();
+        }
     }
 
     pub(crate) fn request_redraw(&self) {
@@ -131,7 +153,13 @@ impl DiagnosticsWindow {
         if buffer.len() < width.saturating_mul(height) {
             return Ok(());
         }
-        diagnostics_panel::paint(&self.panel, &mut buffer[..width * height], width, height);
+        diagnostics_panel::paint(
+            &self.panel,
+            self.theme.palette(),
+            &mut buffer[..width * height],
+            width,
+            height,
+        );
         buffer.present().map_err(|error| {
             PinoraError::new(ErrorCode::Internal, format!("diagnostics present: {error}"))
         })?;

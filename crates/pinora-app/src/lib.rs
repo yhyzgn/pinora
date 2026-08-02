@@ -25,6 +25,7 @@ mod os_instance;
 mod overlay_preview_cache;
 mod overlay_selection_readout;
 mod overlay_toolbar;
+mod panel_theme;
 mod pin_context_menu;
 mod pin_layout;
 mod platform;

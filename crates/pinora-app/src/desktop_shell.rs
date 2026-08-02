@@ -55,7 +55,7 @@ use pinora_core::{
     CorrelationId, DisplayId, DisplayInfo, DomainEventKind, ErrorCode, HistoryEntry, HistoryIndex,
     ImageId, ImageSink, JobId, JobKind, JobOwner, JobSpec, OcrLanguage, OcrResult,
     OcrTextSelection, OcrWordRef, PinId, PinTransform, PinoraError, PixelPoint, PixelRect,
-    SelectionHandle, SelectionSession, SessionId, bake_annotations, color_to_hex,
+    SelectionHandle, SelectionSession, SessionId, ThemeMode, bake_annotations, color_to_hex,
     render_preview_rgba, resolve_all_displays_rect, sample_rgba_at,
 };
 use softbuffer::{Context, Rect as DamageRect, Surface};
@@ -89,6 +89,14 @@ fn monotonic_ms() -> u64 {
         .elapsed()
         .as_millis()
         .min(u128::from(u64::MAX)) as u64
+}
+
+/// 只有原子设置存储明确成功后，历史和诊断窗口才能切换到草稿主题。
+fn persisted_auxiliary_panel_theme(
+    persistence: &Result<(), String>,
+    draft_theme: ThemeMode,
+) -> Option<ThemeMode> {
+    persistence.as_ref().ok().map(|()| draft_theme)
 }
 
 fn pending_asset_for_owner(
@@ -220,8 +228,11 @@ where
         }
     };
     println!(
-        "pinora: settings policy history-limit={} pin-limit={} default-opacity={}%; theme rendering unavailable",
-        settings.history_limit, settings.pin_limit, settings.default_pin_opacity_percent
+        "pinora: settings policy history-limit={} pin-limit={} default-opacity={}% theme={:?}",
+        settings.history_limit,
+        settings.pin_limit,
+        settings.default_pin_opacity_percent,
+        settings.theme,
     );
 
     let mut app = DesktopApp {
@@ -1515,9 +1526,29 @@ where
         }
     }
 
+    /// 已打开的历史和诊断窗口只接收已经成功保存的主题偏好。设置窗口自身始终
+    /// 使用草稿预览，因此不能走这条提交后传播路径。
+    fn refresh_auxiliary_panel_theme(&mut self, preference: ThemeMode) {
+        if let Some(history) = self.history.as_mut() {
+            history.set_theme_preference(preference);
+        }
+        if let Some(diagnostics) = self.diagnostics.as_mut() {
+            diagnostics.set_theme_preference(preference);
+        }
+    }
+
+    fn auxiliary_panel_theme_preference(&self) -> ThemeMode {
+        self.runtime
+            .as_ref()
+            .map(|runtime| runtime.settings().theme)
+            .unwrap_or(ThemeMode::System)
+    }
+
     fn open_diagnostics(&mut self, event_loop: &ActiveEventLoop) -> Result<(), PinoraError> {
         let panel = self.diagnostics_panel()?;
+        let theme_preference = self.auxiliary_panel_theme_preference();
         if let Some(diagnostics) = self.diagnostics.as_mut() {
+            diagnostics.set_theme_preference(theme_preference);
             diagnostics.set_panel(panel);
             diagnostics.focus();
             return Ok(());
@@ -1527,7 +1558,7 @@ where
             let context = self.context.as_ref().ok_or_else(|| {
                 PinoraError::new(ErrorCode::Internal, "softbuffer context unavailable")
             })?;
-            DiagnosticsWindow::open(event_loop, context, panel)?
+            DiagnosticsWindow::open(event_loop, context, panel, theme_preference)?
         };
         diagnostics.focus();
         diagnostics.request_redraw();
@@ -1545,6 +1576,11 @@ where
     fn handle_diagnostics_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => self.close_diagnostics(),
+            WindowEvent::ThemeChanged(theme) => {
+                if let Some(diagnostics) = self.diagnostics.as_mut() {
+                    diagnostics.handle_system_theme_change(theme);
+                }
+            }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {
                 if self.is_quit_key(&event) {
@@ -1617,6 +1653,11 @@ where
     fn handle_settings_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => self.close_settings(),
+            WindowEvent::ThemeChanged(theme) => {
+                if let Some(settings) = self.settings.as_mut() {
+                    settings.handle_system_theme_change(theme);
+                }
+            }
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(settings) = self.settings.as_mut() {
@@ -1769,6 +1810,9 @@ where
             false
         };
         let save_result = self.settings.as_ref().map(|settings| settings.save(draft));
+        let committed_theme = save_result
+            .as_ref()
+            .and_then(|result| persisted_auxiliary_panel_theme(result, draft.theme));
         match save_result {
             Some(Ok(())) => {
                 if let Some(rt) = self.runtime.as_mut() {
@@ -1831,6 +1875,9 @@ where
             }
             None => {}
         }
+        if let Some(theme) = committed_theme {
+            self.refresh_auxiliary_panel_theme(theme);
+        }
     }
 
     fn paint_settings(&mut self) -> Result<(), PinoraError> {
@@ -1847,11 +1894,12 @@ where
         }
         self.ensure_context(event_loop);
         let entries = self.history_index.active_entries().cloned().collect();
+        let theme_preference = self.auxiliary_panel_theme_preference();
         let history = {
             let context = self.context.as_ref().ok_or_else(|| {
                 PinoraError::new(ErrorCode::Internal, "softbuffer context unavailable")
             })?;
-            HistoryWindow::open(event_loop, context, entries)?
+            HistoryWindow::open(event_loop, context, entries, theme_preference)?
         };
         history.focus();
         history.request_redraw();
@@ -2066,6 +2114,11 @@ where
     fn handle_history_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => self.close_history(),
+            WindowEvent::ThemeChanged(theme) => {
+                if let Some(history) = self.history.as_mut() {
+                    history.handle_system_theme_change(theme);
+                }
+            }
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(history) = self.history.as_mut() {
@@ -6636,6 +6689,18 @@ mod overlay_scale_tests {
         assert!((opacity_from_settings_percent(72) - 0.72).abs() < f64::EPSILON);
         assert!((opacity_from_settings_percent(0) - 0.15).abs() < f64::EPSILON);
         assert!((opacity_from_settings_percent(255) - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn auxiliary_panels_receive_theme_only_after_settings_persist() {
+        assert_eq!(
+            persisted_auxiliary_panel_theme(&Ok(()), ThemeMode::Light),
+            Some(ThemeMode::Light)
+        );
+        assert_eq!(
+            persisted_auxiliary_panel_theme(&Err("write_failed".into()), ThemeMode::Light),
+            None
+        );
     }
 
     #[test]

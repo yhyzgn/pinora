@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/086_tray_hotkey_labels.md`
-- 任务：`.context/tasks/086_tray_hotkey_labels.md`
+- 计划：`.context/plans/087_auxiliary_panel_theme.md`
+- 任务：`.context/tasks/087_auxiliary_panel_theme.md`
 
 ## 交付要求
 
