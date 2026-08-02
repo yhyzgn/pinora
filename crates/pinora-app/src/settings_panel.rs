@@ -3,10 +3,13 @@
 //! 该模块不依赖 winit 或文件系统。桌面壳只负责把窗口事件转换为
 //! [`SettingsPanelAction`]，并在确认保存后调用 `SettingsStore`。
 
-use pinora_core::{AppSettings, OcrLanguage, PixelPoint, PixelRect, ThemeMode};
+use pinora_core::{
+    AppSettings, HotkeyBinding, OcrLanguage, PixelPoint, PixelRect, REGION_ALTERNATE_HOTKEY,
+    REGION_SECONDARY_HOTKEY, ThemeMode,
+};
 
 pub const PANEL_WIDTH: u32 = 560;
-pub const PANEL_HEIGHT: u32 = 482;
+pub const PANEL_HEIGHT: u32 = 610;
 
 const ROW_X: i32 = 28;
 const ROW_W: u32 = PANEL_WIDTH - 56;
@@ -24,15 +27,19 @@ pub enum SettingField {
     PinLimit,
     PinOpacity,
     OcrLanguage,
+    RegionHotkey,
+    FullDisplayHotkey,
 }
 
 impl SettingField {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::Theme,
         Self::HistoryLimit,
         Self::PinLimit,
         Self::PinOpacity,
         Self::OcrLanguage,
+        Self::RegionHotkey,
+        Self::FullDisplayHotkey,
     ];
 
     pub const fn index(self) -> usize {
@@ -42,6 +49,8 @@ impl SettingField {
             Self::PinLimit => 2,
             Self::PinOpacity => 3,
             Self::OcrLanguage => 4,
+            Self::RegionHotkey => 5,
+            Self::FullDisplayHotkey => 6,
         }
     }
 
@@ -52,6 +61,8 @@ impl SettingField {
             Self::PinLimit => "PIN LIMIT",
             Self::PinOpacity => "PIN OPACITY",
             Self::OcrLanguage => "OCR LANGUAGE",
+            Self::RegionHotkey => "REGION HOTKEY",
+            Self::FullDisplayHotkey => "FULL DISPLAY HOTKEY",
         }
     }
 
@@ -63,6 +74,10 @@ impl SettingField {
             ROW_H,
         )
     }
+
+    pub const fn is_hotkey(self) -> bool {
+        matches!(self, Self::RegionHotkey | Self::FullDisplayHotkey)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +85,7 @@ pub enum SettingsPanelAction {
     Select(SettingField),
     Decrement,
     Increment,
+    StartHotkeyRecording,
     Save,
     Cancel,
 }
@@ -87,6 +103,7 @@ pub enum SettingsPanelKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingsPanelStatus {
     Editing,
+    Recording(SettingField),
     Saved,
     Error(String),
 }
@@ -96,6 +113,7 @@ pub struct SettingsPanel {
     original: AppSettings,
     draft: AppSettings,
     selected: SettingField,
+    recording: Option<SettingField>,
     status: SettingsPanelStatus,
 }
 
@@ -106,6 +124,7 @@ impl SettingsPanel {
             original: settings,
             draft: settings,
             selected: SettingField::Theme,
+            recording: None,
             status: SettingsPanelStatus::Editing,
         }
     }
@@ -122,6 +141,10 @@ impl SettingsPanel {
         self.selected
     }
 
+    pub const fn recording_field(&self) -> Option<SettingField> {
+        self.recording
+    }
+
     pub const fn status(&self) -> &SettingsPanelStatus {
         &self.status
     }
@@ -132,12 +155,19 @@ impl SettingsPanel {
 
     pub fn select(&mut self, field: SettingField) {
         self.selected = field;
+        self.recording = None;
         if !matches!(self.status, SettingsPanelStatus::Editing) {
             self.status = SettingsPanelStatus::Editing;
         }
     }
 
     pub fn handle_key(&mut self, key: SettingsPanelKey) -> Option<SettingsPanelAction> {
+        if self.recording.is_some() {
+            if key == SettingsPanelKey::Escape {
+                self.cancel_hotkey_recording();
+            }
+            return None;
+        }
         match key {
             SettingsPanelKey::Up => {
                 let index = self.selected.index();
@@ -162,6 +192,9 @@ impl SettingsPanel {
                 self.step(1);
                 None
             }
+            SettingsPanelKey::Enter if self.selected.is_hotkey() => {
+                Some(SettingsPanelAction::StartHotkeyRecording)
+            }
             SettingsPanelKey::Enter => Some(SettingsPanelAction::Save),
             SettingsPanelKey::Escape => Some(SettingsPanelAction::Cancel),
         }
@@ -172,7 +205,9 @@ impl SettingsPanel {
             SettingsPanelAction::Select(field) => self.select(field),
             SettingsPanelAction::Decrement => self.step(-1),
             SettingsPanelAction::Increment => self.step(1),
-            SettingsPanelAction::Save | SettingsPanelAction::Cancel => {}
+            SettingsPanelAction::StartHotkeyRecording
+            | SettingsPanelAction::Save
+            | SettingsPanelAction::Cancel => {}
         }
     }
 
@@ -220,12 +255,68 @@ impl SettingsPanel {
                 let next = (current + direction).rem_euclid(LANGUAGES.len() as i32) as usize;
                 self.draft.ocr_language = LANGUAGES[next];
             }
+            SettingField::RegionHotkey | SettingField::FullDisplayHotkey => {}
         }
+        self.status = SettingsPanelStatus::Editing;
+    }
+
+    pub fn start_hotkey_recording(&mut self) {
+        if !self.selected.is_hotkey() {
+            return;
+        }
+        self.recording = Some(self.selected);
+        self.status = SettingsPanelStatus::Recording(self.selected);
+    }
+
+    pub fn record_hotkey(&mut self, binding: HotkeyBinding) -> Result<(), &'static str> {
+        let Some(field) = self.recording else {
+            return Err("hotkey_not_recording");
+        };
+        if !binding.is_safe() {
+            self.status = SettingsPanelStatus::Error("hotkey_unsafe".into());
+            return Err("hotkey_unsafe");
+        }
+        let conflict = match field {
+            SettingField::RegionHotkey => {
+                binding == self.draft.full_display_hotkey
+                    || binding == REGION_SECONDARY_HOTKEY
+                    || binding == REGION_ALTERNATE_HOTKEY
+            }
+            SettingField::FullDisplayHotkey => {
+                binding == self.draft.region_hotkey
+                    || binding == REGION_SECONDARY_HOTKEY
+                    || binding == REGION_ALTERNATE_HOTKEY
+            }
+            _ => true,
+        };
+        if conflict {
+            self.status = SettingsPanelStatus::Error("hotkey_conflict".into());
+            return Err("hotkey_conflict");
+        }
+        match field {
+            SettingField::RegionHotkey => self.draft.region_hotkey = binding,
+            SettingField::FullDisplayHotkey => self.draft.full_display_hotkey = binding,
+            _ => return Err("hotkey_not_recording"),
+        }
+        self.recording = None;
+        self.status = SettingsPanelStatus::Editing;
+        Ok(())
+    }
+
+    pub fn reject_hotkey_recording(&mut self, code: &'static str) {
+        if self.recording.is_some() {
+            self.status = SettingsPanelStatus::Error(code.into());
+        }
+    }
+
+    pub fn cancel_hotkey_recording(&mut self) {
+        self.recording = None;
         self.status = SettingsPanelStatus::Editing;
     }
 
     pub fn mark_saved(&mut self) {
         self.original = self.draft;
+        self.recording = None;
         self.status = SettingsPanelStatus::Saved;
     }
 
@@ -235,6 +326,7 @@ impl SettingsPanel {
 
     pub fn cancel(&mut self) {
         self.draft = self.original;
+        self.recording = None;
         self.status = SettingsPanelStatus::Editing;
     }
 
@@ -244,10 +336,10 @@ impl SettingsPanel {
                 let row = field.row_rect();
                 let minus = PixelRect::new(row.right() - 82, row.origin.y + 9, 30, 36);
                 let plus = PixelRect::new(row.right() - 42, row.origin.y + 9, 30, 36);
-                if minus.contains_point(point) {
+                if !field.is_hotkey() && minus.contains_point(point) {
                     return Some(SettingsPanelAction::Decrement);
                 }
-                if plus.contains_point(point) {
+                if !field.is_hotkey() && plus.contains_point(point) {
                     return Some(SettingsPanelAction::Increment);
                 }
                 return Some(SettingsPanelAction::Select(field));
@@ -278,6 +370,8 @@ impl SettingsPanel {
                 OcrLanguage::English => "ENGLISH".into(),
                 OcrLanguage::SimplifiedChinese => "SIMPLIFIED CHINESE".into(),
             },
+            SettingField::RegionHotkey => self.draft.region_hotkey.to_string(),
+            SettingField::FullDisplayHotkey => self.draft.full_display_hotkey.to_string(),
         }
     }
 }
@@ -369,10 +463,12 @@ pub fn paint(panel: &SettingsPanel, frame: &mut [u32], stride: usize, height: us
         draw_outline(frame, stride, height, row, 0x004B637A);
         let minus = PixelRect::new(row.right() - 82, row.origin.y + 9, 30, 36);
         let plus = PixelRect::new(row.right() - 42, row.origin.y + 9, 30, 36);
-        fill(frame, stride, height, minus, 0x00344250);
-        fill(frame, stride, height, plus, 0x00344250);
-        draw_outline(frame, stride, height, minus, 0x007E9AB2);
-        draw_outline(frame, stride, height, plus, 0x007E9AB2);
+        if !field.is_hotkey() {
+            fill(frame, stride, height, minus, 0x00344250);
+            fill(frame, stride, height, plus, 0x00344250);
+            draw_outline(frame, stride, height, minus, 0x007E9AB2);
+            draw_outline(frame, stride, height, plus, 0x007E9AB2);
+        }
         draw_text(
             frame,
             stride,
@@ -391,24 +487,26 @@ pub fn paint(panel: &SettingsPanel, frame: &mut [u32], stride: usize, height: us
             &panel.value_label(field),
             0x00B5D8FF,
         );
-        draw_text(
-            frame,
-            stride,
-            height,
-            minus.origin.x + 11,
-            minus.origin.y + 15,
-            "-",
-            0x00FFFFFF,
-        );
-        draw_text(
-            frame,
-            stride,
-            height,
-            plus.origin.x + 11,
-            plus.origin.y + 15,
-            "+",
-            0x00FFFFFF,
-        );
+        if !field.is_hotkey() {
+            draw_text(
+                frame,
+                stride,
+                height,
+                minus.origin.x + 11,
+                minus.origin.y + 15,
+                "-",
+                0x00FFFFFF,
+            );
+            draw_text(
+                frame,
+                stride,
+                height,
+                plus.origin.x + 11,
+                plus.origin.y + 15,
+                "+",
+                0x00FFFFFF,
+            );
+        }
     }
     let save_color = if matches!(panel.status(), SettingsPanelStatus::Saved) {
         0x002A7C52
@@ -438,8 +536,13 @@ pub fn paint(panel: &SettingsPanel, frame: &mut [u32], stride: usize, height: us
         0x00FFFFFF,
     );
     let status = match panel.status() {
+        SettingsPanelStatus::Editing if panel.selected().is_hotkey() => "ENTER RECORD  ESC CANCEL",
         SettingsPanelStatus::Editing => "ARROWS EDIT  ENTER SAVE  ESC CANCEL",
+        SettingsPanelStatus::Recording(_) => "PRESS A HOTKEY  ESC CANCEL",
         SettingsPanelStatus::Saved => "SAVED",
+        SettingsPanelStatus::Error(code) if code.starts_with("hotkey_") => {
+            "HOTKEY REJECTED - TRY AGAIN"
+        }
         SettingsPanelStatus::Error(_) => "SAVE FAILED - RETRY OR CANCEL",
     };
     draw_text(frame, stride, height, 28, 24, status, 0x00D8E6F3);
@@ -576,12 +679,14 @@ fn draw_glyph(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pinora_core::{HotkeyCode, HotkeyModifiers};
 
     #[test]
     fn keyboard_navigation_wraps_and_steps_with_bounds() {
         let mut panel = SettingsPanel::new(AppSettings::default());
         panel.handle_key(SettingsPanelKey::Up);
-        assert_eq!(panel.selected(), SettingField::OcrLanguage);
+        assert_eq!(panel.selected(), SettingField::FullDisplayHotkey);
+        panel.select(SettingField::OcrLanguage);
         panel.handle_key(SettingsPanelKey::Right);
         assert_eq!(panel.draft().ocr_language, OcrLanguage::English);
         panel.handle_key(SettingsPanelKey::Left);
@@ -656,5 +761,39 @@ mod tests {
             panel.value_label(SettingField::OcrLanguage),
             "AUTO".to_string()
         );
+    }
+
+    #[test]
+    fn hotkey_recording_accepts_safe_binding_and_rejects_conflicts() {
+        let mut panel = SettingsPanel::new(AppSettings::default());
+        panel.select(SettingField::RegionHotkey);
+        assert_eq!(
+            panel.handle_key(SettingsPanelKey::Enter),
+            Some(SettingsPanelAction::StartHotkeyRecording)
+        );
+        panel.start_hotkey_recording();
+        assert_eq!(panel.recording_field(), Some(SettingField::RegionHotkey));
+        assert_eq!(
+            panel.record_hotkey(REGION_SECONDARY_HOTKEY),
+            Err("hotkey_conflict")
+        );
+        assert_eq!(panel.recording_field(), Some(SettingField::RegionHotkey));
+
+        let binding = HotkeyBinding::new(HotkeyModifiers::CONTROL, HotkeyCode::KeyR);
+        panel.record_hotkey(binding).expect("record safe hotkey");
+        assert_eq!(panel.draft().region_hotkey, binding);
+        assert_eq!(panel.recording_field(), None);
+    }
+
+    #[test]
+    fn escape_cancels_hotkey_recording_without_mutating_draft() {
+        let mut panel = SettingsPanel::new(AppSettings::default());
+        let original = panel.draft().full_display_hotkey;
+        panel.select(SettingField::FullDisplayHotkey);
+        panel.start_hotkey_recording();
+        panel.handle_key(SettingsPanelKey::Escape);
+
+        assert_eq!(panel.recording_field(), None);
+        assert_eq!(panel.draft().full_display_hotkey, original);
     }
 }

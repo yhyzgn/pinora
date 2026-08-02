@@ -55,7 +55,9 @@ pub use selection::{
     normalize_rect, validate_min_size,
 };
 pub use settings::{
-    AppSettings, DEFAULT_HISTORY_LIMIT, DEFAULT_PIN_LIMIT, DEFAULT_PIN_OPACITY_PERCENT,
-    OcrLanguage, SETTINGS_SCHEMA_VERSION, SettingsRepairs, ThemeMode,
+    AppSettings, DEFAULT_FULL_DISPLAY_HOTKEY, DEFAULT_HISTORY_LIMIT, DEFAULT_PIN_LIMIT,
+    DEFAULT_PIN_OPACITY_PERCENT, DEFAULT_REGION_HOTKEY, HotkeyBinding, HotkeyCode, HotkeyModifiers,
+    OcrLanguage, REGION_ALTERNATE_HOTKEY, REGION_SECONDARY_HOTKEY, SETTINGS_SCHEMA_VERSION,
+    SettingsRepairs, ThemeMode,
 };
 pub use state::{AppPhase, AppState, CapabilitySnapshot};

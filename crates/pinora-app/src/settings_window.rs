@@ -6,13 +6,15 @@
 use std::num::NonZeroU32;
 use std::rc::Rc;
 
-use pinora_core::{AppSettings, ErrorCode, PinoraError, PixelPoint};
+use pinora_core::{AppSettings, ErrorCode, HotkeyBinding, PinoraError, PixelPoint};
 use softbuffer::{Context, Surface};
 use winit::dpi::PhysicalSize;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId, WindowLevel};
 
-use crate::settings_panel::{self, SettingsPanel, SettingsPanelAction, SettingsPanelKey};
+use crate::settings_panel::{
+    self, SettingField, SettingsPanel, SettingsPanelAction, SettingsPanelKey,
+};
 use crate::settings_store::{SettingsStore, default_settings_path};
 use crate::window_policy::{self, AuxiliaryWindowKind};
 
@@ -106,6 +108,22 @@ impl SettingsWindow {
 
     pub(crate) fn apply_action(&mut self, action: SettingsPanelAction) {
         self.panel.apply_action(action);
+    }
+
+    pub(crate) fn start_hotkey_recording(&mut self) {
+        self.panel.start_hotkey_recording();
+    }
+
+    pub(crate) fn recording_hotkey_field(&self) -> Option<SettingField> {
+        self.panel.recording_field()
+    }
+
+    pub(crate) fn record_hotkey(&mut self, binding: HotkeyBinding) -> Result<(), &'static str> {
+        self.panel.record_hotkey(binding)
+    }
+
+    pub(crate) fn reject_hotkey_recording(&mut self, code: &'static str) {
+        self.panel.reject_hotkey_recording(code);
     }
 
     pub(crate) fn draft(&self) -> AppSettings {

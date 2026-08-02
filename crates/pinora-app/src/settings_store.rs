@@ -5,11 +5,15 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use pinora_core::{AppSettings, OcrLanguage, SETTINGS_SCHEMA_VERSION, SettingsRepairs, ThemeMode};
+use pinora_core::{
+    AppSettings, DEFAULT_FULL_DISPLAY_HOTKEY, DEFAULT_REGION_HOTKEY, HotkeyBinding, HotkeyCode,
+    HotkeyModifiers, OcrLanguage, SETTINGS_SCHEMA_VERSION, SettingsRepairs, ThemeMode,
+};
 
 const MAGIC: [u8; 8] = *b"PINORA\0\0";
 const V1_RECORD_LEN: usize = 18;
-const RECORD_LEN: usize = 19;
+const V2_RECORD_LEN: usize = 19;
+const RECORD_LEN: usize = 23;
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,13 +110,18 @@ fn encode(settings: AppSettings) -> Result<[u8; RECORD_LEN], String> {
     bytes[15..17].copy_from_slice(&repaired.pin_limit.to_le_bytes());
     bytes[17] = repaired.default_pin_opacity_percent;
     bytes[18] = repaired.ocr_language.to_wire();
+    bytes[19] = repaired.region_hotkey.modifiers.to_wire();
+    bytes[20] = repaired.region_hotkey.code.to_wire();
+    bytes[21] = repaired.full_display_hotkey.modifiers.to_wire();
+    bytes[22] = repaired.full_display_hotkey.code.to_wire();
     Ok(bytes)
 }
 
 fn decode(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
     match bytes.len() {
         V1_RECORD_LEN => decode_v1(bytes),
-        RECORD_LEN => decode_v2(bytes),
+        V2_RECORD_LEN => decode_v2(bytes),
+        RECORD_LEN => decode_v3(bytes),
         _ => Err("settings record length is invalid".into()),
     }
 }
@@ -130,6 +139,8 @@ fn decode_v1(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         pin_limit,
         default_pin_opacity_percent: bytes[17],
         ocr_language: OcrLanguage::Auto,
+        region_hotkey: DEFAULT_REGION_HOTKEY,
+        full_display_hotkey: DEFAULT_FULL_DISPLAY_HOTKEY,
     }
     .with_repaired_values();
     repairs.migrated_from_v1 = true;
@@ -137,6 +148,29 @@ fn decode_v1(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
 }
 
 fn decode_v2(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
+    validate_magic_and_schema(bytes, 2)?;
+    let theme =
+        ThemeMode::from_wire(bytes[10]).ok_or_else(|| "settings theme is invalid".to_string())?;
+    let ocr_language = OcrLanguage::from_wire(bytes[18])
+        .ok_or_else(|| "settings OCR language is invalid".to_string())?;
+    let history_limit = u32::from_le_bytes([bytes[11], bytes[12], bytes[13], bytes[14]]);
+    let pin_limit = u16::from_le_bytes([bytes[15], bytes[16]]);
+    let (settings, mut repairs) = AppSettings {
+        schema_version: SETTINGS_SCHEMA_VERSION,
+        theme,
+        history_limit,
+        pin_limit,
+        default_pin_opacity_percent: bytes[17],
+        ocr_language,
+        region_hotkey: DEFAULT_REGION_HOTKEY,
+        full_display_hotkey: DEFAULT_FULL_DISPLAY_HOTKEY,
+    }
+    .with_repaired_values();
+    repairs.migrated_from_v2 = true;
+    Ok((settings, repairs))
+}
+
+fn decode_v3(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
     validate_magic_and_schema(bytes, SETTINGS_SCHEMA_VERSION)?;
     let theme =
         ThemeMode::from_wire(bytes[10]).ok_or_else(|| "settings theme is invalid".to_string())?;
@@ -144,15 +178,34 @@ fn decode_v2(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         .ok_or_else(|| "settings OCR language is invalid".to_string())?;
     let history_limit = u32::from_le_bytes([bytes[11], bytes[12], bytes[13], bytes[14]]);
     let pin_limit = u16::from_le_bytes([bytes[15], bytes[16]]);
-    Ok(AppSettings {
+    let (region_hotkey, region_invalid) =
+        decode_hotkey(bytes[19], bytes[20], DEFAULT_REGION_HOTKEY);
+    let (full_display_hotkey, full_invalid) =
+        decode_hotkey(bytes[21], bytes[22], DEFAULT_FULL_DISPLAY_HOTKEY);
+    let (settings, mut repairs) = AppSettings {
         schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
         history_limit,
         pin_limit,
         default_pin_opacity_percent: bytes[17],
         ocr_language,
+        region_hotkey,
+        full_display_hotkey,
     }
-    .with_repaired_values())
+    .with_repaired_values();
+    repairs.region_hotkey |= region_invalid;
+    repairs.full_display_hotkey |= full_invalid;
+    Ok((settings, repairs))
+}
+
+fn decode_hotkey(modifiers: u8, code: u8, default: HotkeyBinding) -> (HotkeyBinding, bool) {
+    match (
+        HotkeyModifiers::from_wire(modifiers),
+        HotkeyCode::from_wire(code),
+    ) {
+        (Some(modifiers), Some(code)) => (HotkeyBinding::new(modifiers, code), false),
+        _ => (default, true),
+    }
 }
 
 fn validate_magic_and_schema(bytes: &[u8], expected_schema: u16) -> Result<(), String> {
@@ -262,7 +315,7 @@ mod tests {
     #[test]
     fn unknown_schema_is_rejected() {
         let mut bytes = encode(AppSettings::default()).expect("encode");
-        bytes[8] = 3;
+        bytes[8] = 4;
         assert_eq!(
             decode(&bytes),
             Err("settings schema version is unsupported".into())
@@ -285,20 +338,22 @@ mod tests {
     }
 
     #[test]
-    fn v2_round_trip_preserves_ocr_language() {
+    fn v3_round_trip_preserves_ocr_language_and_hotkeys() {
         let settings = AppSettings {
             ocr_language: OcrLanguage::SimplifiedChinese,
+            region_hotkey: HotkeyBinding::new(HotkeyModifiers::CONTROL, HotkeyCode::KeyR),
+            full_display_hotkey: HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4),
             ..AppSettings::default()
         };
 
-        let (decoded, repairs) = decode(&encode(settings).expect("encode v2")).expect("decode v2");
+        let (decoded, repairs) = decode(&encode(settings).expect("encode v3")).expect("decode v3");
 
         assert_eq!(decoded, settings);
         assert!(repairs.is_empty());
     }
 
     #[test]
-    fn invalid_v2_ocr_language_is_rejected() {
+    fn invalid_v3_ocr_language_is_rejected() {
         let mut bytes = encode(AppSettings::default()).expect("encode");
         bytes[18] = u8::MAX;
 
@@ -306,6 +361,37 @@ mod tests {
             decode(&bytes),
             Err("settings OCR language is invalid".into())
         );
+    }
+
+    #[test]
+    fn v2_settings_migrate_with_default_hotkeys() {
+        let bytes = legacy_v2_bytes(ThemeMode::Light, OcrLanguage::English, 77, 7, 80);
+
+        let (settings, repairs) = decode(&bytes).expect("migrate v2");
+
+        assert_eq!(settings.theme, ThemeMode::Light);
+        assert_eq!(settings.ocr_language, OcrLanguage::English);
+        assert_eq!(settings.region_hotkey, DEFAULT_REGION_HOTKEY);
+        assert_eq!(settings.full_display_hotkey, DEFAULT_FULL_DISPLAY_HOTKEY);
+        assert!(repairs.migrated_from_v2);
+    }
+
+    #[test]
+    fn invalid_v3_hotkey_field_repairs_without_losing_other_field() {
+        let settings = AppSettings {
+            region_hotkey: HotkeyBinding::new(HotkeyModifiers::CONTROL, HotkeyCode::KeyR),
+            full_display_hotkey: HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4),
+            ..AppSettings::default()
+        };
+        let mut bytes = encode(settings).expect("encode");
+        bytes[20] = u8::MAX;
+
+        let (decoded, repairs) = decode(&bytes).expect("repair v3 hotkey");
+
+        assert_eq!(decoded.region_hotkey, DEFAULT_REGION_HOTKEY);
+        assert_eq!(decoded.full_display_hotkey, settings.full_display_hotkey);
+        assert!(repairs.region_hotkey);
+        assert!(!repairs.full_display_hotkey);
     }
 
     #[test]
@@ -329,6 +415,24 @@ mod tests {
         bytes[11..15].copy_from_slice(&history_limit.to_le_bytes());
         bytes[15..17].copy_from_slice(&pin_limit.to_le_bytes());
         bytes[17] = opacity;
+        bytes
+    }
+
+    fn legacy_v2_bytes(
+        theme: ThemeMode,
+        language: OcrLanguage,
+        history_limit: u32,
+        pin_limit: u16,
+        opacity: u8,
+    ) -> [u8; V2_RECORD_LEN] {
+        let mut bytes = [0u8; V2_RECORD_LEN];
+        bytes[..8].copy_from_slice(&MAGIC);
+        bytes[8..10].copy_from_slice(&2u16.to_le_bytes());
+        bytes[10] = theme.to_wire();
+        bytes[11..15].copy_from_slice(&history_limit.to_le_bytes());
+        bytes[15..17].copy_from_slice(&pin_limit.to_le_bytes());
+        bytes[17] = opacity;
+        bytes[18] = language.to_wire();
         bytes
     }
 }

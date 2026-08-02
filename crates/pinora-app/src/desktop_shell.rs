@@ -30,7 +30,7 @@ use crate::history_load_job::{
 };
 use crate::history_store::{HistoryStore, default_history_path};
 use crate::history_window::HistoryWindow;
-use crate::hotkey::GlobalHotkeyHub;
+use crate::hotkey::{GlobalHotkeyHub, binding_from_winit};
 use crate::ocr::tesseract_available;
 use crate::ocr_job::{OcrJobCompletion, OcrJobService, OcrJobStart};
 use crate::overlay_preview_cache::OverlayPreviewCache;
@@ -158,13 +158,15 @@ where
     let event_loop = window_policy::auxiliary_event_loop()
         .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("desktop event loop: {e}")))?;
 
-    let hotkeys = GlobalHotkeyHub::start();
+    let settings = runtime.settings();
+    let hotkeys = GlobalHotkeyHub::start(settings.region_hotkey, settings.full_display_hotkey);
     for note in &hotkeys.status().notes {
         println!("pinora: hotkey: {note}");
     }
     if hotkeys.status().available {
         println!(
-            "pinora: global hotkeys: F2 / Ctrl+N / Ctrl+Shift+S → region, F3 → full display when registered"
+            "pinora: global hotkeys: {} / Ctrl+N / Ctrl+Shift+S → region, {} → full display when registered",
+            settings.region_hotkey, settings.full_display_hotkey
         );
     } else {
         println!("pinora: global hotkeys unavailable — use window focus keys or `pinora capture`");
@@ -200,7 +202,6 @@ where
     let provider = runtime.capture_provider().clone();
     let frame_cache = FrameCache::start(provider);
     println!("pinora: frame-cache started (pre-capture for instant overlay)");
-    let settings = runtime.settings();
     let default_pin_opacity = opacity_from_settings_percent(settings.default_pin_opacity_percent);
     let history_store = HistoryStore::new(
         default_history_path(),
@@ -1519,6 +1520,15 @@ where
                 }
             }
             WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {
+                if self
+                    .settings
+                    .as_ref()
+                    .and_then(SettingsWindow::recording_hotkey_field)
+                    .is_some()
+                {
+                    self.record_settings_hotkey(&event);
+                    return;
+                }
                 if self.is_quit_key(&event) {
                     self.quit = true;
                     event_loop.exit();
@@ -1577,14 +1587,69 @@ where
                     settings.request_redraw();
                 }
             }
+            SettingsPanelAction::StartHotkeyRecording => {
+                if let Some(settings) = self.settings.as_mut() {
+                    settings.start_hotkey_recording();
+                    settings.request_redraw();
+                }
+            }
             SettingsPanelAction::Cancel => self.close_settings(),
             SettingsPanelAction::Save => self.save_settings(),
         }
     }
 
+    fn record_settings_hotkey(&mut self, event: &winit::event::KeyEvent) {
+        let Some(settings) = self.settings.as_mut() else {
+            return;
+        };
+        if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
+            let _ = settings.handle_key(SettingsPanelKey::Escape);
+            settings.request_redraw();
+            return;
+        }
+        let binding = match event.physical_key {
+            PhysicalKey::Code(code) => binding_from_winit(code, self.modifiers),
+            PhysicalKey::Unidentified(_) => None,
+        };
+        match binding {
+            Some(binding) => {
+                let _ = settings.record_hotkey(binding);
+            }
+            None => settings.reject_hotkey_recording("hotkey_unsupported"),
+        }
+        settings.request_redraw();
+    }
+
     fn save_settings(&mut self) {
         let Some(draft) = self.settings.as_ref().map(SettingsWindow::draft) else {
             return;
+        };
+        let previous = self
+            .runtime
+            .as_ref()
+            .map(AppRuntime::settings)
+            .unwrap_or_default();
+        let hotkeys_changed = draft.region_hotkey != previous.region_hotkey
+            || draft.full_display_hotkey != previous.full_display_hotkey;
+        let hotkeys_rebound = if hotkeys_changed {
+            match self
+                .hotkeys
+                .rebind(draft.region_hotkey, draft.full_display_hotkey)
+            {
+                Ok(rebound) => rebound,
+                Err(_) => {
+                    if let Some(settings) = self.settings.as_mut() {
+                        settings.mark_save_failed("hotkey_registration_failed");
+                        settings.request_redraw();
+                    }
+                    eprintln!(
+                        "pinora: settings hotkey update rejected; existing bindings retained"
+                    );
+                    return;
+                }
+            }
+        } else {
+            false
         };
         let save_result = self.settings.as_ref().map(|settings| settings.save(draft));
         match save_result {
@@ -1629,6 +1694,14 @@ where
                 println!("pinora: settings saved (theme={:?})", draft.theme);
             }
             Some(Err(_)) => {
+                if hotkeys_rebound
+                    && self
+                        .hotkeys
+                        .rebind(previous.region_hotkey, previous.full_display_hotkey)
+                        .is_err()
+                {
+                    eprintln!("pinora: settings save rollback could not restore hotkeys");
+                }
                 if let Some(settings) = self.settings.as_mut() {
                     settings.mark_save_failed("settings_save_failed");
                     settings.request_redraw();

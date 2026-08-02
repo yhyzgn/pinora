@@ -12,7 +12,11 @@ use std::sync::Mutex;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
-use pinora_core::{ActionId, KeyBinding, PinoraError};
+use pinora_core::{
+    ActionId, DEFAULT_FULL_DISPLAY_HOTKEY, DEFAULT_REGION_HOTKEY, HotkeyBinding, HotkeyCode,
+    HotkeyModifiers, KeyBinding, PinoraError, REGION_ALTERNATE_HOTKEY, REGION_SECONDARY_HOTKEY,
+};
+use winit::keyboard::{KeyCode, ModifiersState};
 
 /// 热键提供者：注册绑定并轮询触发的动作。
 pub trait HotkeySource {
@@ -65,23 +69,62 @@ pub struct GlobalHotkeyStatus {
     pub notes: Vec<String>,
 }
 
-/// 已成功注册的热键 ID。只有这些 ID 的 Pressed 事件可转成 Pinora 动作。
+/// 已成功注册的热键。只有这些 `Pressed` 事件可转成 Pinora 动作。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RegisteredHotkey {
+    binding: HotkeyBinding,
+    hotkey: HotKey,
+    action: ActionId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct RegisteredHotkeys {
-    region_ids: [u32; 2],
-    alternate_region_id: Option<u32>,
-    full_display_id: Option<u32>,
+    entries: Vec<RegisteredHotkey>,
+}
+
+trait HotkeyRegistrar {
+    fn register(&self, hotkey: HotKey) -> Result<(), String>;
+    fn unregister(&self, hotkey: HotKey) -> Result<(), String>;
+}
+
+impl HotkeyRegistrar for GlobalHotKeyManager {
+    fn register(&self, hotkey: HotKey) -> Result<(), String> {
+        GlobalHotKeyManager::register(self, hotkey).map_err(|error| error.to_string())
+    }
+
+    fn unregister(&self, hotkey: HotKey) -> Result<(), String> {
+        GlobalHotKeyManager::unregister(self, hotkey).map_err(|error| error.to_string())
+    }
 }
 
 impl RegisteredHotkeys {
-    fn action_for_pressed_event(self, id: u32, state: HotKeyState) -> Option<ActionId> {
+    fn action_for_pressed_event(&self, id: u32, state: HotKeyState) -> Option<ActionId> {
         if state != HotKeyState::Pressed {
             return None;
         }
-        if self.region_ids.contains(&id) || self.alternate_region_id == Some(id) {
-            return Some(ActionId::CaptureRegionAndPin);
+        self.entries
+            .iter()
+            .find(|entry| entry.hotkey.id() == id)
+            .map(|entry| entry.action)
+    }
+
+    fn primary_binding(&self, action: ActionId) -> Option<RegisteredHotkey> {
+        self.entries
+            .iter()
+            .find(|entry| {
+                entry.action == action && is_primary_action_binding(entry.binding, action)
+            })
+            .copied()
+    }
+
+    fn replace_or_insert_primary(&mut self, action: ActionId, next: RegisteredHotkey) {
+        if let Some(entry) = self.entries.iter_mut().find(|entry| {
+            entry.action == action && is_primary_action_binding(entry.binding, action)
+        }) {
+            *entry = next;
+        } else {
+            self.entries.push(next);
         }
-        (self.full_display_id == Some(id)).then_some(ActionId::CaptureFullDisplay)
     }
 }
 
@@ -90,13 +133,19 @@ pub struct GlobalHotkeyHub {
     // 仅用于维持 OS 注册生命周期；不移动到后台线程。
     manager: Option<GlobalHotKeyManager>,
     registered: Option<RegisteredHotkeys>,
+    region_hotkey: HotkeyBinding,
+    full_display_hotkey: HotkeyBinding,
     status: GlobalHotkeyStatus,
 }
 
 impl GlobalHotkeyHub {
-    /// 尝试启动 OS 级全局热键（F2/Ctrl+N → 区域，F3 → 全屏）。
-    pub fn start() -> Self {
-        match register_global_hotkeys() {
+    /// 尝试启动 OS 级全局热键。区域和全屏主键来自已校验的设置；两个兼容区域
+    /// 备用键仍固定，以保持既有自动化与 Linux 桌面入口可用。
+    pub fn start(region_hotkey: HotkeyBinding, full_display_hotkey: HotkeyBinding) -> Self {
+        if let Err(error) = validate_primary_bindings(region_hotkey, full_display_hotkey) {
+            return Self::unavailable(error);
+        }
+        match register_global_hotkeys(region_hotkey, full_display_hotkey) {
             Ok((manager, registered, mut notes)) => {
                 notes.push(
                     "fallback: `pinora capture` keeps working through single-instance IPC".into(),
@@ -104,6 +153,8 @@ impl GlobalHotkeyHub {
                 Self {
                     manager: Some(manager),
                     registered: Some(registered),
+                    region_hotkey,
+                    full_display_hotkey,
                     status: GlobalHotkeyStatus {
                         available: true,
                         notes,
@@ -122,7 +173,7 @@ impl GlobalHotkeyHub {
         if self.manager.is_none() {
             return Vec::new();
         }
-        let Some(registered) = self.registered else {
+        let Some(registered) = self.registered.as_ref() else {
             return Vec::new();
         };
         let mut out = Vec::new();
@@ -136,10 +187,64 @@ impl GlobalHotkeyHub {
         out
     }
 
+    /// 先注册新组合、再释放旧组合。任何失败都保留旧的动作映射。
+    pub fn rebind(
+        &mut self,
+        region_hotkey: HotkeyBinding,
+        full_display_hotkey: HotkeyBinding,
+    ) -> Result<bool, String> {
+        validate_primary_bindings(region_hotkey, full_display_hotkey)?;
+        let changes = [
+            (ActionId::CaptureRegionAndPin, region_hotkey),
+            (ActionId::CaptureFullDisplay, full_display_hotkey),
+        ];
+        let desired: Vec<_> = changes
+            .into_iter()
+            .filter(|(action, binding)| match action {
+                ActionId::CaptureRegionAndPin => *binding != self.region_hotkey,
+                ActionId::CaptureFullDisplay => *binding != self.full_display_hotkey,
+                _ => false,
+            })
+            .collect();
+        if desired.is_empty() {
+            return Ok(self.manager.is_some());
+        }
+        let Some(manager) = self.manager.as_ref() else {
+            self.region_hotkey = region_hotkey;
+            self.full_display_hotkey = full_display_hotkey;
+            return Ok(false);
+        };
+        let Some(registered) = self.registered.as_mut() else {
+            self.region_hotkey = region_hotkey;
+            self.full_display_hotkey = full_display_hotkey;
+            return Ok(false);
+        };
+        rebind_registered_hotkeys(manager, registered, &desired)?;
+        self.region_hotkey = region_hotkey;
+        self.full_display_hotkey = full_display_hotkey;
+        let alternate_registered = registered
+            .entries
+            .iter()
+            .any(|entry| entry.binding == REGION_ALTERNATE_HOTKEY);
+        let full_display_registered = registered
+            .primary_binding(ActionId::CaptureFullDisplay)
+            .is_some();
+        self.status.notes = registration_notes(
+            region_hotkey,
+            full_display_hotkey,
+            alternate_registered,
+            full_display_registered,
+            true,
+        );
+        Ok(true)
+    }
+
     fn unavailable(error: String) -> Self {
         Self {
             manager: None,
             registered: None,
+            region_hotkey: DEFAULT_REGION_HOTKEY,
+            full_display_hotkey: DEFAULT_FULL_DISPLAY_HOTKEY,
             status: GlobalHotkeyStatus {
                 available: false,
                 notes: vec![
@@ -152,66 +257,277 @@ impl GlobalHotkeyHub {
     }
 }
 
-fn register_global_hotkeys() -> Result<(GlobalHotKeyManager, RegisteredHotkeys, Vec<String>), String>
-{
+fn register_global_hotkeys(
+    region_hotkey: HotkeyBinding,
+    full_display_hotkey: HotkeyBinding,
+) -> Result<(GlobalHotKeyManager, RegisteredHotkeys, Vec<String>), String> {
     let manager = GlobalHotKeyManager::new().map_err(|e| format!("create manager: {e}"))?;
 
-    // F2 与 Ctrl+N 是核心区域截图入口，任一注册失败时让 manager 立即析构并退回 tray/IPC。
-    let f2 = HotKey::new(None, Code::F2);
-    let f2_id = f2.id();
+    let primary_region = registered_hotkey(region_hotkey, ActionId::CaptureRegionAndPin);
     manager
-        .register(f2)
-        .map_err(|e| format!("register F2: {e}"))?;
-
-    let ctrl_n = HotKey::new(Some(Modifiers::CONTROL), Code::KeyN);
-    let ctrl_n_id = ctrl_n.id();
+        .register(primary_region.hotkey)
+        .map_err(|error| format!("register region {region_hotkey}: {error}"))?;
+    let secondary_region =
+        registered_hotkey(REGION_SECONDARY_HOTKEY, ActionId::CaptureRegionAndPin);
     manager
-        .register(ctrl_n)
-        .map_err(|e| format!("register Ctrl+N: {e}"))?;
+        .register(secondary_region.hotkey)
+        .map_err(|error| format!("register region {REGION_SECONDARY_HOTKEY}: {error}"))?;
 
-    // Ctrl+Shift+S 是额外区域截图入口；冲突时保留 F2/Ctrl+N 主路径。
-    let ctrl_shift_s = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyS);
-    let ctrl_shift_s_id = ctrl_shift_s.id();
-    let (alternate_region_id, ctrl_shift_s_note) = match manager.register(ctrl_shift_s) {
-        Ok(()) => (
-            Some(ctrl_shift_s_id),
-            "global-hotkey: Ctrl+Shift+S alternate region capture registered".into(),
-        ),
-        Err(error) => (
-            None,
-            format!("global-hotkey: Ctrl+Shift+S alternate region capture unavailable ({error})"),
-        ),
-    };
-
-    // F3 是可选的全屏入口；失败不应该丢失三个核心区域快捷键。
-    let f3 = HotKey::new(None, Code::F3);
-    let f3_id = f3.id();
-    let (full_display_id, f3_note) = match manager.register(f3) {
-        Ok(()) => (
-            Some(f3_id),
-            "global-hotkey: F3 full-display registered".into(),
-        ),
-        Err(error) => (
-            None,
-            format!("global-hotkey: F3 full-display unavailable ({error})"),
-        ),
-    };
-
-    let notes = vec![
-        "global-hotkey: F2 and Ctrl+N region capture registered".into(),
-        ctrl_shift_s_note,
-        f3_note,
-        active_platform_note().into(),
-    ];
+    let mut entries = vec![primary_region, secondary_region];
+    let alternate_region =
+        registered_hotkey(REGION_ALTERNATE_HOTKEY, ActionId::CaptureRegionAndPin);
+    let alternate_registered = manager.register(alternate_region.hotkey).is_ok();
+    if alternate_registered {
+        entries.push(alternate_region);
+    }
+    let full_display = registered_hotkey(full_display_hotkey, ActionId::CaptureFullDisplay);
+    let full_display_registered = manager.register(full_display.hotkey).is_ok();
+    if full_display_registered {
+        entries.push(full_display);
+    }
     Ok((
         manager,
-        RegisteredHotkeys {
-            region_ids: [f2_id, ctrl_n_id],
-            alternate_region_id,
-            full_display_id,
-        },
-        notes,
+        RegisteredHotkeys { entries },
+        registration_notes(
+            region_hotkey,
+            full_display_hotkey,
+            alternate_registered,
+            full_display_registered,
+            false,
+        ),
     ))
+}
+
+fn validate_primary_bindings(
+    region_hotkey: HotkeyBinding,
+    full_display_hotkey: HotkeyBinding,
+) -> Result<(), String> {
+    if !region_hotkey.is_safe() || !full_display_hotkey.is_safe() {
+        return Err("hotkey_unsafe".into());
+    }
+    if region_hotkey == full_display_hotkey
+        || region_hotkey == REGION_SECONDARY_HOTKEY
+        || region_hotkey == REGION_ALTERNATE_HOTKEY
+        || full_display_hotkey == REGION_SECONDARY_HOTKEY
+        || full_display_hotkey == REGION_ALTERNATE_HOTKEY
+    {
+        return Err("hotkey_conflict".into());
+    }
+    Ok(())
+}
+
+fn rebind_registered_hotkeys<R: HotkeyRegistrar>(
+    registrar: &R,
+    registered: &mut RegisteredHotkeys,
+    desired: &[(ActionId, HotkeyBinding)],
+) -> Result<(), String> {
+    let mut changes = Vec::new();
+    for &(action, binding) in desired {
+        let current = registered.primary_binding(action);
+        if current.is_none_or(|entry| entry.binding != binding) {
+            changes.push((current, registered_hotkey(binding, action)));
+        }
+    }
+    if changes.is_empty() {
+        return Ok(());
+    }
+
+    let mut newly_registered: Vec<RegisteredHotkey> = Vec::new();
+    for (_, next) in &changes {
+        if let Err(error) = registrar.register(next.hotkey) {
+            for registered_next in newly_registered {
+                let _ = registrar.unregister(registered_next.hotkey);
+            }
+            return Err(format!("hotkey_register_failed:{error}"));
+        }
+        newly_registered.push(*next);
+    }
+
+    let mut removed: Vec<RegisteredHotkey> = Vec::new();
+    for (previous, _) in &changes {
+        let Some(previous) = previous else {
+            continue;
+        };
+        if let Err(error) = registrar.unregister(previous.hotkey) {
+            for previously_removed in removed {
+                let _ = registrar.register(previously_removed.hotkey);
+            }
+            for registered_next in newly_registered {
+                let _ = registrar.unregister(registered_next.hotkey);
+            }
+            return Err(format!("hotkey_unregister_failed:{error}"));
+        }
+        removed.push(*previous);
+    }
+    for (_, next) in changes {
+        registered.replace_or_insert_primary(next.action, next);
+    }
+    Ok(())
+}
+
+fn is_primary_action_binding(binding: HotkeyBinding, action: ActionId) -> bool {
+    match action {
+        ActionId::CaptureRegionAndPin => {
+            binding != REGION_SECONDARY_HOTKEY && binding != REGION_ALTERNATE_HOTKEY
+        }
+        ActionId::CaptureFullDisplay => true,
+        _ => false,
+    }
+}
+
+fn registered_hotkey(binding: HotkeyBinding, action: ActionId) -> RegisteredHotkey {
+    let modifiers = global_modifiers(binding.modifiers);
+    let hotkey = HotKey::new(modifiers, global_code(binding.code));
+    RegisteredHotkey {
+        binding,
+        hotkey,
+        action,
+    }
+}
+
+fn global_modifiers(modifiers: HotkeyModifiers) -> Option<Modifiers> {
+    let mut out = Modifiers::empty();
+    if modifiers.contains(HotkeyModifiers::CONTROL) {
+        out.insert(Modifiers::CONTROL);
+    }
+    if modifiers.contains(HotkeyModifiers::ALT) {
+        out.insert(Modifiers::ALT);
+    }
+    if modifiers.contains(HotkeyModifiers::SHIFT) {
+        out.insert(Modifiers::SHIFT);
+    }
+    if modifiers.contains(HotkeyModifiers::SUPER) {
+        out.insert(Modifiers::SUPER);
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+fn global_code(code: HotkeyCode) -> Code {
+    match code {
+        HotkeyCode::F1 => Code::F1,
+        HotkeyCode::F2 => Code::F2,
+        HotkeyCode::F3 => Code::F3,
+        HotkeyCode::F4 => Code::F4,
+        HotkeyCode::F5 => Code::F5,
+        HotkeyCode::F6 => Code::F6,
+        HotkeyCode::F7 => Code::F7,
+        HotkeyCode::F8 => Code::F8,
+        HotkeyCode::F9 => Code::F9,
+        HotkeyCode::F10 => Code::F10,
+        HotkeyCode::F11 => Code::F11,
+        HotkeyCode::F12 => Code::F12,
+        HotkeyCode::KeyA => Code::KeyA,
+        HotkeyCode::KeyB => Code::KeyB,
+        HotkeyCode::KeyC => Code::KeyC,
+        HotkeyCode::KeyD => Code::KeyD,
+        HotkeyCode::KeyE => Code::KeyE,
+        HotkeyCode::KeyF => Code::KeyF,
+        HotkeyCode::KeyG => Code::KeyG,
+        HotkeyCode::KeyH => Code::KeyH,
+        HotkeyCode::KeyI => Code::KeyI,
+        HotkeyCode::KeyJ => Code::KeyJ,
+        HotkeyCode::KeyK => Code::KeyK,
+        HotkeyCode::KeyL => Code::KeyL,
+        HotkeyCode::KeyM => Code::KeyM,
+        HotkeyCode::KeyN => Code::KeyN,
+        HotkeyCode::KeyO => Code::KeyO,
+        HotkeyCode::KeyP => Code::KeyP,
+        HotkeyCode::KeyQ => Code::KeyQ,
+        HotkeyCode::KeyR => Code::KeyR,
+        HotkeyCode::KeyS => Code::KeyS,
+        HotkeyCode::KeyT => Code::KeyT,
+        HotkeyCode::KeyU => Code::KeyU,
+        HotkeyCode::KeyV => Code::KeyV,
+        HotkeyCode::KeyW => Code::KeyW,
+        HotkeyCode::KeyX => Code::KeyX,
+        HotkeyCode::KeyY => Code::KeyY,
+        HotkeyCode::KeyZ => Code::KeyZ,
+    }
+}
+
+/// 将设置窗口收到的物理键转换为可持久化热键组合。未知键不进入设置文件。
+pub fn binding_from_winit(code: KeyCode, state: ModifiersState) -> Option<HotkeyBinding> {
+    let code = match code {
+        KeyCode::F1 => HotkeyCode::F1,
+        KeyCode::F2 => HotkeyCode::F2,
+        KeyCode::F3 => HotkeyCode::F3,
+        KeyCode::F4 => HotkeyCode::F4,
+        KeyCode::F5 => HotkeyCode::F5,
+        KeyCode::F6 => HotkeyCode::F6,
+        KeyCode::F7 => HotkeyCode::F7,
+        KeyCode::F8 => HotkeyCode::F8,
+        KeyCode::F9 => HotkeyCode::F9,
+        KeyCode::F10 => HotkeyCode::F10,
+        KeyCode::F11 => HotkeyCode::F11,
+        KeyCode::F12 => HotkeyCode::F12,
+        KeyCode::KeyA => HotkeyCode::KeyA,
+        KeyCode::KeyB => HotkeyCode::KeyB,
+        KeyCode::KeyC => HotkeyCode::KeyC,
+        KeyCode::KeyD => HotkeyCode::KeyD,
+        KeyCode::KeyE => HotkeyCode::KeyE,
+        KeyCode::KeyF => HotkeyCode::KeyF,
+        KeyCode::KeyG => HotkeyCode::KeyG,
+        KeyCode::KeyH => HotkeyCode::KeyH,
+        KeyCode::KeyI => HotkeyCode::KeyI,
+        KeyCode::KeyJ => HotkeyCode::KeyJ,
+        KeyCode::KeyK => HotkeyCode::KeyK,
+        KeyCode::KeyL => HotkeyCode::KeyL,
+        KeyCode::KeyM => HotkeyCode::KeyM,
+        KeyCode::KeyN => HotkeyCode::KeyN,
+        KeyCode::KeyO => HotkeyCode::KeyO,
+        KeyCode::KeyP => HotkeyCode::KeyP,
+        KeyCode::KeyQ => HotkeyCode::KeyQ,
+        KeyCode::KeyR => HotkeyCode::KeyR,
+        KeyCode::KeyS => HotkeyCode::KeyS,
+        KeyCode::KeyT => HotkeyCode::KeyT,
+        KeyCode::KeyU => HotkeyCode::KeyU,
+        KeyCode::KeyV => HotkeyCode::KeyV,
+        KeyCode::KeyW => HotkeyCode::KeyW,
+        KeyCode::KeyX => HotkeyCode::KeyX,
+        KeyCode::KeyY => HotkeyCode::KeyY,
+        KeyCode::KeyZ => HotkeyCode::KeyZ,
+        _ => return None,
+    };
+    let mut modifiers = HotkeyModifiers::NONE;
+    if state.control_key() {
+        modifiers = modifiers | HotkeyModifiers::CONTROL;
+    }
+    if state.alt_key() {
+        modifiers = modifiers | HotkeyModifiers::ALT;
+    }
+    if state.shift_key() {
+        modifiers = modifiers | HotkeyModifiers::SHIFT;
+    }
+    if state.super_key() {
+        modifiers = modifiers | HotkeyModifiers::SUPER;
+    }
+    Some(HotkeyBinding::new(modifiers, code))
+}
+
+fn registration_notes(
+    region_hotkey: HotkeyBinding,
+    full_display_hotkey: HotkeyBinding,
+    alternate_registered: bool,
+    full_display_registered: bool,
+    rebound: bool,
+) -> Vec<String> {
+    let phase = if rebound { "rebound" } else { "registered" };
+    vec![
+        format!("global-hotkey: region {region_hotkey} {phase}"),
+        if full_display_registered {
+            format!("global-hotkey: full-display {full_display_hotkey} {phase}")
+        } else {
+            format!("global-hotkey: full-display {full_display_hotkey} unavailable")
+        },
+        if alternate_registered {
+            format!(
+                "global-hotkey: region compatibility bindings {REGION_SECONDARY_HOTKEY} and {REGION_ALTERNATE_HOTKEY} active"
+            )
+        } else {
+            format!("global-hotkey: region compatibility {REGION_ALTERNATE_HOTKEY} unavailable")
+        },
+        active_platform_note().into(),
+    ]
 }
 
 #[cfg(target_os = "linux")]
@@ -319,6 +635,64 @@ fn dirs_applications() -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct FakeRegistrar {
+        active: RefCell<Vec<u32>>,
+        fail_register: Option<u32>,
+    }
+
+    impl FakeRegistrar {
+        fn with_active(entries: &[RegisteredHotkey], fail_register: Option<u32>) -> Self {
+            Self {
+                active: RefCell::new(entries.iter().map(|entry| entry.hotkey.id()).collect()),
+                fail_register,
+            }
+        }
+
+        fn active_ids(&self) -> Vec<u32> {
+            self.active.borrow().clone()
+        }
+    }
+
+    impl HotkeyRegistrar for FakeRegistrar {
+        fn register(&self, hotkey: HotKey) -> Result<(), String> {
+            if self.fail_register == Some(hotkey.id()) {
+                return Err("injected_register_failure".into());
+            }
+            let mut active = self.active.borrow_mut();
+            if active.contains(&hotkey.id()) {
+                return Err("duplicate_registration".into());
+            }
+            active.push(hotkey.id());
+            Ok(())
+        }
+
+        fn unregister(&self, hotkey: HotKey) -> Result<(), String> {
+            let mut active = self.active.borrow_mut();
+            let Some(index) = active.iter().position(|id| *id == hotkey.id()) else {
+                return Err("missing_registration".into());
+            };
+            active.remove(index);
+            Ok(())
+        }
+    }
+
+    fn primary_bindings() -> RegisteredHotkeys {
+        RegisteredHotkeys {
+            entries: vec![
+                registered_hotkey(
+                    HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F2),
+                    ActionId::CaptureRegionAndPin,
+                ),
+                registered_hotkey(
+                    HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F3),
+                    ActionId::CaptureFullDisplay,
+                ),
+            ],
+        }
+    }
 
     #[test]
     fn inject_and_poll() {
@@ -353,30 +727,156 @@ mod tests {
     #[test]
     fn only_registered_pressed_events_become_actions() {
         let bindings = RegisteredHotkeys {
-            region_ids: [11, 12],
-            alternate_region_id: Some(13),
-            full_display_id: Some(14),
+            entries: vec![
+                registered_hotkey(
+                    HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F2),
+                    ActionId::CaptureRegionAndPin,
+                ),
+                registered_hotkey(REGION_SECONDARY_HOTKEY, ActionId::CaptureRegionAndPin),
+                registered_hotkey(
+                    HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F3),
+                    ActionId::CaptureFullDisplay,
+                ),
+            ],
         };
+        let region_id = bindings.entries[0].hotkey.id();
+        let secondary_id = bindings.entries[1].hotkey.id();
+        let full_display_id = bindings.entries[2].hotkey.id();
 
         assert_eq!(
-            bindings.action_for_pressed_event(11, HotKeyState::Pressed),
+            bindings.action_for_pressed_event(region_id, HotKeyState::Pressed),
             Some(ActionId::CaptureRegionAndPin)
         );
         assert_eq!(
-            bindings.action_for_pressed_event(13, HotKeyState::Pressed),
+            bindings.action_for_pressed_event(secondary_id, HotKeyState::Pressed),
             Some(ActionId::CaptureRegionAndPin)
         );
         assert_eq!(
-            bindings.action_for_pressed_event(14, HotKeyState::Pressed),
+            bindings.action_for_pressed_event(full_display_id, HotKeyState::Pressed),
             Some(ActionId::CaptureFullDisplay)
         );
         assert_eq!(
-            bindings.action_for_pressed_event(12, HotKeyState::Released),
+            bindings.action_for_pressed_event(secondary_id, HotKeyState::Released),
             None
         );
         assert_eq!(
             bindings.action_for_pressed_event(99, HotKeyState::Pressed),
             None
+        );
+    }
+
+    #[test]
+    fn recorder_mapping_uses_physical_keys_and_current_modifiers() {
+        let binding = binding_from_winit(
+            KeyCode::KeyR,
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+        )
+        .expect("supported physical key");
+        assert_eq!(binding.to_string(), "Ctrl+Shift+R");
+        assert!(binding.is_safe());
+        assert!(binding_from_winit(KeyCode::Escape, ModifiersState::empty()).is_none());
+        assert!(
+            !binding_from_winit(KeyCode::KeyR, ModifiersState::empty())
+                .expect("mapped letter")
+                .is_safe()
+        );
+    }
+
+    #[test]
+    fn primary_binding_validation_rejects_unsafe_and_reserved_combinations() {
+        assert_eq!(
+            validate_primary_bindings(
+                HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::KeyA),
+                HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F3),
+            ),
+            Err("hotkey_unsafe".into())
+        );
+        assert_eq!(
+            validate_primary_bindings(
+                REGION_SECONDARY_HOTKEY,
+                HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F3),
+            ),
+            Err("hotkey_conflict".into())
+        );
+        assert!(
+            validate_primary_bindings(
+                HotkeyBinding::new(HotkeyModifiers::CONTROL, HotkeyCode::KeyR),
+                HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4),
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn rebind_registers_all_new_keys_before_releasing_old_mappings() {
+        let mut bindings = primary_bindings();
+        let initial = bindings.entries.clone();
+        let registrar = FakeRegistrar::with_active(&initial, None);
+        let next_region = HotkeyBinding::new(HotkeyModifiers::CONTROL, HotkeyCode::KeyR);
+        let next_full = HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4);
+
+        rebind_registered_hotkeys(
+            &registrar,
+            &mut bindings,
+            &[
+                (ActionId::CaptureRegionAndPin, next_region),
+                (ActionId::CaptureFullDisplay, next_full),
+            ],
+        )
+        .expect("rebind");
+
+        let region = bindings
+            .primary_binding(ActionId::CaptureRegionAndPin)
+            .expect("new region registration");
+        let full = bindings
+            .primary_binding(ActionId::CaptureFullDisplay)
+            .expect("new full registration");
+        assert_eq!(region.binding, next_region);
+        assert_eq!(full.binding, next_full);
+        assert_eq!(
+            bindings.action_for_pressed_event(region.hotkey.id(), HotKeyState::Pressed),
+            Some(ActionId::CaptureRegionAndPin)
+        );
+        assert!(registrar.active_ids().contains(&region.hotkey.id()));
+        assert!(registrar.active_ids().contains(&full.hotkey.id()));
+        assert!(!registrar.active_ids().contains(&initial[0].hotkey.id()));
+        assert!(!registrar.active_ids().contains(&initial[1].hotkey.id()));
+    }
+
+    #[test]
+    fn failed_new_registration_keeps_old_bindings_and_mapping() {
+        let mut bindings = primary_bindings();
+        let initial = bindings.entries.clone();
+        let next_region = HotkeyBinding::new(HotkeyModifiers::CONTROL, HotkeyCode::KeyR);
+        let next_full = HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4);
+        let registrar = FakeRegistrar::with_active(
+            &initial,
+            Some(
+                registered_hotkey(next_full, ActionId::CaptureFullDisplay)
+                    .hotkey
+                    .id(),
+            ),
+        );
+
+        assert!(
+            rebind_registered_hotkeys(
+                &registrar,
+                &mut bindings,
+                &[
+                    (ActionId::CaptureRegionAndPin, next_region),
+                    (ActionId::CaptureFullDisplay, next_full),
+                ],
+            )
+            .is_err()
+        );
+
+        assert_eq!(bindings.entries, initial);
+        assert_eq!(
+            registrar.active_ids(),
+            initial
+                .iter()
+                .map(|entry| entry.hotkey.id())
+                .collect::<Vec<_>>()
         );
     }
 

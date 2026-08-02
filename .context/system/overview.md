@@ -7,7 +7,7 @@
 - Linux xcap 需 `pipewire-devel`、`mesa-libgbm-devel`（**仅 xcap/portal 兜底路径**）。
 - **当前截图后端（Linux/KDE 实验路径）**：`kde-spectacle`（KWin，~0.5s）→ `xcap`/portal（慢）→ 受限能力状态；`FakeCaptureProvider` 仅由显式测试/开发注入使用，不能是生产截图成功的降级结果。
 - **不要默认 portal**：portal/PipeWire 是通用 Wayland 兜底，不是 Snipaste 级体验。
-- **全局热键**：`global-hotkey`（F2/Ctrl+N/Ctrl+Shift+S 区域、F3 单显示器全屏，注册受桌面环境限制）+ 单实例 IPC `pinora capture`；启动时写入 `~/.local/share/applications/pinora.desktop`。
+- **全局热键**：`global-hotkey`（可持久化录制的区域/单显示器全屏主键，默认 F2/F3；兼容 Ctrl+N/Ctrl+Shift+S 区域备用键），注册受桌面环境限制；保留单实例 IPC `pinora capture`，启动时写入 `~/.local/share/applications/pinora.desktop`。
 - **系统剪贴板**：Linux 优先 `wl-copy`，回退 `xclip`；同步 `LocalImageSink` 先保留内存副本，系统写入失败返回 `ClipboardFailed` 而不发布成功，适配器直接持有子进程并在截止时间后回收；桌面异步复制仍由 `ExportJobService` 监督，真实读回和跨平台原生后端未验证。
 
 ## 当前可运行的实验能力（未达到生产声明）
@@ -18,7 +18,7 @@
 | 区域与全屏 Overlay | F2/Ctrl+N 拖选；选区实时显示源图物理像素宽高与全局左上坐标；已确认且未标注的选区可拖四边/四角精确调整；F3/托盘默认全屏自动确认当前完整图像；多显示器 tray 可指定目标全屏；双击复制、中键/Enter 贴图；选区内标注/OCR |
 | 贴图窗口 | 无边框置顶、拖动、滚轮及四边/四角等比缩放、双击或客户区 `100%` 恢复原图、Esc 关闭；普通 Overlay 新贴图优先在当前捕获范围的右/左/下/上避开来源选区，无空间时稳定回退；tray 可撤销最近关闭一次（恢复为新 PinId）；客户区右键菜单、锁定/压暗/置顶、原位编辑；多贴图 |
 | 导出 | PNG 文件 + 内存剪贴板 + 系统剪贴板（wl-copy/xclip） |
-| 全局热键 | `GlobalHotkeyHub` 在 GUI 事件循环线程持有 `global-hotkey` manager；F2/Ctrl+N 核心区域截图，Ctrl+Shift+S/F3 可选且按实际注册状态启用。Windows/macOS 为原生后端、Linux 仅 X11；纯 Wayland 仍使用 tray 或 `pinora capture` IPC 降级 |
+| 全局热键 | `GlobalHotkeyHub` 在 GUI 事件循环线程持有 `global-hotkey` manager；设置窗口可录制区域和全屏主键，保存时先预注册新组合、再撤销旧组合，默认 F2/F3；Ctrl+N/Ctrl+Shift+S 保持区域备用键。Windows/macOS 为原生后端、Linux 仅 X11；纯 Wayland 仍使用 tray 或 `pinora capture` IPC 降级 |
 | 单实例 | Unix 使用 `flock` + Unix socket；非 Unix 使用文件锁 + 本地回环 TCP 端口文件，均支持 Activate/CAPTURE/QUIT；真实 Windows/macOS 进程行为仍待探针 |
 | 帧缓存 | 空闲预截；热键命中以所有权移交预处理帧，避免复制全屏图像与双 XRGB 缓冲；暂停以代际拒绝晚到帧 |
 | 基础标注 | Overlay 选区内：选择、矩形/圆角矩形/直线/箭头/画笔/椭圆/序号/马赛克/区域模糊/文本/截图内取色；文本 `Shift+Enter` 换行、`Enter` 提交、`Esc` 取消，非空草稿在重选/切换工具前提交；`V` 选择，选中对象可拖动或以方向键移动（Shift 为 10 像素），`Q` 圆角矩形，`L` 直线，`N` 序号，`B` 区域模糊，`F` 切换后续封闭图形的半透明填充，C 颜色，I 取色，+/- 线宽，Delete/Backspace 删除选中项；`Ctrl+Z` 撤销，`Ctrl+Shift+Z`/`Ctrl+Y` 重做，工具栏“清空”可一次撤销/重做整个标注文档 |
@@ -65,6 +65,7 @@
 - 2026-08-02 的 080 为桌面异步 PNG 保存增加 UTC 可读命名：分配器使用固定 `Pinora_YYYYMMDD_HHMMSS[_NNN].png` 格式，跳过同秒与已存在的候选；Overlay、贴图编辑、贴图自动保存和贴图菜单保存均在提交既有导出 worker 前使用它。没有改变编码、原子写入、历史、任务身份、窗口或 tray 生命周期；普通跨进程文件系统竞态仍未消除，真实桌面验证也未完成。
 - 2026-08-02 的 081 将 `GlobalHotkeyHub` 改为在 `winit` GUI 事件循环线程持有并释放 `GlobalHotKeyManager`，不再用仅 Linux 的应用侧线程转发事件。F2/Ctrl+N 是核心注册，Ctrl+Shift+S/F3 保持可选且状态说明来自实际注册结果；Windows/macOS 不再因应用编译期开关被直接禁用，Linux 仍只声明 X11，纯 Wayland 使用 tray 或 IPC 降级。Pinora 没有新增 `winit` 窗口；Windows 依赖后端会使用隐藏 `WS_EX_TOOLWINDOW` 消息窗口，源码请求跳过任务栏但尚缺实机证据。离线事件过滤、不可用降级、window policy、严格 workspace 门禁和 Windows target 编译已通过；真实 Windows/macOS/X11 热键、Wayland Portal、冲突、权限与睡眠恢复尚未验证。
 - 2026-08-02 的 082 将设置 schema 升级为 v2：18 字节 v1 记录保留既有字段并以 `Auto` 迁移，后续原子保存写入 19 字节 v2。设置窗口可选择 Auto、English、SimplifiedChinese；桌面壳在提交 OCR worker 前冻结 runtime 中的预设。自动模式仅组合本机 `chi_sim`/`eng`，指定模式缺模型时返回 `CapabilityUnavailable`，不下载模型、不回退；OCR 失败日志只写稳定错误码。离线 codec、面板、模型选择、worker 冻结和 workspace 门禁已通过，真实模型安装、设置输入、剪贴板与桌面体验仍未验证。
+- 2026-08-02 的 084 将设置 schema 升级为 v3：v1/v2 文件保留既有字段并新增默认区域 F2、全屏 F3 主键；v3 以受限物理键和修饰键编码两个主键。设置窗口使用同一辅助窗口进入录制状态，录制优先于窗口内截图快捷键，拒绝裸字母、重复或占用 Ctrl+N/Ctrl+Shift+S 的组合。热键 hub 在新键全部预注册后才释放旧键，设置写入失败时尝试恢复旧键；不可用后端仍可保存配置但不报告已注册。没有新增窗口、事件循环、线程、网络或权限绕过；真实平台注册、冲突与任务栏/Dock 行为仍未验证。
 - 2026-08-02 的 083 为 `OcrJobService` 增加进程内结果复用：只有通过 owner、终态和 `AssetRef` generation 门禁的成功 OCR 才以完整 asset 与冻结语言进入缓存。缓存为最多 8 条、2 MiB 估算总量、512 KiB 单条上限的内存 LRU 风格队列；命中由 service 保证不创建新 worker，桌面壳仍走原有词框、全文复制与 tray 成功交付。缓存不持久化、不感知外部模型文件变化；离线缓存、服务和 workspace 门禁已通过，真实连续操作、内存峰值和桌面体验仍未验证。
 - GitHub Actions CI `30732620836`、`30732765136`、`30732906042`、`30733684203`、`30734154282`、`30734583848`、`30734867309` 与 `30735354166` 已于 2026-08-02 在 Linux、macOS、Windows 原生 runner 通过格式、workspace 编译、严格 Clippy 和单元测试；这些运行未创建 GUI 会话，不能作为任务栏、Dock、窗口交互、KWin 行为、真实多显示器或渲染延迟的证据。
 - `pinora-core::asset` 已于 2026-08-01 新增 `AssetGeneration` 和 `AssetRef` 领域契约；它只组合既有 `ImageId`，可判定陈旧结果，已用于桌面贴图及 Overlay OCR、复制、保存任务的结果门禁。
