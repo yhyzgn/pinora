@@ -38,8 +38,8 @@
 - 截图后端自动选择 KDE `spectacle` → xcap → `Unavailable`；两者不可用时保留后端失败摘要并由 provider 返回 `CapabilityUnavailable`，`fake` 只能通过显式测试/开发注入使用。
 - `docs/Pinora-开发设计文档.md` 已于 2026-08-01 更新为 v1.0 生产重构基线：明确当前实验实现、目标端口/适配器架构和待验证技术决策；文档不代表任何新功能已经交付。
 - 2026-08-02 的 049/050 本地实现将截图方式、Overlay 初始选区和窗口呈现方式分离：历史条目在完整性校验后通过普通编辑窗口进入全图标注，不重新捕获屏幕；失败保留历史窗口并恢复帧缓存。
-- 2026-08-02 的 050/054 实现移除了空闲控制窗口与启动自动截图，并将全部生产窗口构造收敛至 `window_policy`：Windows 请求跳过任务栏、X11 请求 Utility、macOS 使用 Accessory/`LSUIElement`，KDE Wayland 在映射后额外请求 `skipTaskbar`/`skipPager`；隐藏 display-handle 也受创建前策略约束。这只是实现与离线测试事实，不等于真实任务栏、Dock 或合成器验收。
-- GitHub Actions CI `30732620836`、`30732765136`、`30732906042`、`30733684203` 与 `30734154282` 已于 2026-08-02 在 Linux、macOS、Windows 原生 runner 通过格式、workspace 编译、严格 Clippy 和单元测试；这些运行未创建 GUI 会话，不能作为任务栏、Dock、窗口交互、KWin 行为或渲染延迟的证据。
+- 2026-08-02 的 050/054 实现移除了空闲控制窗口与启动自动截图，并将全部生产窗口构造收敛至 `window_policy`：Windows 请求跳过任务栏、X11 请求 Utility、macOS 使用 Accessory/`LSUIElement`，KDE Wayland 在映射后额外请求 `skipTaskbar`/`skipPager`；隐藏 display-handle 也受创建前策略约束。提交 `609b862` 的三平台 CI 已验证该代码可通过各原生 runner 的静态门禁。这不等于真实任务栏、Dock 或合成器验收。
+- GitHub Actions CI `30732620836`、`30732765136`、`30732906042`、`30733684203`、`30734154282`、`30734583848` 与 `30734867309` 已于 2026-08-02 在 Linux、macOS、Windows 原生 runner 通过格式、workspace 编译、严格 Clippy 和单元测试；这些运行未创建 GUI 会话，不能作为任务栏、Dock、窗口交互、KWin 行为或渲染延迟的证据。
 - `pinora-core::asset` 已于 2026-08-01 新增 `AssetGeneration` 和 `AssetRef` 领域契约；它只组合既有 `ImageId`，可判定陈旧结果，已用于桌面贴图及 Overlay OCR、复制、保存任务的结果门禁。
 - `pinora-core::job` 与 `pinora-app::JobSupervisor` 已于 2026-08-01 新增：任务元数据绑定 `JobId`、关联 ID、`AssetRef`、领域 owner、类型和截止时间；监督器可协作式取消、关闭 owner、标记超时并拒绝终态或陈旧版本结果。桌面 OCR、导出和剪贴板均已接入，但这不代表所有后台进程均已在真实桌面环境验证。
 - `pinora-app::OcrJobService` 已于 2026-08-01 接入 `desktop_shell`：可注入 runner 在 worker 中执行 OCR，主线程轮询通过 `JobSupervisor` 后才交付结果，覆盖失败、owner 关闭、超时和 generation 失效。贴图关闭、Overlay 取消/再截和应用退出均会取消对应任务；服务契约测试仍不等价于真实窗口 E2E。

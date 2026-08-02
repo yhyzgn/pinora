@@ -1,6 +1,6 @@
 # 计划 054：辅助窗口创建边界与托盘唯一常驻强化
 
-- 状态：进行中
+- 状态：已完成
 - 负责人：Codex
 - 当前任务：`.context/tasks/054_auxiliary_window_boundary.md`
 
@@ -64,4 +64,4 @@
 
 - 2026-08-02：已将主 shell、历史、设置及兼容 Overlay/贴图会话的全部窗口创建迁移至 `window_policy::create_auxiliary_window`；生产源码中仅策略工厂保留直接 `create_window`。隐藏 display-handle 以独立类型受创建前策略约束，不触发映射后 KWin 操作。
 - 可见 Overlay、贴图和面板均在可见后通过 `apply_post_map_policy` 触发既有的 KWin `skipTaskbar`/`skipPager` 请求；Windows `skip_taskbar`、X11 Utility、macOS Accessory/`LSUIElement` 的已有语义未改变。
-- 本地通过窗口策略与 KWin 定向测试、fmt、workspace check、严格 Clippy、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`（app 138 通过、2 个真实桌面测试忽略；core 55 通过）、diff 检查与 `ctx validate`。GitHub 三平台 CI 尚待本次提交后执行，任务保持进行中；真实 Windows/macOS/X11/KDE Wayland 任务栏、Dock 和分页器探针未运行。
+- 本地通过窗口策略与 KWin 定向测试、fmt、workspace check、严格 Clippy、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`（app 138 通过、2 个真实桌面测试忽略；core 55 通过）、diff 检查与 `ctx validate`。提交 `609b862` 的 GitHub CI `30734867309` 已在 Linux、macOS、Windows 原生 runner 通过格式、workspace 编译、严格 Clippy 和单元测试；真实 Windows/macOS/X11/KDE Wayland 任务栏、Dock 和分页器探针未运行。

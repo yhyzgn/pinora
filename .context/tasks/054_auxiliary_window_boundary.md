@@ -1,6 +1,6 @@
 # 任务 054：辅助窗口创建边界与托盘唯一常驻强化
 
-- 状态：进行中
+- 状态：已完成
 - 计划：`.context/plans/054_auxiliary_window_boundary.md`
 - 规模：中
 - 依赖：`.context/tasks/050_tray_only_windows.md`
@@ -60,4 +60,4 @@
 
 - 2026-08-02：已将七个生产窗口构造路径收敛到 `window_policy::create_auxiliary_window`，并将 KWin 映射后策略收敛到同一模块。`rg` 审计确认业务模块不再直接调用 `create_window`；Overlay、贴图和面板均保留映射后策略，隐藏 display-handle 不映射。
 - 已新增窗口种类与映射后策略契约测试；本地通过 `window_policy::tests`、`kwin_place::tests`、fmt、workspace check、严格 Clippy、全量 workspace 测试（app 138 通过、2 个真实桌面测试忽略；core 55 通过）、diff 检查与 `ctx validate`。
-- GitHub 三平台 CI 尚待本次提交后执行，因此任务保持进行中；真实任务栏、Dock、KWin、其他 Wayland 合成器与无障碍探针未覆盖。
+- 提交 `609b862` 的 GitHub CI `30734867309` 已在 Linux、macOS、Windows 原生 runner 通过格式、workspace 编译、严格 Clippy 和单元测试。真实任务栏、Dock、KWin、其他 Wayland 合成器与无障碍探针未覆盖。
