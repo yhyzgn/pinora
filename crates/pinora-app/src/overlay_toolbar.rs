@@ -9,6 +9,7 @@ pub enum ToolbarAction {
     Pin,
     Save,
     Ocr,
+    ToggleFill,
     Tool(AnnotateTool),
 }
 
@@ -35,6 +36,7 @@ pub fn layout_toolbar(selection: PixelRect, img_w: u32, img_h: u32) -> Vec<Toolb
         (ToolbarAction::Pin, "贴图"),
         (ToolbarAction::Save, "保存"),
         (ToolbarAction::Ocr, "OCR"),
+        (ToolbarAction::ToggleFill, "填充"),
         (ToolbarAction::Tool(AnnotateTool::Rect), "矩形"),
         (ToolbarAction::Tool(AnnotateTool::RoundedRect), "圆角矩形"),
         (ToolbarAction::Tool(AnnotateTool::Line), "直线"),
@@ -137,6 +139,7 @@ pub fn paint_toolbar(
     buttons: &[ToolbarButton],
     active_tool: AnnotateTool,
     current_color: [u8; 4],
+    fill_enabled: bool,
 ) {
     let Some(bounds) = toolbar_bounds(buttons) else {
         return;
@@ -146,7 +149,8 @@ pub fn paint_toolbar(
     draw_rect_outline(frame, stride, height, bounds, 0x00_80_80_90);
 
     for b in buttons {
-        let selected = matches!(b.action, ToolbarAction::Tool(t) if t == active_tool);
+        let selected = matches!(b.action, ToolbarAction::Tool(t) if t == active_tool)
+            || (b.action == ToolbarAction::ToggleFill && fill_enabled);
         let bg = if selected {
             0x00_2A_6A_E0
         } else {
@@ -155,6 +159,7 @@ pub fn paint_toolbar(
                 ToolbarAction::Pin => 0x00_6A_3A_B0,
                 ToolbarAction::Save => 0x00_7A_5A_10,
                 ToolbarAction::Ocr => 0x00_7A_2A_2A,
+                ToolbarAction::ToggleFill => 0x00_1C_6A_6A,
                 ToolbarAction::Tool(_) => 0x00_3A_3A_48,
             }
         };
@@ -176,6 +181,7 @@ fn button_mark(b: &ToolbarButton) -> &'static str {
         ToolbarAction::Pin => "Pin",
         ToolbarAction::Save => "Sav",
         ToolbarAction::Ocr => "OCR",
+        ToolbarAction::ToggleFill => "F",
         ToolbarAction::Tool(AnnotateTool::Rect) => "R",
         ToolbarAction::Tool(AnnotateTool::RoundedRect) => "Q",
         ToolbarAction::Tool(AnnotateTool::Line) => "L",
@@ -385,6 +391,30 @@ mod tests {
             let point = PixelPoint::new(button.rect.origin.x + 1, button.rect.origin.y + 1);
             assert_eq!(hit_test(&buttons, point), Some(ToolbarAction::Tool(tool)));
         }
+    }
+
+    #[test]
+    fn fill_button_is_hittable_and_uses_selected_color_when_enabled() {
+        let buttons = layout_toolbar(PixelRect::new(50, 50, 400, 80), 1000, 800);
+        let button = buttons
+            .iter()
+            .find(|button| button.action == ToolbarAction::ToggleFill)
+            .expect("fill button");
+        let point = PixelPoint::new(button.rect.origin.x + 1, button.rect.origin.y + 1);
+        assert_eq!(hit_test(&buttons, point), Some(ToolbarAction::ToggleFill));
+
+        let mut frame = vec![0; 1000 * 800];
+        paint_toolbar(
+            &mut frame,
+            1000,
+            800,
+            &buttons,
+            AnnotateTool::Rect,
+            [255, 64, 64, 255],
+            true,
+        );
+        let index = (button.rect.origin.y as usize + 3) * 1000 + button.rect.origin.x as usize + 3;
+        assert_eq!(frame[index], 0x00_2A_6A_E0);
     }
 
     #[test]

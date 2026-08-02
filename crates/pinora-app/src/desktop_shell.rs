@@ -2723,11 +2723,15 @@ where
                         let tool = ov.annotate.tool;
                         let color = ov.annotate.color;
                         let stroke = ov.annotate.stroke;
+                        let shape_fill_enabled = ov.annotate.shape_fill_enabled();
                         // 标注坐标系 = 原图选区像素
                         ov.annotate = AnnotateSession::new(src_sel.size.width, src_sel.size.height);
                         ov.annotate.tool = tool;
                         ov.annotate.color = color;
                         ov.annotate.stroke = stroke;
+                        if shape_fill_enabled {
+                            ov.annotate.toggle_shape_fill();
+                        }
                         ov.annotate_cache = None;
                         ov.annotate_dirty = true;
                         println!(
@@ -2776,6 +2780,14 @@ where
             }
             ToolbarAction::Ocr => {
                 self.overlay_ocr();
+            }
+            ToolbarAction::ToggleFill => {
+                if let Some(ov) = self.overlay.as_mut() {
+                    let enabled = ov.annotate.toggle_shape_fill();
+                    ov.toolbar_chrome_dirty = true;
+                    ov.needs_redraw = true;
+                    println!("pinora: shape fill enabled={enabled}");
+                }
             }
             ToolbarAction::Tool(tool) => {
                 // 工具高亮和色块仅重绘工具栏，不重新烘焙选区。
@@ -4309,6 +4321,16 @@ fn handle_overlay_key(
             ov.annotate_dirty = true;
             ov.needs_redraw = true;
         }
+        Key::Character(c)
+            if (c == "f" || c == "F")
+                && !modifiers.control_key()
+                && ov.phase == OverlayPhase::Ready =>
+        {
+            let enabled = ov.annotate.toggle_shape_fill();
+            ov.toolbar_chrome_dirty = true;
+            ov.needs_redraw = true;
+            println!("pinora: shape fill enabled={enabled}");
+        }
         Key::Character(c) if c == "1" || c == "r" || c == "R" => {
             set_overlay_tool(ov, AnnotateTool::Rect);
             println!("pinora: tool = Rect");
@@ -4383,10 +4405,14 @@ fn refresh_overlay_ready(ov: &mut OverlayState) {
             let tool = ov.annotate.tool;
             let color = ov.annotate.color;
             let stroke = ov.annotate.stroke;
+            let shape_fill_enabled = ov.annotate.shape_fill_enabled();
             ov.annotate = AnnotateSession::new(src_sel.size.width, src_sel.size.height);
             ov.annotate.tool = tool;
             ov.annotate.color = color;
             ov.annotate.stroke = stroke;
+            if shape_fill_enabled {
+                ov.annotate.toggle_shape_fill();
+            }
             ov.annotate_cache = None;
             ov.annotate_dirty = true;
         }
@@ -4426,6 +4452,7 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
                     &ov.toolbar,
                     ov.annotate.tool,
                     ov.annotate.color,
+                    ov.annotate.shape_fill_enabled(),
                 );
             }
             damage.push(tb);
@@ -4479,6 +4506,7 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
                 &ov.toolbar,
                 ov.annotate.tool,
                 ov.annotate.color,
+                ov.annotate.shape_fill_enabled(),
             );
             if let Some(tb) = new_tb {
                 damage.push(tb);
@@ -5376,6 +5404,7 @@ mod overlay_scale_tests {
             b: PixelPoint::new(4, 4),
             color: DEFAULT_STROKE,
             stroke: DEFAULT_WIDTH,
+            fill: None,
         });
         let current = identity.current(doc.revision());
         assert_eq!(submitted.image_id, current.image_id);
@@ -5415,6 +5444,7 @@ mod overlay_scale_tests {
             b: PixelPoint::new(4, 4),
             color: DEFAULT_STROKE,
             stroke: DEFAULT_WIDTH,
+            fill: None,
         });
         let committed = identity.current(doc.revision());
         assert!(doc.undo().is_some());

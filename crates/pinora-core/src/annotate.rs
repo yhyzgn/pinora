@@ -32,6 +32,8 @@ pub enum Annotation {
         b: PixelPoint,
         color: [u8; 4],
         stroke: u32,
+        /// 提交时冻结的半透明填充；`None` 保持仅描边。
+        fill: Option<[u8; 4]>,
     },
     RoundedRect {
         a: PixelPoint,
@@ -39,6 +41,8 @@ pub enum Annotation {
         color: [u8; 4],
         stroke: u32,
         radius: u32,
+        /// 提交时冻结的半透明填充；`None` 保持仅描边。
+        fill: Option<[u8; 4]>,
     },
     Line {
         from: PixelPoint,
@@ -62,6 +66,8 @@ pub enum Annotation {
         b: PixelPoint,
         color: [u8; 4],
         stroke: u32,
+        /// 提交时冻结的半透明填充；`None` 保持仅描边。
+        fill: Option<[u8; 4]>,
     },
     Number {
         center: PixelPoint,
@@ -175,6 +181,11 @@ pub const MIN_STROKE: u32 = 1;
 pub const MAX_STROKE: u32 = 24;
 pub const MIN_SEQUENCE_NUMBER: u32 = 1;
 pub const MAX_SEQUENCE_NUMBER: u32 = 99_999;
+const SHAPE_FILL_ALPHA: u8 = 96;
+
+fn shape_fill_color(color: [u8; 4]) -> [u8; 4] {
+    [color[0], color[1], color[2], SHAPE_FILL_ALPHA]
+}
 
 /// 可循环调色板。
 pub const STROKE_PALETTE: [[u8; 4]; 8] = [
@@ -212,6 +223,7 @@ pub struct AnnotateSession {
     pub stroke: u32,
     pub image_w: u32,
     pub image_h: u32,
+    shape_fill_enabled: bool,
     next_sequence_number: u32,
     sequence_exhausted: bool,
 }
@@ -227,6 +239,7 @@ impl AnnotateSession {
             stroke: DEFAULT_WIDTH,
             image_w: image_w.max(1),
             image_h: image_h.max(1),
+            shape_fill_enabled: false,
             next_sequence_number: MIN_SEQUENCE_NUMBER,
             sequence_exhausted: false,
         }
@@ -262,6 +275,16 @@ impl AnnotateSession {
 
     pub fn stroke_down(&mut self) {
         self.stroke = self.stroke.saturating_sub(1).max(MIN_STROKE);
+    }
+
+    /// 切换后续封闭图形的半透明填充；这是会话样式，不会改写文档。
+    pub fn toggle_shape_fill(&mut self) -> bool {
+        self.shape_fill_enabled = !self.shape_fill_enabled;
+        self.shape_fill_enabled
+    }
+
+    pub const fn shape_fill_enabled(&self) -> bool {
+        self.shape_fill_enabled
     }
 
     /// 设置下一枚序号的起始值。值受显示与布局上限约束，不改写既有标注。
@@ -387,6 +410,7 @@ impl AnnotateSession {
         };
         let color = self.color;
         let stroke = self.stroke.max(1);
+        let fill = self.shape_fill_enabled.then_some(shape_fill_color(color));
         let item = match draft {
             DraftShape::Rect { a, b } => {
                 if (a.x - b.x).abs() < 2 && (a.y - b.y).abs() < 2 {
@@ -397,6 +421,7 @@ impl AnnotateSession {
                     b,
                     color,
                     stroke,
+                    fill,
                 }
             }
             DraftShape::RoundedRect { a, b } => {
@@ -409,6 +434,7 @@ impl AnnotateSession {
                     color,
                     stroke,
                     radius: rounded_rect_radius(a, b, stroke),
+                    fill,
                 }
             }
             DraftShape::Line { from, to } => {
@@ -452,6 +478,7 @@ impl AnnotateSession {
                     b,
                     color,
                     stroke,
+                    fill,
                 }
             }
             DraftShape::Mosaic { a, b } => {
@@ -523,25 +550,31 @@ pub fn bake_annotations(source: &CaptureImage, doc: &AnnotationDoc) -> CaptureIm
                 b,
                 color,
                 stroke,
-            } => draw_rect_outline(&mut bytes, w, h, *a, *b, *color, *stroke),
+                fill,
+            } => {
+                if let Some(fill) = fill {
+                    draw_rect_fill(&mut bytes, w, h, *a, *b, *fill);
+                }
+                draw_rect_outline(&mut bytes, w, h, *a, *b, *color, *stroke);
+            }
             Annotation::RoundedRect {
                 a,
                 b,
                 color,
                 stroke,
                 radius,
-            } => draw_rounded_rect_outline(
-                &mut bytes,
-                w,
-                h,
-                RoundedRectGeometry {
+                fill,
+            } => {
+                let geometry = RoundedRectGeometry {
                     a: *a,
                     b: *b,
                     radius: *radius,
-                },
-                *color,
-                *stroke,
-            ),
+                };
+                if let Some(fill) = fill {
+                    draw_rounded_rect_fill(&mut bytes, w, h, geometry, *fill);
+                }
+                draw_rounded_rect_outline(&mut bytes, w, h, geometry, *color, *stroke);
+            }
             Annotation::Line {
                 from,
                 to,
@@ -564,7 +597,13 @@ pub fn bake_annotations(source: &CaptureImage, doc: &AnnotationDoc) -> CaptureIm
                 b,
                 color,
                 stroke,
-            } => draw_ellipse_outline(&mut bytes, w, h, *a, *b, *color, *stroke),
+                fill,
+            } => {
+                if let Some(fill) = fill {
+                    draw_ellipse_fill(&mut bytes, w, h, *a, *b, *fill);
+                }
+                draw_ellipse_outline(&mut bytes, w, h, *a, *b, *color, *stroke);
+            }
             Annotation::Number {
                 center,
                 value,
@@ -600,12 +639,16 @@ pub fn render_preview_rgba(source: &CaptureImage, session: &AnnotateSession) -> 
     if let Some(draft) = &session.draft {
         let color = session.color;
         let stroke = session.stroke.max(1);
+        let fill = session
+            .shape_fill_enabled()
+            .then_some(shape_fill_color(color));
         match draft {
             DraftShape::Rect { a, b } => doc.push(Annotation::Rect {
                 a: *a,
                 b: *b,
                 color,
                 stroke,
+                fill,
             }),
             DraftShape::RoundedRect { a, b } => doc.push(Annotation::RoundedRect {
                 a: *a,
@@ -613,6 +656,7 @@ pub fn render_preview_rgba(source: &CaptureImage, session: &AnnotateSession) -> 
                 color,
                 stroke,
                 radius: rounded_rect_radius(*a, *b, stroke),
+                fill,
             }),
             DraftShape::Line { from, to } => doc.push(Annotation::Line {
                 from: *from,
@@ -636,6 +680,7 @@ pub fn render_preview_rgba(source: &CaptureImage, session: &AnnotateSession) -> 
                 b: *b,
                 color,
                 stroke,
+                fill,
             }),
             DraftShape::Mosaic { a, b } => {
                 let block = (stroke * 2).clamp(4, 32);
@@ -815,6 +860,25 @@ fn draw_rect_outline(
     );
 }
 
+/// 矩形填充：边界仍交给随后描边覆盖，内部和边缘均使用同一 alpha-over 合成。
+fn draw_rect_fill(buf: &mut [u8], w: i32, h: i32, a: PixelPoint, b: PixelPoint, color: [u8; 4]) {
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let x0 = a.x.min(b.x).max(0);
+    let y0 = a.y.min(b.y).max(0);
+    let x1 = a.x.max(b.x).min(w - 1);
+    let y1 = a.y.max(b.y).min(h - 1);
+    if x1 < x0 || y1 < y0 {
+        return;
+    }
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            blend_coverage(buf, w, h, x, y, color, 1.0);
+        }
+    }
+}
+
 fn rounded_rect_radius(a: PixelPoint, b: PixelPoint, stroke: u32) -> u32 {
     let width = a.x.abs_diff(b.x);
     let height = a.y.abs_diff(b.y);
@@ -827,6 +891,60 @@ struct RoundedRectGeometry {
     a: PixelPoint,
     b: PixelPoint,
     radius: u32,
+}
+
+/// 圆角矩形填充：距离场边缘抗锯齿，随后由描边恢复清晰边界。
+fn draw_rounded_rect_fill(
+    buf: &mut [u8],
+    w: i32,
+    h: i32,
+    geometry: RoundedRectGeometry,
+    color: [u8; 4],
+) {
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let x0 = geometry.a.x.min(geometry.b.x) as f64;
+    let y0 = geometry.a.y.min(geometry.b.y) as f64;
+    let x1 = geometry.a.x.max(geometry.b.x) as f64;
+    let y1 = geometry.a.y.max(geometry.b.y) as f64;
+    let half_width = (x1 - x0) * 0.5;
+    let half_height = (y1 - y0) * 0.5;
+    if half_width < 1.0 || half_height < 1.0 {
+        return;
+    }
+
+    let radius = f64::from(geometry.radius).min(half_width).min(half_height);
+    if radius < 0.5 {
+        draw_rect_fill(buf, w, h, geometry.a, geometry.b, color);
+        return;
+    }
+
+    let center_x = (x0 + x1) * 0.5;
+    let center_y = (y0 + y1) * 0.5;
+    let inner_width = (half_width - radius).max(0.0);
+    let inner_height = (half_height - radius).max(0.0);
+    let aa = 1.0;
+    let min_x = (x0.floor() as i32 - 1).max(0);
+    let max_x = (x1.ceil() as i32 + 1).min(w - 1);
+    let min_y = (y0.floor() as i32 - 1).max(0);
+    let max_y = (y1.ceil() as i32 + 1).min(h - 1);
+
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let px = x as f64 + 0.5;
+            let py = y as f64 + 0.5;
+            let qx = (px - center_x).abs() - inner_width;
+            let qy = (py - center_y).abs() - inner_height;
+            let outside = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt();
+            let inside = qx.max(qy).min(0.0);
+            let signed_distance = outside + inside - radius;
+            let coverage = ((aa * 0.5 - signed_distance) / aa).clamp(0.0, 1.0);
+            if coverage > 0.0 {
+                blend_coverage(buf, w, h, x, y, color, coverage);
+            }
+        }
+    }
 }
 
 /// 抗锯齿圆角矩形描边：圆角半径由已提交对象冻结，并钳制到短边的一半。
@@ -1033,6 +1151,46 @@ fn draw_sequence_label(
                         );
                     }
                 }
+            }
+        }
+    }
+}
+
+/// 椭圆填充：边界按隐式方程距离近似抗锯齿，内部始终走 alpha-over 合成。
+fn draw_ellipse_fill(buf: &mut [u8], w: i32, h: i32, a: PixelPoint, b: PixelPoint, color: [u8; 4]) {
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let x0 = a.x.min(b.x) as f64;
+    let y0 = a.y.min(b.y) as f64;
+    let x1 = a.x.max(b.x) as f64;
+    let y1 = a.y.max(b.y) as f64;
+    let cx = (x0 + x1) * 0.5;
+    let cy = (y0 + y1) * 0.5;
+    let rx = ((x1 - x0) * 0.5).max(1.0);
+    let ry = ((y1 - y0) * 0.5).max(1.0);
+    let aa = 1.0;
+    let min_x = ((cx - rx).floor() as i32 - 1).max(0);
+    let max_x = ((cx + rx).ceil() as i32 + 1).min(w - 1);
+    let min_y = ((cy - ry).floor() as i32 - 1).max(0);
+    let max_y = ((cy + ry).ceil() as i32 + 1).min(h - 1);
+
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let px = x as f64 + 0.5;
+            let py = y as f64 + 0.5;
+            let nx = (px - cx) / rx;
+            let ny = (py - cy) / ry;
+            let r_norm = (nx * nx + ny * ny).sqrt();
+            let signed_distance = if r_norm < 1e-6 {
+                -rx.min(ry)
+            } else {
+                let grad = ((nx / rx).powi(2) + (ny / ry).powi(2)).sqrt().max(1e-6);
+                (r_norm - 1.0) / grad
+            };
+            let coverage = ((aa * 0.5 - signed_distance) / aa).clamp(0.0, 1.0);
+            if coverage > 0.0 {
+                blend_coverage(buf, w, h, x, y, color, coverage);
             }
         }
     }
@@ -1306,6 +1464,7 @@ mod tests {
             color: [30, 120, 220, 255],
             stroke: 3,
             radius: u32::MAX,
+            fill: None,
         });
         let baked = bake_annotations(&source, &doc);
         assert_eq!(baked.pixels.bytes.len(), source.pixels.bytes.len());
@@ -1429,6 +1588,7 @@ mod tests {
             b: PixelPoint::new(10, 10),
             color: [255, 0, 0, 255],
             stroke: 2,
+            fill: None,
         });
         let out = bake_annotations(&src, &doc);
         assert_ne!(out.pixels.bytes, src.pixels.bytes);
@@ -1462,6 +1622,98 @@ mod tests {
         let src = solid(80, 60);
         let out = bake_annotations(&src, &s.doc);
         assert_ne!(out.pixels.bytes, src.pixels.bytes);
+    }
+
+    #[test]
+    fn shape_fill_toggle_is_non_transactional_and_freezes_preview_style() {
+        let source = solid(32, 24);
+        let mut session = AnnotateSession::new(32, 24);
+        session.set_color([24, 120, 220, 255]);
+        let initial_revision = session.doc.revision();
+
+        assert!(!session.shape_fill_enabled());
+        assert!(session.toggle_shape_fill());
+        assert_eq!(session.doc.revision(), initial_revision);
+
+        session.begin(PixelPoint::new(4, 4));
+        session.drag(PixelPoint::new(24, 18));
+        let preview = render_preview_rgba(&source, &session);
+        session.commit();
+        assert!(matches!(
+            session.doc.items(),
+            [Annotation::Rect {
+                color: [24, 120, 220, 255],
+                fill: Some([24, 120, 220, SHAPE_FILL_ALPHA]),
+                ..
+            }]
+        ));
+
+        session.set_color([255, 64, 64, 255]);
+        assert!(!session.toggle_shape_fill());
+        let baked = bake_annotations(&source, &session.doc);
+        assert_eq!(preview, baked.pixels.bytes);
+
+        let inside = rgba_at(&baked.pixels.bytes, 32, 12, 12);
+        assert_eq!(inside, [168, 204, 241, 255]);
+        let edge = rgba_at(&baked.pixels.bytes, 32, 12, 4);
+        assert_eq!(edge, [24, 120, 220, 255]);
+    }
+
+    #[test]
+    fn all_closed_shapes_fill_their_interior_without_affecting_stroke_only_shapes() {
+        let source = solid(56, 32);
+        let fill = Some([40, 120, 220, SHAPE_FILL_ALPHA]);
+        let mut doc = AnnotationDoc::new();
+        doc.push(Annotation::Rect {
+            a: PixelPoint::new(2, 4),
+            b: PixelPoint::new(14, 20),
+            color: [40, 120, 220, 255],
+            stroke: 2,
+            fill,
+        });
+        doc.push(Annotation::RoundedRect {
+            a: PixelPoint::new(20, 4),
+            b: PixelPoint::new(34, 20),
+            color: [40, 120, 220, 255],
+            stroke: 2,
+            radius: 4,
+            fill,
+        });
+        doc.push(Annotation::Ellipse {
+            a: PixelPoint::new(40, 4),
+            b: PixelPoint::new(54, 20),
+            color: [40, 120, 220, 255],
+            stroke: 2,
+            fill,
+        });
+        doc.push(Annotation::Rect {
+            a: PixelPoint::new(2, 24),
+            b: PixelPoint::new(14, 30),
+            color: [40, 120, 220, 255],
+            stroke: 2,
+            fill: None,
+        });
+
+        let baked = bake_annotations(&source, &doc);
+        let expected_fill = [174, 204, 241, 255];
+        for (x, y) in [(8, 12), (27, 12), (47, 12)] {
+            assert_eq!(rgba_at(&baked.pixels.bytes, 56, x, y), expected_fill);
+        }
+        assert_eq!(
+            rgba_at(&baked.pixels.bytes, 56, 8, 27),
+            [255, 255, 255, 255]
+        );
+        assert_eq!(rgba_at(&baked.pixels.bytes, 56, 8, 24), [40, 120, 220, 255]);
+    }
+
+    fn rgba_at(bytes: &[u8], width: usize, x: usize, y: usize) -> [u8; 4] {
+        let index = (y * width + x) * 4;
+        [
+            bytes[index],
+            bytes[index + 1],
+            bytes[index + 2],
+            bytes[index + 3],
+        ]
     }
 
     #[test]
@@ -1528,6 +1780,7 @@ mod tests {
             b: PixelPoint::new(6, 6),
             color: DEFAULT_STROKE,
             stroke: DEFAULT_WIDTH,
+            fill: None,
         });
         assert_eq!(doc.revision().raw(), 2);
         assert!(doc.undo().is_some());
@@ -1550,12 +1803,14 @@ mod tests {
             b: PixelPoint::new(4, 4),
             color: DEFAULT_STROKE,
             stroke: DEFAULT_WIDTH,
+            fill: None,
         };
         let second = Annotation::Rect {
             a: PixelPoint::new(5, 5),
             b: PixelPoint::new(9, 9),
             color: DEFAULT_STROKE,
             stroke: DEFAULT_WIDTH,
+            fill: None,
         };
         let mut doc = AnnotationDoc::new();
         doc.push(first.clone());
@@ -1587,6 +1842,7 @@ mod tests {
             b: PixelPoint::new(4, 4),
             color: DEFAULT_STROKE,
             stroke: DEFAULT_WIDTH,
+            fill: None,
         };
         doc.push(original);
         assert!(doc.undo().is_some());
@@ -1597,6 +1853,7 @@ mod tests {
             b: PixelPoint::new(9, 9),
             color: DEFAULT_STROKE,
             stroke: DEFAULT_WIDTH,
+            fill: None,
         });
         assert!(!doc.can_redo());
         let revision = doc.revision();
