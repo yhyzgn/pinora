@@ -2796,6 +2796,16 @@ where
             ToolbarAction::Ocr => {
                 self.overlay_ocr();
             }
+            ToolbarAction::Clear => {
+                if let Some(ov) = self.overlay.as_mut() {
+                    let had_draft = ov.annotate.draft.is_some();
+                    ov.annotate.cancel_draft();
+                    if ov.annotate.doc.clear() || had_draft {
+                        ov.annotate_dirty = true;
+                        ov.needs_redraw = true;
+                    }
+                }
+            }
             ToolbarAction::ToggleFill => {
                 if let Some(ov) = self.overlay.as_mut() {
                     let enabled = ov.annotate.toggle_shape_fill();

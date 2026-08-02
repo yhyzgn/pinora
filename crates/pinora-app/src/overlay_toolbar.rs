@@ -9,6 +9,7 @@ pub enum ToolbarAction {
     Pin,
     Save,
     Ocr,
+    Clear,
     ToggleFill,
     Tool(AnnotateTool),
 }
@@ -36,6 +37,7 @@ pub fn layout_toolbar(selection: PixelRect, img_w: u32, img_h: u32) -> Vec<Toolb
         (ToolbarAction::Pin, "贴图"),
         (ToolbarAction::Save, "保存"),
         (ToolbarAction::Ocr, "OCR"),
+        (ToolbarAction::Clear, "清空"),
         (ToolbarAction::ToggleFill, "填充"),
         (ToolbarAction::Tool(AnnotateTool::Rect), "矩形"),
         (ToolbarAction::Tool(AnnotateTool::RoundedRect), "圆角矩形"),
@@ -160,6 +162,7 @@ pub fn paint_toolbar(
                 ToolbarAction::Pin => 0x00_6A_3A_B0,
                 ToolbarAction::Save => 0x00_7A_5A_10,
                 ToolbarAction::Ocr => 0x00_7A_2A_2A,
+                ToolbarAction::Clear => 0x009A3232,
                 ToolbarAction::ToggleFill => 0x00_1C_6A_6A,
                 ToolbarAction::Tool(_) => 0x00_3A_3A_48,
             }
@@ -182,6 +185,7 @@ fn button_mark(b: &ToolbarButton) -> &'static str {
         ToolbarAction::Pin => "Pin",
         ToolbarAction::Save => "Sav",
         ToolbarAction::Ocr => "OCR",
+        ToolbarAction::Clear => "X",
         ToolbarAction::ToggleFill => "F",
         ToolbarAction::Tool(AnnotateTool::Rect) => "R",
         ToolbarAction::Tool(AnnotateTool::RoundedRect) => "Q",
@@ -323,6 +327,7 @@ fn draw_mark(
         ('L', [0b100, 0b100, 0b100, 0b100, 0b111]),
         ('N', [0b101, 0b111, 0b111, 0b111, 0b101]),
         ('T', [0b111, 0b010, 0b010, 0b010, 0b010]),
+        ('X', [0b101, 0b101, 0b010, 0b101, 0b101]),
     ];
     let chars: Vec<char> = mark.chars().take(3).collect();
     let total_w = chars.len() as i32 * 4 - 1;
@@ -380,6 +385,17 @@ mod tests {
     }
 
     #[test]
+    fn clear_action_is_hittable() {
+        let buttons = layout_toolbar(PixelRect::new(50, 50, 400, 80), 1000, 800);
+        let button = buttons
+            .iter()
+            .find(|button| button.action == ToolbarAction::Clear)
+            .expect("clear button");
+        let point = PixelPoint::new(button.rect.origin.x + 1, button.rect.origin.y + 1);
+        assert_eq!(hit_test(&buttons, point), Some(ToolbarAction::Clear));
+    }
+
+    #[test]
     fn line_and_number_tools_are_available_and_hittable() {
         let buttons = layout_toolbar(PixelRect::new(50, 50, 400, 80), 1000, 800);
         for tool in [
@@ -423,7 +439,7 @@ mod tests {
 
     #[test]
     fn narrow_canvas_wraps_buttons_without_leaving_the_canvas() {
-        let buttons = layout_toolbar(PixelRect::new(20, 20, 200, 100), 300, 200);
+        let buttons = layout_toolbar(PixelRect::new(20, 20, 200, 100), 300, 240);
         assert!(
             buttons
                 .iter()
@@ -438,7 +454,7 @@ mod tests {
             assert!(button.rect.origin.x >= 0);
             assert!(button.rect.origin.y >= 0);
             assert!(button.rect.right() <= 300);
-            assert!(button.rect.bottom() <= 200);
+            assert!(button.rect.bottom() <= 240);
             let point = PixelPoint::new(button.rect.origin.x + 1, button.rect.origin.y + 1);
             assert_eq!(hit_test(&buttons, point), Some(button.action));
         }

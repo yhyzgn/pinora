@@ -129,8 +129,15 @@ impl Default for AnnotationRevision {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AnnotationDoc {
     items: Vec<Annotation>,
-    redo: Vec<Annotation>,
+    undo: Vec<AnnotationTransaction>,
+    redo: Vec<AnnotationTransaction>,
     revision: AnnotationRevision,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum AnnotationTransaction {
+    Add(Annotation),
+    Clear(Vec<Annotation>),
 }
 
 impl AnnotationDoc {
@@ -140,23 +147,55 @@ impl AnnotationDoc {
 
     pub fn push(&mut self, item: Annotation) {
         self.redo.clear();
-        self.items.push(item);
+        self.items.push(item.clone());
+        self.undo.push(AnnotationTransaction::Add(item));
         self.revision = self.revision.advance();
     }
 
     pub fn undo(&mut self) -> Option<Annotation> {
-        let item = self.items.pop()?;
-        self.redo.push(item.clone());
+        let transaction = self.undo.pop()?;
+        let item = match &transaction {
+            AnnotationTransaction::Add(_) => self.items.pop()?,
+            AnnotationTransaction::Clear(items) => {
+                self.items = items.clone();
+                items.last()?.clone()
+            }
+        };
+        self.redo.push(transaction);
         self.revision = self.revision.advance();
         Some(item)
     }
 
     /// 恢复最近一次撤销的标注。恢复不经过 `push`，以保留其余 redo 事务。
     pub fn redo(&mut self) -> Option<Annotation> {
-        let item = self.redo.pop()?;
-        self.items.push(item.clone());
+        let transaction = self.redo.pop()?;
+        let item = match &transaction {
+            AnnotationTransaction::Add(item) => {
+                self.items.push(item.clone());
+                item.clone()
+            }
+            AnnotationTransaction::Clear(items) => {
+                self.items.clear();
+                items.last()?.clone()
+            }
+        };
+        self.undo.push(transaction);
         self.revision = self.revision.advance();
         Some(item)
+    }
+
+    /// 清空当前标注并作为一个可撤销事务保留原有绘制顺序。
+    ///
+    /// 空文档不创建事务，也不推进 revision 或丢弃现有 redo 分支。
+    pub fn clear(&mut self) -> bool {
+        if self.items.is_empty() {
+            return false;
+        }
+        let items = std::mem::take(&mut self.items);
+        self.redo.clear();
+        self.undo.push(AnnotationTransaction::Clear(items));
+        self.revision = self.revision.advance();
+        true
     }
 
     pub fn is_empty(&self) -> bool {
@@ -2183,6 +2222,61 @@ mod tests {
         assert_eq!(doc.revision().raw(), 7);
         assert_eq!(doc.redo(), None);
         assert_eq!(doc.revision().raw(), 7);
+    }
+
+    #[test]
+    fn clear_is_one_undoable_transaction_and_empty_clear_is_a_noop() {
+        let first = Annotation::Line {
+            from: PixelPoint::new(1, 1),
+            to: PixelPoint::new(8, 4),
+            color: DEFAULT_STROKE,
+            stroke: DEFAULT_WIDTH,
+        };
+        let second = Annotation::Mosaic {
+            a: PixelPoint::new(10, 2),
+            b: PixelPoint::new(18, 9),
+            block: 4,
+        };
+        let third = Annotation::Blur {
+            a: PixelPoint::new(4, 12),
+            b: PixelPoint::new(16, 20),
+            radius: 6,
+        };
+        let mut doc = AnnotationDoc::new();
+        doc.push(first.clone());
+        doc.push(second.clone());
+        let before_clear = doc.revision();
+
+        assert!(doc.clear());
+        assert!(doc.is_empty());
+        assert_eq!(doc.revision(), before_clear.advance());
+        assert!(!doc.can_redo());
+
+        assert_eq!(doc.undo(), Some(second.clone()));
+        assert_eq!(doc.items(), [first.clone(), second.clone()]);
+        assert!(doc.can_redo());
+        assert_eq!(doc.redo(), Some(second.clone()));
+        assert!(doc.is_empty());
+
+        assert_eq!(doc.undo(), Some(second.clone()));
+        doc.push(third.clone());
+        assert_eq!(doc.items(), [first, second, third]);
+        assert!(!doc.can_redo());
+
+        let revision = doc.revision();
+        let mut empty = AnnotationDoc::new();
+        empty.push(Annotation::Line {
+            from: PixelPoint::new(1, 1),
+            to: PixelPoint::new(2, 2),
+            color: DEFAULT_STROKE,
+            stroke: DEFAULT_WIDTH,
+        });
+        assert!(empty.undo().is_some());
+        let empty_revision = empty.revision();
+        assert!(!empty.clear());
+        assert_eq!(empty.revision(), empty_revision);
+        assert!(empty.can_redo());
+        assert_eq!(doc.revision(), revision);
     }
 
     #[test]

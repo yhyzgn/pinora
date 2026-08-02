@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/068_overlay_preview_cache.md`
-- 任务：`.context/tasks/068_overlay_preview_cache.md`
+- 计划：`.context/plans/069_clear_annotation_transaction.md`
+- 任务：`.context/tasks/069_clear_annotation_transaction.md`
 
 ## 交付要求
 
