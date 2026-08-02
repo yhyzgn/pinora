@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/046_settings_window_adapter.md`
-- 任务：`.context/tasks/046_settings_window_adapter.md`
+- 计划：`.context/plans/047_frame_cache_handoff.md`
+- 任务：`.context/tasks/047_frame_cache_handoff.md`
 
 ## 交付要求
 

@@ -3,7 +3,6 @@
 //! Spectacle 单次约 0.4–0.5s，无法再压；用「始终备好一帧」换瞬时响应。
 //! 帧龄通常 < 截屏间隔（一轮截完立刻再截），观感接近 Snipaste。
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -14,7 +13,6 @@ use pinora_core::{
 };
 
 /// 已转好 XRGB + 暗化底的一帧。
-#[derive(Clone)]
 pub struct CachedFrame {
     pub image: CaptureImage,
     pub base: Vec<u32>,
@@ -31,16 +29,19 @@ impl CachedFrame {
 }
 
 enum Cmd {
-    Pause,
-    Resume,
     Stop,
+}
+
+struct CacheState {
+    latest: Option<CachedFrame>,
+    paused: bool,
+    generation: u64,
 }
 
 /// 后台截屏缓存。
 pub struct FrameCache {
-    latest: Arc<Mutex<Option<CachedFrame>>>,
+    state: Arc<Mutex<CacheState>>,
     cmd_tx: Sender<Cmd>,
-    paused: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
 }
 
@@ -50,54 +51,72 @@ impl FrameCache {
     where
         C: CaptureProvider + Clone + Send + 'static,
     {
-        let latest = Arc::new(Mutex::new(None));
-        let paused = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(Mutex::new(CacheState {
+            latest: None,
+            paused: false,
+            generation: 0,
+        }));
         let (cmd_tx, cmd_rx) = mpsc::channel();
-        let latest_w = Arc::clone(&latest);
-        let paused_w = Arc::clone(&paused);
+        let state_w = Arc::clone(&state);
 
         let join = thread::Builder::new()
             .name("pinora-frame-cache".into())
-            .spawn(move || worker(provider, latest_w, paused_w, cmd_rx))
+            .spawn(move || worker(provider, state_w, cmd_rx))
             .ok();
 
         Self {
-            latest,
+            state,
             cmd_tx,
-            paused,
             join,
         }
     }
 
     pub fn pause(&self) {
-        self.paused.store(true, Ordering::SeqCst);
-        let _ = self.cmd_tx.send(Cmd::Pause);
+        if let Ok(mut state) = self.state.lock() {
+            if state.paused {
+                return;
+            }
+            state.paused = true;
+            state.generation = state.generation.wrapping_add(1);
+            // 暂停之后绝不能把旧桌面或 Overlay 本身作为下一会话的缓存帧。
+            state.latest = None;
+        }
     }
 
     pub fn resume(&self) {
-        self.paused.store(false, Ordering::SeqCst);
-        let _ = self.cmd_tx.send(Cmd::Resume);
+        if let Ok(mut state) = self.state.lock() {
+            if !state.paused {
+                return;
+            }
+            state.paused = false;
+            state.generation = state.generation.wrapping_add(1);
+        }
     }
 
-    /// 取当前最新帧（不清除）。
-    pub fn peek(&self) -> Option<CachedFrame> {
-        self.latest.lock().ok().and_then(|g| g.clone())
+    pub fn is_ready(&self) -> bool {
+        self.state
+            .lock()
+            .map(|state| state.latest.is_some())
+            .unwrap_or(false)
     }
 
-    /// 若有帧则取出克隆；`max_age` 内才算可用。
+    /// 若帧仍新鲜，将其所有权移交给调用方，避免复制全屏像素缓冲。
     pub fn take_if_fresh(&self, max_age: Duration) -> Option<CachedFrame> {
-        let guard = self.latest.lock().ok()?;
-        let frame = guard.as_ref()?;
-        if frame.age() <= max_age {
-            Some(frame.clone())
+        let mut state = self.state.lock().ok()?;
+        if state
+            .latest
+            .as_ref()
+            .is_some_and(|frame| frame.age() <= max_age)
+        {
+            state.latest.take()
         } else {
             None
         }
     }
 
-    /// 有任意帧就用（启动后第一帧可能略旧，仍远好于再等 0.5s）。
+    /// 有任意帧就移交（启动后第一帧可能略旧，仍远好于再等 0.5s）。
     pub fn take_any(&self) -> Option<CachedFrame> {
-        self.latest.lock().ok().and_then(|g| g.clone())
+        self.state.lock().ok()?.latest.take()
     }
 }
 
@@ -110,46 +129,46 @@ impl Drop for FrameCache {
     }
 }
 
-fn worker<C>(
-    provider: C,
-    latest: Arc<Mutex<Option<CachedFrame>>>,
-    paused: Arc<AtomicBool>,
-    cmd_rx: Receiver<Cmd>,
-) where
+fn worker<C>(provider: C, state: Arc<Mutex<CacheState>>, cmd_rx: Receiver<Cmd>)
+where
     C: CaptureProvider,
 {
     loop {
-        // 处理命令
-        loop {
-            match cmd_rx.try_recv() {
-                Ok(Cmd::Stop) => return,
-                Ok(Cmd::Pause) => paused.store(true, Ordering::SeqCst),
-                Ok(Cmd::Resume) => paused.store(false, Ordering::SeqCst),
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => return,
-            }
+        match cmd_rx.try_recv() {
+            Ok(Cmd::Stop) | Err(TryRecvError::Disconnected) => return,
+            Err(TryRecvError::Empty) => {}
         }
 
-        if paused.load(Ordering::SeqCst) {
-            thread::sleep(Duration::from_millis(40));
-            continue;
-        }
+        let generation = match state.lock() {
+            Ok(state) if !state.paused => state.generation,
+            Ok(_) => {
+                thread::sleep(Duration::from_millis(40));
+                continue;
+            }
+            Err(_) => return,
+        };
 
         let started = Instant::now();
         match grab_one(&provider) {
             Ok(frame) => {
-                let ms = started.elapsed().as_secs_f64() * 1000.0;
-                // 只在第一帧或偶尔打印，避免刷屏
-                static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-                let n = N.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-                if n == 1 || n.is_multiple_of(20) {
-                    println!(
-                        "pinora: frame-cache ready {}x{} in {:.0}ms (#{n})",
-                        frame.image.pixels.size.width, frame.image.pixels.size.height, ms
-                    );
-                }
-                if let Ok(mut g) = latest.lock() {
-                    *g = Some(frame);
+                if publish_if_active(&state, generation, frame) {
+                    let ms = started.elapsed().as_secs_f64() * 1000.0;
+                    // 只在第一帧或偶尔打印，避免刷屏。
+                    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                    let n = N
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        .wrapping_add(1);
+                    if n == 1 || n.is_multiple_of(20) {
+                        let dimensions = state.lock().ok().and_then(|state| {
+                            state.latest.as_ref().map(|frame| frame.image.pixels.size)
+                        });
+                        if let Some(size) = dimensions {
+                            println!(
+                                "pinora: frame-cache ready {}x{} in {:.0}ms (#{n})",
+                                size.width, size.height, ms
+                            );
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -160,6 +179,17 @@ fn worker<C>(
         // 截屏本身已耗时；略歇一口气再抓，避免占满 CPU
         thread::sleep(Duration::from_millis(30));
     }
+}
+
+fn publish_if_active(state: &Mutex<CacheState>, generation: u64, frame: CachedFrame) -> bool {
+    let Ok(mut state) = state.lock() else {
+        return false;
+    };
+    if state.paused || state.generation != generation {
+        return false;
+    }
+    state.latest = Some(frame);
+    true
 }
 
 fn grab_one(provider: &impl CaptureProvider) -> Result<CachedFrame, String> {
@@ -212,6 +242,39 @@ pub fn rgba_to_xrgb_and_dim(bytes: &[u8]) -> (Vec<u32>, Vec<u32>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pinora_core::{CaptureMetadata, ImageId, PixelRect, PixelSize, RgbaBuffer};
+
+    fn sample_frame() -> CachedFrame {
+        let display_id = DisplayId::new("test-display");
+        let image = CaptureImage::new(
+            ImageId::new(),
+            RgbaBuffer::new(PixelSize::new(2, 1), vec![1, 2, 3, 255, 4, 5, 6, 255]).unwrap(),
+            PixelRect::new(0, 0, 2, 1),
+            CaptureMetadata::new(display_id.clone(), 1.0, 0),
+        )
+        .unwrap();
+        CachedFrame {
+            image,
+            base: vec![0x0001_0203, 0x0004_0506],
+            dimmed: vec![0x0000_0001, 0x0000_0002],
+            display_id,
+            display_origin: PixelPoint::new(0, 0),
+            captured_at: Instant::now(),
+        }
+    }
+
+    fn cache_with(frame: Option<CachedFrame>) -> FrameCache {
+        let (cmd_tx, _cmd_rx) = mpsc::channel();
+        FrameCache {
+            state: Arc::new(Mutex::new(CacheState {
+                latest: frame,
+                paused: false,
+                generation: 0,
+            })),
+            cmd_tx,
+            join: None,
+        }
+    }
 
     #[test]
     fn rgba_dim_len() {
@@ -220,5 +283,39 @@ mod tests {
         assert_eq!(b.len(), 2);
         assert_eq!(d.len(), 2);
         assert_eq!(b[0], 0x00ff_0000);
+    }
+
+    #[test]
+    fn taking_fresh_frame_transfers_ownership_and_clears_cache_slot() {
+        let cached = sample_frame();
+        let expected = cached.image.id;
+        let cache = cache_with(Some(cached));
+
+        let frame = cache.take_if_fresh(Duration::from_secs(1)).unwrap();
+
+        assert_eq!(frame.image.id, expected);
+        assert!(!cache.is_ready());
+    }
+
+    #[test]
+    fn paused_generation_rejects_late_capture_publish() {
+        let cache = cache_with(None);
+        let generation = cache.state.lock().unwrap().generation;
+
+        cache.pause();
+
+        assert!(!publish_if_active(&cache.state, generation, sample_frame()));
+        assert!(!cache.is_ready());
+    }
+
+    #[test]
+    fn repeated_resume_does_not_invalidate_an_active_capture() {
+        let cache = cache_with(None);
+        let generation = cache.state.lock().unwrap().generation;
+
+        cache.resume();
+
+        assert!(publish_if_active(&cache.state, generation, sample_frame()));
+        assert!(cache.is_ready());
     }
 }

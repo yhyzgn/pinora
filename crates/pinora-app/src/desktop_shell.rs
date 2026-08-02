@@ -713,7 +713,7 @@ where
             self.start_capture_wait = None;
             return;
         }
-        let cache_ready = self.frame_cache.as_ref().and_then(|c| c.peek()).is_some();
+        let cache_ready = self.frame_cache.as_ref().is_some_and(FrameCache::is_ready);
         if !cache_ready {
             if let Some(cache) = &self.frame_cache {
                 cache.resume();
@@ -738,18 +738,19 @@ where
     /// 弹出选区 overlay：优先用后台预截帧（瞬时），否则再等一次截屏。
     fn begin_screen_grab(&mut self, event_loop: &ActiveEventLoop) -> Result<(), PinoraError> {
         self.hide_control();
-        // 截屏/选区期间暂停预截，避免截到自己的窗
+        // 1) 缓存命中 → 立刻开 overlay（目标 < 16ms）
+        // 允许最多 2s 龄的帧；后台约每 0.5s 刷新一轮
+        let cached_frame = self.frame_cache.as_ref().and_then(|cache| {
+            cache
+                .take_if_fresh(Duration::from_secs(2))
+                .or_else(|| cache.take_any())
+        });
+        // 截屏/选区期间暂停预截，避免截到自己的窗。暂停会清空任何竞态晚到帧。
         if let Some(cache) = &self.frame_cache {
             cache.pause();
         }
 
-        // 1) 缓存命中 → 立刻开 overlay（目标 < 16ms）
-        // 允许最多 2s 龄的帧；后台约每 0.5s 刷新一轮
-        if let Some(cache) = &self.frame_cache
-            && let Some(frame) = cache
-                .take_if_fresh(Duration::from_secs(2))
-                .or_else(|| cache.take_any())
-        {
+        if let Some(frame) = cached_frame {
             let age_ms = frame.age().as_secs_f64() * 1000.0;
             println!(
                 "pinora: overlay INSTANT from cache (age {:.0}ms, {}x{})",
