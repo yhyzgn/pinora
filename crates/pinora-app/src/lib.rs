@@ -5,6 +5,8 @@ mod capture_kde;
 mod capture_select;
 mod capture_xcap;
 mod desktop_shell;
+mod diagnostics_panel;
+mod diagnostics_window;
 mod export_job;
 mod export_name;
 mod frame_cache;

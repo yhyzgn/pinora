@@ -28,6 +28,7 @@ pub enum TrayAction {
     CaptureWindow(CaptureWindowInfo),
     Settings,
     History,
+    Diagnostics,
     ShowAllPins,
     HideAllPins,
     CloseAllPins,
@@ -50,6 +51,7 @@ pub struct AppTray {
     capture_window_ids: Vec<(MenuId, CaptureWindowInfo)>,
     settings_id: tray_icon::menu::MenuId,
     history_id: tray_icon::menu::MenuId,
+    diagnostics_id: tray_icon::menu::MenuId,
     show_all_pins_id: tray_icon::menu::MenuId,
     hide_all_pins_id: tray_icon::menu::MenuId,
     close_all_pins_id: tray_icon::menu::MenuId,
@@ -117,6 +119,9 @@ impl AppTray {
             }
             if ev.id == self.history_id {
                 return Some(TrayAction::History);
+            }
+            if let Some(action) = diagnostics_action(&ev.id, &self.diagnostics_id) {
+                return Some(action);
             }
             if ev.id == self.show_all_pins_id {
                 return Some(TrayAction::ShowAllPins);
@@ -193,6 +198,7 @@ fn try_new_inner(
     let mut capture_window_ids = Vec::new();
     let settings = MenuItem::new("设置", true, None);
     let history = MenuItem::new("历史", true, None);
+    let diagnostics = MenuItem::new("诊断", true, None);
     let show_all_pins = MenuItem::new("显示全部贴图", true, None);
     let hide_all_pins = MenuItem::new("隐藏全部贴图", true, None);
     let close_all_pins = MenuItem::new("关闭全部贴图", true, None);
@@ -253,6 +259,8 @@ fn try_new_inner(
         .map_err(|e| format!("menu append settings: {e}"))?;
     menu.append(&history)
         .map_err(|e| format!("menu append history: {e}"))?;
+    menu.append(&diagnostics)
+        .map_err(|e| format!("menu append diagnostics: {e}"))?;
     menu.append(&PredefinedMenuItem::separator())
         .map_err(|e| format!("menu sep pins: {e}"))?;
     menu.append(&show_all_pins)
@@ -279,6 +287,7 @@ fn try_new_inner(
     let capture_all_displays_id = capture_all_displays.as_ref().map(|item| item.id().clone());
     let settings_id = settings.id().clone();
     let history_id = history.id().clone();
+    let diagnostics_id = diagnostics.id().clone();
     let show_all_pins_id = show_all_pins.id().clone();
     let hide_all_pins_id = hide_all_pins.id().clone();
     let close_all_pins_id = close_all_pins.id().clone();
@@ -306,6 +315,7 @@ fn try_new_inner(
         capture_window_ids,
         settings_id,
         history_id,
+        diagnostics_id,
         show_all_pins_id,
         hide_all_pins_id,
         close_all_pins_id,
@@ -358,6 +368,10 @@ fn window_capture_action(
         .iter()
         .find(|(id, _)| id == menu_id)
         .map(|(_, window)| TrayAction::CaptureWindow(window.clone()))
+}
+
+fn diagnostics_action(menu_id: &MenuId, diagnostics_id: &MenuId) -> Option<TrayAction> {
+    (menu_id == diagnostics_id).then_some(TrayAction::Diagnostics)
 }
 
 fn delayed_capture_action(
@@ -513,6 +527,20 @@ mod tests {
             Some(TrayAction::CaptureRegionAfter(Duration::from_secs(3)))
         );
         assert!(delayed_capture_action(&MenuId::new("other"), &delays).is_none());
+    }
+
+    #[test]
+    fn diagnostics_menu_id_maps_only_to_diagnostics_action() {
+        let diagnostics_id = MenuId::new("diagnostics");
+
+        assert_eq!(
+            diagnostics_action(&diagnostics_id, &diagnostics_id),
+            Some(TrayAction::Diagnostics)
+        );
+        assert_eq!(
+            diagnostics_action(&MenuId::new("other"), &diagnostics_id),
+            None
+        );
     }
 
     #[test]

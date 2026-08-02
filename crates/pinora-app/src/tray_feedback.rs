@@ -52,6 +52,47 @@ impl TrayFeedback {
             Self::ExportFailed(operation, error) => export_failed_label(operation, error),
         }
     }
+
+    /// 诊断面板使用的短状态标识。它与 tray 文案一样只来自有限枚举，避免把
+    /// 原始错误消息、路径或用户内容带入可见 UI。
+    pub(crate) const fn diagnostic_label(self) -> &'static str {
+        match self {
+            Self::Ready => "READY",
+            Self::CapturePreparing => "CAPTURE PREPARING",
+            Self::CaptureReady => "CAPTURE READY",
+            Self::CaptureCancelled => "CAPTURE CANCELLED",
+            Self::CaptureFailed(_) => "CAPTURE FAILED",
+            Self::DelayedCaptureScheduled => "DELAYED CAPTURE ACTIVE",
+            Self::DelayedCaptureCancelled => "DELAYED CAPTURE CANCELLED",
+            Self::DelayedCaptureFailed(_) => "DELAYED CAPTURE FAILED",
+            Self::OcrRunning => "OCR RUNNING",
+            Self::OcrCompleted => "OCR COMPLETED",
+            Self::OcrFailed(_) => "OCR FAILED",
+            Self::ExportRunning(_) => "EXPORT RUNNING",
+            Self::ExportCompleted(_) => "EXPORT COMPLETED",
+            Self::ExportFailed(_, _) => "EXPORT FAILED",
+        }
+    }
+
+    /// 只有失败状态才向诊断面板提供稳定错误码；成功或进行中状态不伪造错误。
+    pub(crate) const fn error_code(self) -> Option<ErrorCode> {
+        match self {
+            Self::CaptureFailed(error)
+            | Self::DelayedCaptureFailed(error)
+            | Self::OcrFailed(error)
+            | Self::ExportFailed(_, error) => Some(error),
+            Self::Ready
+            | Self::CapturePreparing
+            | Self::CaptureReady
+            | Self::CaptureCancelled
+            | Self::DelayedCaptureScheduled
+            | Self::DelayedCaptureCancelled
+            | Self::OcrRunning
+            | Self::OcrCompleted
+            | Self::ExportRunning(_)
+            | Self::ExportCompleted(_) => None,
+        }
+    }
 }
 
 const fn capture_failed_label(error: ErrorCode) -> &'static str {
@@ -163,5 +204,15 @@ mod tests {
         assert!(label.contains("未完成"));
         assert!(label.contains("系统剪贴板不可用"));
         assert!(!label.contains("已复制"));
+    }
+
+    #[test]
+    fn diagnostic_data_exposes_only_fixed_operation_and_stable_error_code() {
+        let failure =
+            TrayFeedback::ExportFailed(TrayExportOperation::CopyImage, ErrorCode::ClipboardFailed);
+
+        assert_eq!(failure.diagnostic_label(), "EXPORT FAILED");
+        assert_eq!(failure.error_code(), Some(ErrorCode::ClipboardFailed));
+        assert_eq!(TrayFeedback::OcrRunning.error_code(), None);
     }
 }

@@ -15,6 +15,8 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::diagnostics_panel::DiagnosticsPanel;
+use crate::diagnostics_window::DiagnosticsWindow;
 use crate::export_job::{ExportJobCompletion, ExportJobInput, ExportJobService};
 use crate::export_name::ExportNameAllocator;
 use crate::frame_cache::{FrameCache, rgba_to_xrgb, rgba_to_xrgb_and_dim};
@@ -230,6 +232,7 @@ where
         overlay: None,
         settings: None,
         history: None,
+        diagnostics: None,
         pins: HashMap::new(),
         recent_closed_pin: None,
         drag_pin: None,
@@ -253,6 +256,7 @@ where
         capture_mode: CaptureMode::Region,
         capture_target: CaptureTarget::DefaultLargest,
         tray: Some(tray),
+        tray_feedback: TrayFeedback::Ready,
         default_pin_opacity,
     };
 
@@ -846,6 +850,8 @@ struct DesktopApp<L, P, C, S> {
     settings: Option<SettingsWindow>,
     /// 受管历史浏览窗口；文件读取和删除必须经 history_export 安全边界。
     history: Option<HistoryWindow>,
+    /// 用户主动打开的、非持久化的诊断面板；关闭后立即回到 tray-only。
+    diagnostics: Option<DiagnosticsWindow>,
     pins: HashMap<WindowId, PinWin>,
     recent_closed_pin: Option<ClosedPinSnapshot>,
     drag_pin: Option<WindowId>,
@@ -872,6 +878,8 @@ struct DesktopApp<L, P, C, S> {
     /// 本次截图的显示器目标；显式目标不能隐式降级为默认屏幕。
     capture_target: CaptureTarget,
     tray: Option<AppTray>,
+    /// 只保存有限枚举的最近反馈，供 tray 和诊断面板共享；不能保存原始错误。
+    tray_feedback: TrayFeedback,
     /// 设置驱动的新建贴图默认不透明度；运行时手动调整后不再覆盖。
     default_pin_opacity: f64,
 }
@@ -940,6 +948,12 @@ where
                 TrayAction::History => {
                     println!("pinora: tray → history");
                     if let Err(error) = self.open_history(event_loop) {
+                        self.error = Some(error);
+                    }
+                }
+                TrayAction::Diagnostics => {
+                    println!("pinora: tray → diagnostics");
+                    if let Err(error) = self.open_diagnostics(event_loop) {
                         self.error = Some(error);
                     }
                 }
@@ -1041,6 +1055,12 @@ where
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        if let Some(diagnostics) = self.diagnostics.as_ref()
+            && diagnostics.window_id() == window_id
+        {
+            self.handle_diagnostics_event(event_loop, event);
+            return;
+        }
         if let Some(history) = self.history.as_ref()
             && history.window_id() == window_id
         {
@@ -1109,9 +1129,13 @@ where
         }
     }
 
-    fn set_tray_feedback(&self, feedback: TrayFeedback) {
+    fn set_tray_feedback(&mut self, feedback: TrayFeedback) {
+        self.tray_feedback = feedback;
         if let Some(tray) = &self.tray {
             tray.set_feedback(feedback);
+        }
+        if let Some(diagnostics) = self.diagnostics.as_mut() {
+            diagnostics.set_feedback(feedback);
         }
     }
 
@@ -1467,6 +1491,97 @@ where
         }
     }
 
+    fn diagnostics_panel(&self) -> Result<DiagnosticsPanel, PinoraError> {
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "runtime missing"))?;
+        Ok(DiagnosticsPanel::from_runtime(
+            &runtime.state().capabilities,
+            self.hotkeys.status().available,
+            tesseract_available(),
+            self.tray_feedback,
+        ))
+    }
+
+    fn refresh_diagnostics(&mut self) {
+        let Ok(panel) = self.diagnostics_panel() else {
+            return;
+        };
+        if let Some(diagnostics) = self.diagnostics.as_mut() {
+            diagnostics.set_panel(panel);
+        }
+    }
+
+    fn open_diagnostics(&mut self, event_loop: &ActiveEventLoop) -> Result<(), PinoraError> {
+        let panel = self.diagnostics_panel()?;
+        if let Some(diagnostics) = self.diagnostics.as_mut() {
+            diagnostics.set_panel(panel);
+            diagnostics.focus();
+            return Ok(());
+        }
+        self.ensure_context(event_loop);
+        let diagnostics = {
+            let context = self.context.as_ref().ok_or_else(|| {
+                PinoraError::new(ErrorCode::Internal, "softbuffer context unavailable")
+            })?;
+            DiagnosticsWindow::open(event_loop, context, panel)?
+        };
+        diagnostics.focus();
+        diagnostics.request_redraw();
+        self.diagnostics = Some(diagnostics);
+        println!("pinora: diagnostics opened");
+        Ok(())
+    }
+
+    fn close_diagnostics(&mut self) {
+        if let Some(diagnostics) = self.diagnostics.take() {
+            diagnostics.close();
+        }
+    }
+
+    fn handle_diagnostics_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
+        match event {
+            WindowEvent::CloseRequested => self.close_diagnostics(),
+            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+            WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {
+                if self.is_quit_key(&event) {
+                    self.quit = true;
+                    event_loop.exit();
+                    return;
+                }
+                if self.handle_capture_shortcut(event_loop, &event) {
+                    self.close_diagnostics();
+                    return;
+                }
+                if matches!(event.logical_key, Key::Named(NamedKey::Escape))
+                    || matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape))
+                {
+                    self.close_diagnostics();
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                if let Err(error) = self.paint_diagnostics() {
+                    self.error = Some(error);
+                    event_loop.exit();
+                }
+            }
+            WindowEvent::Resized(size) => {
+                if let Some(diagnostics) = self.diagnostics.as_mut() {
+                    diagnostics.resize(size.width, size.height);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn paint_diagnostics(&mut self) -> Result<(), PinoraError> {
+        let Some(diagnostics) = self.diagnostics.as_mut() else {
+            return Ok(());
+        };
+        diagnostics.paint()
+    }
+
     fn open_settings(&mut self, event_loop: &ActiveEventLoop) -> Result<(), PinoraError> {
         if let Some(settings) = self.settings.as_ref() {
             settings.focus();
@@ -1691,6 +1806,7 @@ where
                     settings.mark_saved();
                     settings.request_redraw();
                 }
+                self.refresh_diagnostics();
                 println!("pinora: settings saved (theme={:?})", draft.theme);
             }
             Some(Err(_)) => {

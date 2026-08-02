@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/084_configurable_hotkeys.md`
-- 任务：`.context/tasks/084_configurable_hotkeys.md`
+- 计划：`.context/plans/085_diagnostics_capability_feedback.md`
+- 任务：`.context/tasks/085_diagnostics_capability_feedback.md`
 
 ## 交付要求
 
