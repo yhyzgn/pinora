@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/067_blur_annotation.md`
-- 任务：`.context/tasks/067_blur_annotation.md`
+- 计划：`.context/plans/068_overlay_preview_cache.md`
+- 任务：`.context/tasks/068_overlay_preview_cache.md`
 
 ## 交付要求
 

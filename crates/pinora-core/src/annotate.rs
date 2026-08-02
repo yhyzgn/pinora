@@ -563,85 +563,7 @@ pub fn bake_annotations(source: &CaptureImage, doc: &AnnotationDoc) -> CaptureIm
     // 马赛克需要源像素；先 clone 一份只读源
     let src_bytes = source.pixels.bytes.clone();
     for item in doc.items() {
-        match item {
-            Annotation::Rect {
-                a,
-                b,
-                color,
-                stroke,
-                fill,
-            } => {
-                if let Some(fill) = fill {
-                    draw_rect_fill(&mut bytes, w, h, *a, *b, *fill);
-                }
-                draw_rect_outline(&mut bytes, w, h, *a, *b, *color, *stroke);
-            }
-            Annotation::RoundedRect {
-                a,
-                b,
-                color,
-                stroke,
-                radius,
-                fill,
-            } => {
-                let geometry = RoundedRectGeometry {
-                    a: *a,
-                    b: *b,
-                    radius: *radius,
-                };
-                if let Some(fill) = fill {
-                    draw_rounded_rect_fill(&mut bytes, w, h, geometry, *fill);
-                }
-                draw_rounded_rect_outline(&mut bytes, w, h, geometry, *color, *stroke);
-            }
-            Annotation::Line {
-                from,
-                to,
-                color,
-                stroke,
-            } => draw_line(&mut bytes, w, h, *from, *to, *color, *stroke),
-            Annotation::Arrow {
-                from,
-                to,
-                color,
-                stroke,
-            } => draw_arrow(&mut bytes, w, h, *from, *to, *color, *stroke),
-            Annotation::Pen {
-                points,
-                color,
-                stroke,
-            } => draw_polyline(&mut bytes, w, h, points, *color, *stroke),
-            Annotation::Ellipse {
-                a,
-                b,
-                color,
-                stroke,
-                fill,
-            } => {
-                if let Some(fill) = fill {
-                    draw_ellipse_fill(&mut bytes, w, h, *a, *b, *fill);
-                }
-                draw_ellipse_outline(&mut bytes, w, h, *a, *b, *color, *stroke);
-            }
-            Annotation::Number {
-                center,
-                value,
-                color,
-                diameter,
-            } => draw_sequence_marker(&mut bytes, w, h, *center, *value, *color, *diameter),
-            Annotation::Mosaic { a, b, block } => {
-                draw_mosaic(&mut bytes, &src_bytes, w, h, *a, *b, *block)
-            }
-            Annotation::Blur { a, b, radius } => {
-                draw_blur(&mut bytes, &src_bytes, w, h, *a, *b, *radius)
-            }
-            Annotation::Text {
-                origin,
-                content,
-                color,
-                size,
-            } => draw_text(&mut bytes, w, h, *origin, content, *color, *size),
-        }
+        draw_annotation(&mut bytes, &src_bytes, w, h, item);
     }
     let pixels = RgbaBuffer {
         size: source.pixels.size,
@@ -657,81 +579,179 @@ pub fn bake_annotations(source: &CaptureImage, doc: &AnnotationDoc) -> CaptureIm
 
 /// 叠加草稿后的预览缓冲（RGBA）。
 pub fn render_preview_rgba(source: &CaptureImage, session: &AnnotateSession) -> Vec<u8> {
-    let mut doc = session.doc.clone();
-    if let Some(draft) = &session.draft {
-        let color = session.color;
-        let stroke = session.stroke.max(1);
-        let fill = session
-            .shape_fill_enabled()
-            .then_some(shape_fill_color(color));
-        match draft {
-            DraftShape::Rect { a, b } => doc.push(Annotation::Rect {
-                a: *a,
-                b: *b,
+    let mut bytes = bake_annotations(source, &session.doc).pixels.bytes;
+    let _ = render_draft_rgba(source, session, &mut bytes);
+    bytes
+}
+
+/// 将当前草稿叠加到一份已提交的 RGBA 标注层。
+///
+/// `destination` 必须与 `source` 尺寸完全一致；不匹配或没有草稿时不做修改并返回
+/// `false`。马赛克和模糊仍始终从 `source` 的不可变像素读取，不会从提交层取样。
+pub fn render_draft_rgba(
+    source: &CaptureImage,
+    session: &AnnotateSession,
+    destination: &mut [u8],
+) -> bool {
+    if destination.len() != source.pixels.bytes.len() {
+        return false;
+    }
+    let Some(draft) = draft_annotation(session) else {
+        return false;
+    };
+    let w = source.pixels.size.width as i32;
+    let h = source.pixels.size.height as i32;
+    draw_annotation(destination, &source.pixels.bytes, w, h, &draft);
+    true
+}
+
+fn draft_annotation(session: &AnnotateSession) -> Option<Annotation> {
+    let draft = session.draft.as_ref()?;
+    let color = session.color;
+    let stroke = session.stroke.max(1);
+    let fill = session
+        .shape_fill_enabled()
+        .then_some(shape_fill_color(color));
+    Some(match draft {
+        DraftShape::Rect { a, b } => Annotation::Rect {
+            a: *a,
+            b: *b,
+            color,
+            stroke,
+            fill,
+        },
+        DraftShape::RoundedRect { a, b } => Annotation::RoundedRect {
+            a: *a,
+            b: *b,
+            color,
+            stroke,
+            radius: rounded_rect_radius(*a, *b, stroke),
+            fill,
+        },
+        DraftShape::Line { from, to } => Annotation::Line {
+            from: *from,
+            to: *to,
+            color,
+            stroke,
+        },
+        DraftShape::Arrow { from, to } => Annotation::Arrow {
+            from: *from,
+            to: *to,
+            color,
+            stroke,
+        },
+        DraftShape::Pen { points } => Annotation::Pen {
+            points: points.clone(),
+            color,
+            stroke,
+        },
+        DraftShape::Ellipse { a, b } => Annotation::Ellipse {
+            a: *a,
+            b: *b,
+            color,
+            stroke,
+            fill,
+        },
+        DraftShape::Mosaic { a, b } => Annotation::Mosaic {
+            a: *a,
+            b: *b,
+            block: (stroke * 2).clamp(4, 32),
+        },
+        DraftShape::Blur { a, b } => Annotation::Blur {
+            a: *a,
+            b: *b,
+            radius: blur_radius(stroke),
+        },
+        DraftShape::Text { origin, content } => {
+            // 预览时显示光标。
+            let mut shown = content.clone();
+            shown.push('|');
+            Annotation::Text {
+                origin: *origin,
+                content: shown,
                 color,
-                stroke,
-                fill,
-            }),
-            DraftShape::RoundedRect { a, b } => doc.push(Annotation::RoundedRect {
-                a: *a,
-                b: *b,
-                color,
-                stroke,
-                radius: rounded_rect_radius(*a, *b, stroke),
-                fill,
-            }),
-            DraftShape::Line { from, to } => doc.push(Annotation::Line {
-                from: *from,
-                to: *to,
-                color,
-                stroke,
-            }),
-            DraftShape::Arrow { from, to } => doc.push(Annotation::Arrow {
-                from: *from,
-                to: *to,
-                color,
-                stroke,
-            }),
-            DraftShape::Pen { points } => doc.push(Annotation::Pen {
-                points: points.clone(),
-                color,
-                stroke,
-            }),
-            DraftShape::Ellipse { a, b } => doc.push(Annotation::Ellipse {
-                a: *a,
-                b: *b,
-                color,
-                stroke,
-                fill,
-            }),
-            DraftShape::Mosaic { a, b } => {
-                let block = (stroke * 2).clamp(4, 32);
-                doc.push(Annotation::Mosaic {
-                    a: *a,
-                    b: *b,
-                    block,
-                });
-            }
-            DraftShape::Blur { a, b } => doc.push(Annotation::Blur {
-                a: *a,
-                b: *b,
-                radius: blur_radius(stroke),
-            }),
-            DraftShape::Text { origin, content } => {
-                // 预览时显示光标
-                let mut shown = content.clone();
-                shown.push('|');
-                let size = (12.0 + stroke as f32 * 4.0).clamp(12.0, 72.0);
-                doc.push(Annotation::Text {
-                    origin: *origin,
-                    content: shown,
-                    color,
-                    size,
-                });
+                size: (12.0 + stroke as f32 * 4.0).clamp(12.0, 72.0),
             }
         }
+    })
+}
+
+fn draw_annotation(bytes: &mut [u8], source: &[u8], w: i32, h: i32, item: &Annotation) {
+    match item {
+        Annotation::Rect {
+            a,
+            b,
+            color,
+            stroke,
+            fill,
+        } => {
+            if let Some(fill) = fill {
+                draw_rect_fill(bytes, w, h, *a, *b, *fill);
+            }
+            draw_rect_outline(bytes, w, h, *a, *b, *color, *stroke);
+        }
+        Annotation::RoundedRect {
+            a,
+            b,
+            color,
+            stroke,
+            radius,
+            fill,
+        } => {
+            let geometry = RoundedRectGeometry {
+                a: *a,
+                b: *b,
+                radius: *radius,
+            };
+            if let Some(fill) = fill {
+                draw_rounded_rect_fill(bytes, w, h, geometry, *fill);
+            }
+            draw_rounded_rect_outline(bytes, w, h, geometry, *color, *stroke);
+        }
+        Annotation::Line {
+            from,
+            to,
+            color,
+            stroke,
+        } => draw_line(bytes, w, h, *from, *to, *color, *stroke),
+        Annotation::Arrow {
+            from,
+            to,
+            color,
+            stroke,
+        } => draw_arrow(bytes, w, h, *from, *to, *color, *stroke),
+        Annotation::Pen {
+            points,
+            color,
+            stroke,
+        } => draw_polyline(bytes, w, h, points, *color, *stroke),
+        Annotation::Ellipse {
+            a,
+            b,
+            color,
+            stroke,
+            fill,
+        } => {
+            if let Some(fill) = fill {
+                draw_ellipse_fill(bytes, w, h, *a, *b, *fill);
+            }
+            draw_ellipse_outline(bytes, w, h, *a, *b, *color, *stroke);
+        }
+        Annotation::Number {
+            center,
+            value,
+            color,
+            diameter,
+        } => draw_sequence_marker(bytes, w, h, *center, *value, *color, *diameter),
+        Annotation::Mosaic { a, b, block } => draw_mosaic(bytes, source, w, h, *a, *b, *block),
+        Annotation::Blur { a, b, radius } => draw_blur(bytes, source, w, h, *a, *b, *radius),
+        Annotation::Text {
+            origin,
+            content,
+            color,
+            size,
+        } => draw_text(bytes, w, h, *origin, content, *color, *size),
     }
-    bake_annotations(source, &doc).pixels.bytes
 }
 
 /// 带覆盖率的 alpha over（coverage 0..1）。
@@ -1895,6 +1915,64 @@ mod tests {
             }
         }
         assert_eq!(source.pixels.bytes, striped(12, 10).pixels.bytes);
+    }
+
+    #[test]
+    fn draft_composition_matches_full_preview_without_mutating_its_inputs() {
+        let source = striped(48, 36);
+        let mut baseline = AnnotateSession::new(48, 36);
+        baseline.doc.push(Annotation::Rect {
+            a: PixelPoint::new(3, 3),
+            b: PixelPoint::new(16, 14),
+            color: [30, 150, 230, 255],
+            stroke: 3,
+            fill: Some([30, 150, 230, SHAPE_FILL_ALPHA]),
+        });
+        baseline.doc.push(Annotation::Mosaic {
+            a: PixelPoint::new(20, 4),
+            b: PixelPoint::new(30, 15),
+            block: 6,
+        });
+        baseline.doc.push(Annotation::Blur {
+            a: PixelPoint::new(32, 6),
+            b: PixelPoint::new(44, 18),
+            radius: 8,
+        });
+        let committed = bake_annotations(&source, &baseline.doc).pixels.bytes;
+
+        for draft in [
+            DraftShape::Arrow {
+                from: PixelPoint::new(2, 30),
+                to: PixelPoint::new(18, 22),
+            },
+            DraftShape::Mosaic {
+                a: PixelPoint::new(20, 21),
+                b: PixelPoint::new(31, 31),
+            },
+            DraftShape::Blur {
+                a: PixelPoint::new(33, 20),
+                b: PixelPoint::new(45, 31),
+            },
+            DraftShape::Text {
+                origin: PixelPoint::new(4, 24),
+                content: "preview".to_owned(),
+            },
+        ] {
+            let mut session = baseline.clone();
+            session.draft = Some(draft);
+            let expected = render_preview_rgba(&source, &session);
+            let mut actual = committed.clone();
+            assert!(render_draft_rgba(&source, &session, &mut actual));
+            assert_eq!(actual, expected);
+        }
+
+        let mut incomplete = committed[..committed.len() - 1].to_vec();
+        assert!(!render_draft_rgba(&source, &baseline, &mut incomplete));
+        assert_eq!(source.pixels.bytes, striped(48, 36).pixels.bytes);
+        assert_eq!(
+            committed,
+            bake_annotations(&source, &baseline.doc).pixels.bytes
+        );
     }
 
     #[test]

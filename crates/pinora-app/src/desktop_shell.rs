@@ -32,6 +32,7 @@ use crate::history_window::HistoryWindow;
 use crate::hotkey::GlobalHotkeyHub;
 use crate::ocr::tesseract_available;
 use crate::ocr_job::{OcrJobCompletion, OcrJobService};
+use crate::overlay_preview_cache::OverlayPreviewCache;
 use crate::overlay_toolbar::{
     ToolbarAction, ToolbarButton, hit_test as toolbar_hit, layout_toolbar, paint_toolbar,
     toolbar_bounds,
@@ -620,6 +621,8 @@ struct OverlayState {
     /// 标注预览缓存（选区在缓冲分辨率下的 XRGB）。
     annotate_cache: Option<Vec<u32>>,
     annotate_cache_wh: (u32, u32),
+    /// 当前选区的原始裁剪与已提交标注层；仅 Overlay 生命周期内有效。
+    annotate_preview_cache: OverlayPreviewCache,
     annotate_dirty: bool,
     toolbar: Vec<ToolbarButton>,
     /// 按下工具栏按钮，抬起时若仍命中则触发。
@@ -2364,6 +2367,7 @@ where
             last_drawing_tool: AnnotateTool::Rect,
             annotate_cache: None,
             annotate_cache_wh: (0, 0),
+            annotate_preview_cache: OverlayPreviewCache::default(),
             annotate_dirty: false,
             toolbar: Vec::new(),
             toolbar_pressed: None,
@@ -2544,6 +2548,7 @@ where
                             ov.last_toolbar_bounds = None;
                             ov.annotate = AnnotateSession::new(1, 1);
                             ov.annotate_cache = None;
+                            ov.annotate_preview_cache.clear();
                             ov.active_src_rect = None;
                             // 选区一旦确认重选，旧任务立即失效；不能等到松手才换身份。
                             ov.annotation_asset = Some(OverlayAssetIdentity::new());
@@ -2742,6 +2747,7 @@ where
                             ov.annotate.toggle_shape_fill();
                         }
                         ov.annotate_cache = None;
+                        ov.annotate_preview_cache.clear();
                         ov.annotate_dirty = true;
                         println!(
                             "pinora: selection buf={}x{} src={}x{} toolbar={} | 双击复制 中键/Enter贴图",
@@ -4412,6 +4418,7 @@ fn refresh_overlay_ready(ov: &mut OverlayState) {
             ov.active_src_rect = Some(src_sel);
             ov.annotation_asset = Some(OverlayAssetIdentity::new());
             ov.annotate_cache = None;
+            ov.annotate_preview_cache.clear();
             ov.annotate_dirty = true;
         }
         if ov.annotate.image_w != src_sel.size.width || ov.annotate.image_h != src_sel.size.height {
@@ -4427,6 +4434,7 @@ fn refresh_overlay_ready(ov: &mut OverlayState) {
                 ov.annotate.toggle_shape_fill();
             }
             ov.annotate_cache = None;
+            ov.annotate_preview_cache.clear();
             ov.annotate_dirty = true;
         }
     }
@@ -4616,7 +4624,7 @@ fn expand_rect(r: PixelRect, pad: i32, img_w: u32, img_h: u32) -> PixelRect {
     PixelRect::new(x0, y0, (x1 - x0).max(0) as u32, (y1 - y0).max(0) as u32)
 }
 
-/// 在选区变化/标注变化时重烤局部缓存（原图烤制 → 缩放到缓冲选区尺寸）。
+/// 在选区变化/标注变化时合成局部预览（已提交层缓存 → 草稿叠加 → 显示缩放）。
 fn ensure_annotate_cache(ov: &mut OverlayState, disp_rect: PixelRect) {
     let wh = (disp_rect.size.width, disp_rect.size.height);
     if !ov.annotate_dirty && ov.annotate_cache.is_some() && ov.annotate_cache_wh == wh {
@@ -4626,13 +4634,15 @@ fn ensure_annotate_cache(ov: &mut OverlayState, disp_rect: PixelRect) {
     let Some(src_rect) = ov.active_src_rect else {
         return;
     };
-    let Ok(crop) = ov.full_image.crop_local(src_rect) else {
+    let Some(rgba) = ov
+        .annotate_preview_cache
+        .compose(&ov.full_image, src_rect, &ov.annotate)
+    else {
         return;
     };
-    let rgba = render_preview_rgba(&crop, &ov.annotate);
     let xrgb = rgba_to_xrgb(&rgba);
-    let sw = crop.pixels.size.width as usize;
-    let sh = crop.pixels.size.height as usize;
+    let sw = src_rect.size.width as usize;
+    let sh = src_rect.size.height as usize;
     let dw = disp_rect.size.width as usize;
     let dh = disp_rect.size.height as usize;
     if sw == 0 || sh == 0 || dw == 0 || dh == 0 {

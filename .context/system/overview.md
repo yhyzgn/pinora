@@ -32,7 +32,7 @@
 - 生产入口仍是 `src/main.rs`，但使用 `std::os::unix::net::UnixStream`；没有平台条件编译，因此 Windows target 无法完成 workspace 检查。
 - `crates/pinora-app/src/desktop_shell.rs` 当前约 3679 行，仍集中承载 winit/softbuffer 窗口事件、截图编排、Overlay 绘制、标注输入、贴图生命周期、OCR 触发、托盘和 IPC 轮询；045/046 已将历史和设置窗口的资源、草稿/预览缓存、resize、存储调用和呈现迁至专属适配器，但 Overlay/贴图仍在 shell 中，单体化风险保持开放。
 - 当前依赖树把 `gtk`/`tray-icon`、`xcap`/PipeWire、`winit`/`softbuffer` 和 Linux CLI 后端直接放入 `pinora-app`；没有 Windows/macOS/Linux 适配器边界。
-- `cargo fmt --check`、`cargo check --workspace` 和 `cargo clippy --workspace --all-targets -- -D warnings` 已于 2026-08-02 通过；当前 `PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace` 通过 app 168 个、core 69 个单元测试，另有 2 个真实桌面测试被忽略；仍没有 GUI 端到端测试。
+- `cargo fmt --check`、`cargo check --workspace` 和 `cargo clippy --workspace --all-targets -- -D warnings` 已于 2026-08-02 通过；当前 `PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace` 通过 app 172 个、core 74 个单元测试，另有 2 个真实桌面测试被忽略；仍没有 GUI 端到端测试。
 - `cargo check --workspace --target x86_64-pc-windows-msvc` 失败于 GTK 的 `gdk-pixbuf-sys`/`glib-sys` pkg-config 交叉编译，尚未进入应用代码编译阶段。
 - OCR 通过 `tesseract` 子进程和临时 PNG 工作；适配器已持有自身 `Child`，支持协作式取消、30 秒截止时间、16 MiB 输出上限和 RAII 临时文件清理，不再调用外部 `kill`。贴图与 Overlay UI 已经通过 `OcrJobService` 提交到 `JobSupervisor`，结果交付受 owner、终态和 `AssetRef` generation 门禁保护；worker 不触碰窗口或剪贴板。
 - 截图后端自动选择 KDE `spectacle` → xcap → `Unavailable`；两者不可用时保留后端失败摘要并由 provider 返回 `CapabilityUnavailable`，`fake` 只能通过显式测试/开发注入使用。
@@ -50,6 +50,7 @@
 - 2026-08-02 的 065 为 Overlay 矩形、圆角矩形和椭圆增加可切换的半透明填充：`F` 或现有工具栏按钮只更新当前会话样式和工具栏选中态，不推进标注 revision、不提交任务且不创建窗口；有效提交将当前 RGB 和固定 alpha 96 冻结到对象，预览与最终烧录先填充、后描边并统一经 alpha-over 合成。离线像素、工具栏和 `window_policy` 守卫已通过；真实任务栏/Dock、tray、HiDPI 和大面积连续拖拽帧时间仍未验证。
 - 2026-08-02 的 066 将所有辅助窗口映射收敛到 `window_policy`：工厂无条件隐藏创建，唯一展示入口先调用 `set_visible(true)` 再执行 KWin 映射后 `skipTaskbar`/`skipPager` 请求；截图 Overlay、贴图首次/批量/编辑恢复、历史和设置均已迁移，隐藏 display handle 不可展示。递归源码守卫已拒绝策略模块外的建窗、事件循环和显式可见调用；真实 Windows/macOS/X11/KDE Wayland 任务栏/Dock、tray、首帧和焦点仍未验证。
 - 2026-08-02 的 067 为 Overlay 增加 `B` 与工具栏入口的区域模糊：有效拖拽提交随线宽派生且受 `4..=24` 约束的冻结半径，预览和最终烧录均从原始不可变截图使用分离滑动盒模糊采样，且只写入选择矩形。离线回归覆盖退化拖拽、半径冻结、预览逐字节一致、反向/边界坐标、区域外字节不变和工具栏/窗口策略守卫；真实 4K/HiDPI 连续拖拽帧时间、任务栏/Dock、tray、焦点与合成器行为仍未验证。
+- 2026-08-02 的 068 将 Overlay 标注预览拆为“当前源选区的已提交 RGBA 层”与“当前草稿叠加”：缓存键为源选区和 `AnnotationRevision`，草稿移动不再重新烧录全部历史标注；提交、撤销、重做、重选或无效裁剪会重建或清除缓存。核心草稿叠加与完整预览逐字节等价，马赛克和 Blur 始终从原始裁剪采样；没有新增窗口、事件循环、截图或 worker。真实 4K/HiDPI 帧时间、峰值内存、tray、任务栏/Dock、焦点与合成器行为仍未验证。
 - GitHub Actions CI `30732620836`、`30732765136`、`30732906042`、`30733684203`、`30734154282`、`30734583848`、`30734867309` 与 `30735354166` 已于 2026-08-02 在 Linux、macOS、Windows 原生 runner 通过格式、workspace 编译、严格 Clippy 和单元测试；这些运行未创建 GUI 会话，不能作为任务栏、Dock、窗口交互、KWin 行为、真实多显示器或渲染延迟的证据。
 - `pinora-core::asset` 已于 2026-08-01 新增 `AssetGeneration` 和 `AssetRef` 领域契约；它只组合既有 `ImageId`，可判定陈旧结果，已用于桌面贴图及 Overlay OCR、复制、保存任务的结果门禁。
 - `pinora-core::job` 与 `pinora-app::JobSupervisor` 已于 2026-08-01 新增：任务元数据绑定 `JobId`、关联 ID、`AssetRef`、领域 owner、类型和截止时间；监督器可协作式取消、关闭 owner、标记超时并拒绝终态或陈旧版本结果。桌面 OCR、导出和剪贴板均已接入，但这不代表所有后台进程均已在真实桌面环境验证。
