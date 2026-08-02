@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/080_export_name_allocator.md`
-- 任务：`.context/tasks/080_export_name_allocator.md`
+- 计划：`.context/plans/081_cross_platform_hotkey_lifecycle.md`
+- 任务：`.context/tasks/081_cross_platform_hotkey_lifecycle.md`
 
 ## 交付要求
 

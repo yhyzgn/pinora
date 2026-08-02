@@ -1,22 +1,16 @@
 //! 全局热键：注册 F2 / Ctrl+N 等，跨窗口触发截图。
 //!
-//! 策略（按可用性叠加）：
-//! 1. `global-hotkey`（X11 / XWayland 抓键，部分 Wayland 会话有效）
-//! 2. 单实例 socket：`pinora capture` / 桌面快捷方式转发
-//! 3. 控制窗焦点热键（无全局时的兜底）
+//! `GlobalHotKeyManager` 必须在桌面 GUI 事件循环所属线程创建并存活：Windows
+//! 要求 Win32 消息循环同线程，macOS 要求主线程 run loop。`DesktopApp` 在现有
+//! `winit` 主事件循环中持有本类型并轮询事件，因此这里不能额外创建或转移 manager。
 //!
-//! 说明：纯 Wayland 上真正可靠的跨应用热键依赖桌面门户
-//! `org.freedesktop.portal.GlobalShortcuts` 或 KDE System Settings 绑定到
-//! `pinora capture`；本模块在能注册 OS 热键时自动启用。
+//! Linux 后端只支持 X11；纯 Wayland 仍需要 Portal 或系统设置绑定 `pinora capture`，
+//! 本模块不会把该降级误报为 Portal 支持。
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-#[cfg(target_os = "linux")]
-use std::thread;
-use std::thread::JoinHandle;
-#[cfg(target_os = "linux")]
-use std::time::Duration;
+
+use global_hotkey::hotkey::{Code, HotKey, Modifiers};
+use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
 use pinora_core::{ActionId, KeyBinding, PinoraError};
 
@@ -71,56 +65,52 @@ pub struct GlobalHotkeyStatus {
     pub notes: Vec<String>,
 }
 
-/// 进程内全局热键中枢：后台线程监听，主循环 poll。
+/// 已成功注册的热键 ID。只有这些 ID 的 Pressed 事件可转成 Pinora 动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RegisteredHotkeys {
+    region_ids: [u32; 2],
+    alternate_region_id: Option<u32>,
+    full_display_id: Option<u32>,
+}
+
+impl RegisteredHotkeys {
+    fn action_for_pressed_event(self, id: u32, state: HotKeyState) -> Option<ActionId> {
+        if state != HotKeyState::Pressed {
+            return None;
+        }
+        if self.region_ids.contains(&id) || self.alternate_region_id == Some(id) {
+            return Some(ActionId::CaptureRegionAndPin);
+        }
+        (self.full_display_id == Some(id)).then_some(ActionId::CaptureFullDisplay)
+    }
+}
+
+/// 进程内全局热键中枢：manager 由 GUI 主线程持有，主循环轮询其事件。
 pub struct GlobalHotkeyHub {
-    rx: Receiver<ActionId>,
-    stop: Option<std::sync::Arc<AtomicBool>>,
-    join: Option<JoinHandle<()>>,
+    // 仅用于维持 OS 注册生命周期；不移动到后台线程。
+    manager: Option<GlobalHotKeyManager>,
+    registered: Option<RegisteredHotkeys>,
     status: GlobalHotkeyStatus,
 }
 
 impl GlobalHotkeyHub {
     /// 尝试启动 OS 级全局热键（F2/Ctrl+N → 区域，F3 → 全屏）。
     pub fn start() -> Self {
-        let (tx, rx) = mpsc::channel();
-        let stop = std::sync::Arc::new(AtomicBool::new(false));
-        let mut notes = Vec::new();
-
-        match spawn_global_hotkey_thread(tx.clone(), std::sync::Arc::clone(&stop)) {
-            Ok(join) => {
+        match register_global_hotkeys() {
+            Ok((manager, registered, mut notes)) => {
                 notes.push(
-                    "global-hotkey: F2 + Ctrl+N registered; F3 full-display registration attempted (X11/XWayland path; may not fire for pure Wayland-focused apps)".into(),
-                );
-                notes.push(
-                    "also: `pinora capture` over single-instance socket works from KDE System Settings".into(),
+                    "fallback: `pinora capture` keeps working through single-instance IPC".into(),
                 );
                 Self {
-                    rx,
-                    stop: Some(stop),
-                    join: Some(join),
+                    manager: Some(manager),
+                    registered: Some(registered),
                     status: GlobalHotkeyStatus {
                         available: true,
                         notes,
                     },
                 }
             }
-            Err(err) => {
-                notes.push(format!("global-hotkey unavailable: {err}"));
-                notes.push(
-                    "fallback: use focused control/pin window keys, or bind System Settings → pinora capture".into(),
-                );
-                // 丢弃 tx 侧；rx 永远空
-                drop(tx);
-                Self {
-                    rx,
-                    stop: Some(stop),
-                    join: None,
-                    status: GlobalHotkeyStatus {
-                        available: false,
-                        notes,
-                    },
-                }
-            }
+            Err(error) => Self::unavailable(error),
         }
     }
 
@@ -129,104 +119,139 @@ impl GlobalHotkeyHub {
     }
 
     pub fn poll_actions(&mut self) -> Vec<ActionId> {
+        if self.manager.is_none() {
+            return Vec::new();
+        }
+        let Some(registered) = self.registered else {
+            return Vec::new();
+        };
         let mut out = Vec::new();
-        loop {
-            match self.rx.try_recv() {
-                Ok(a) => out.push(a),
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => break,
+        while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
+            if let Some(action) = registered.action_for_pressed_event(event.id(), event.state()) {
+                out.push(action);
             }
         }
         // 去抖：同一帧多次 F2 只保留一次 Capture
         out.dedup();
         out
     }
-}
 
-impl Drop for GlobalHotkeyHub {
-    fn drop(&mut self) {
-        if let Some(stop) = &self.stop {
-            stop.store(true, Ordering::SeqCst);
-        }
-        if let Some(join) = self.join.take() {
-            let _ = join.join();
+    fn unavailable(error: String) -> Self {
+        Self {
+            manager: None,
+            registered: None,
+            status: GlobalHotkeyStatus {
+                available: false,
+                notes: vec![
+                    format!("global-hotkey unavailable: {error}"),
+                    "fallback: use the tray menu or `pinora capture` IPC".into(),
+                    unavailable_platform_note().into(),
+                ],
+            },
         }
     }
 }
 
-#[cfg(target_os = "linux")]
-fn spawn_global_hotkey_thread(
-    tx: Sender<ActionId>,
-    stop: std::sync::Arc<AtomicBool>,
-) -> Result<JoinHandle<()>, String> {
-    use global_hotkey::hotkey::{Code, HotKey, Modifiers};
-    use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
-
+fn register_global_hotkeys() -> Result<(GlobalHotKeyManager, RegisteredHotkeys, Vec<String>), String>
+{
     let manager = GlobalHotKeyManager::new().map_err(|e| format!("create manager: {e}"))?;
 
-    // F2：区域截图
+    // F2 与 Ctrl+N 是核心区域截图入口，任一注册失败时让 manager 立即析构并退回 tray/IPC。
     let f2 = HotKey::new(None, Code::F2);
     let f2_id = f2.id();
     manager
         .register(f2)
         .map_err(|e| format!("register F2: {e}"))?;
 
-    // Ctrl+N：区域截图（与窗口内一致）
     let ctrl_n = HotKey::new(Some(Modifiers::CONTROL), Code::KeyN);
     let ctrl_n_id = ctrl_n.id();
     manager
         .register(ctrl_n)
         .map_err(|e| format!("register Ctrl+N: {e}"))?;
 
-    // F3：当前目标显示器全屏截图；注册失败不影响区域截图。
-    let f3 = HotKey::new(None, Code::F3);
-    let f3_id = f3.id();
-    if let Err(e) = manager.register(f3) {
-        eprintln!("pinora: optional F3 full-display hotkey skipped: {e}");
-    }
-
-    // 可选：Ctrl+Shift+S 作为更不易冲突的备选
+    // Ctrl+Shift+S 是额外区域截图入口；冲突时保留 F2/Ctrl+N 主路径。
     let ctrl_shift_s = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyS);
     let ctrl_shift_s_id = ctrl_shift_s.id();
-    if let Err(e) = manager.register(ctrl_shift_s) {
-        eprintln!("pinora: optional Ctrl+Shift+S hotkey skipped: {e}");
-    }
+    let (alternate_region_id, ctrl_shift_s_note) = match manager.register(ctrl_shift_s) {
+        Ok(()) => (
+            Some(ctrl_shift_s_id),
+            "global-hotkey: Ctrl+Shift+S alternate region capture registered".into(),
+        ),
+        Err(error) => (
+            None,
+            format!("global-hotkey: Ctrl+Shift+S alternate region capture unavailable ({error})"),
+        ),
+    };
 
-    let handle = thread::Builder::new()
-        .name("pinora-global-hotkey".into())
-        .spawn(move || {
-            // 保持 manager 存活
-            let _manager = manager;
-            let receiver = GlobalHotKeyEvent::receiver();
-            while !stop.load(Ordering::SeqCst) {
-                match receiver.try_recv() {
-                    Ok(event) if event.state() == HotKeyState::Pressed => {
-                        let id = event.id();
-                        if id == f3_id {
-                            let _ = tx.send(ActionId::CaptureFullDisplay);
-                        } else if id == f2_id || id == ctrl_n_id || id == ctrl_shift_s_id {
-                            let _ = tx.send(ActionId::CaptureRegionAndPin);
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(_) => {
-                        // Empty or disconnected — short sleep then retry until stop
-                        thread::sleep(Duration::from_millis(20));
-                    }
-                }
-            }
-        })
-        .map_err(|e| format!("spawn: {e}"))?;
+    // F3 是可选的全屏入口；失败不应该丢失三个核心区域快捷键。
+    let f3 = HotKey::new(None, Code::F3);
+    let f3_id = f3.id();
+    let (full_display_id, f3_note) = match manager.register(f3) {
+        Ok(()) => (
+            Some(f3_id),
+            "global-hotkey: F3 full-display registered".into(),
+        ),
+        Err(error) => (
+            None,
+            format!("global-hotkey: F3 full-display unavailable ({error})"),
+        ),
+    };
 
-    Ok(handle)
+    let notes = vec![
+        "global-hotkey: F2 and Ctrl+N region capture registered".into(),
+        ctrl_shift_s_note,
+        f3_note,
+        active_platform_note().into(),
+    ];
+    Ok((
+        manager,
+        RegisteredHotkeys {
+            region_ids: [f2_id, ctrl_n_id],
+            alternate_region_id,
+            full_display_id,
+        },
+        notes,
+    ))
 }
 
-#[cfg(not(target_os = "linux"))]
-fn spawn_global_hotkey_thread(
-    _tx: Sender<ActionId>,
-    _stop: std::sync::Arc<AtomicBool>,
-) -> Result<JoinHandle<()>, String> {
-    Err("global hotkey adapter is not enabled on this build; use pinora capture".into())
+#[cfg(target_os = "linux")]
+const fn active_platform_note() -> &'static str {
+    "global-hotkey backend: Linux X11; pure Wayland requires a system binding or future Portal adapter"
+}
+
+#[cfg(target_os = "windows")]
+const fn active_platform_note() -> &'static str {
+    "global-hotkey backend: Windows native registration on the GUI event-loop thread"
+}
+
+#[cfg(target_os = "macos")]
+const fn active_platform_note() -> &'static str {
+    "global-hotkey backend: macOS native registration on the main GUI thread"
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+const fn active_platform_note() -> &'static str {
+    "global-hotkey backend: unsupported platform"
+}
+
+#[cfg(target_os = "linux")]
+const fn unavailable_platform_note() -> &'static str {
+    "Linux Wayland needs a system binding or future Portal adapter; tray and IPC remain available"
+}
+
+#[cfg(target_os = "windows")]
+const fn unavailable_platform_note() -> &'static str {
+    "Windows registration failed; tray and IPC remain available"
+}
+
+#[cfg(target_os = "macos")]
+const fn unavailable_platform_note() -> &'static str {
+    "macOS registration failed; tray and IPC remain available"
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+const fn unavailable_platform_note() -> &'static str {
+    "this platform has no supported global-hotkey backend; tray and IPC remain available"
 }
 
 /// 安装/刷新用户级 desktop 入口，便于 KDE 系统设置绑定 `pinora capture`。
@@ -323,5 +348,49 @@ mod tests {
         assert!(s.contains("capture"));
         assert!(s.contains("F2"));
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn only_registered_pressed_events_become_actions() {
+        let bindings = RegisteredHotkeys {
+            region_ids: [11, 12],
+            alternate_region_id: Some(13),
+            full_display_id: Some(14),
+        };
+
+        assert_eq!(
+            bindings.action_for_pressed_event(11, HotKeyState::Pressed),
+            Some(ActionId::CaptureRegionAndPin)
+        );
+        assert_eq!(
+            bindings.action_for_pressed_event(13, HotKeyState::Pressed),
+            Some(ActionId::CaptureRegionAndPin)
+        );
+        assert_eq!(
+            bindings.action_for_pressed_event(14, HotKeyState::Pressed),
+            Some(ActionId::CaptureFullDisplay)
+        );
+        assert_eq!(
+            bindings.action_for_pressed_event(12, HotKeyState::Released),
+            None
+        );
+        assert_eq!(
+            bindings.action_for_pressed_event(99, HotKeyState::Pressed),
+            None
+        );
+    }
+
+    #[test]
+    fn unavailable_hub_keeps_external_actions_disabled() {
+        let mut hub = GlobalHotkeyHub::unavailable("test backend unavailable".into());
+
+        assert!(!hub.status().available);
+        assert!(
+            hub.status()
+                .notes
+                .iter()
+                .any(|note| note.contains("tray") && note.contains("IPC"))
+        );
+        assert!(hub.poll_actions().is_empty());
     }
 }

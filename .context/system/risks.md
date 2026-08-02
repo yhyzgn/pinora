@@ -27,12 +27,12 @@
 - 回滚或隔离：按任务回滚实现，保留新增回归测试以复现问题。
 - 负责人和状态：未分配；开放。
 
-## R-003：单实例仅为内存协议（中）— 已缓解（Unix）
+## R-003：单实例的非 Unix 真实进程行为尚未验证（中）— Unix 已缓解
 
-- 证据和影响范围：主路径已用 `OsSingleInstance`（flock + Unix socket Activate）；`InMemorySingleInstance` 仅测试。
-- 关闭/缓解证据：`os_instance` 测试与双进程探针确认二次启动转发 Activate（2026-07-30）。
-- 残留风险：非 Unix 平台未实现；异常退出可能残留 sock（Drop/release 尽力清理）。
-- 负责人和状态：未分配；Unix 已缓解，跨平台开放。
+- 证据和影响范围：Unix 主路径使用 `flock` + Unix socket；非 Unix 已使用文件锁 + loopback TCP 端口文件，`InMemorySingleInstance` 仅测试。根入口不再直接依赖 Unix 类型。
+- 关闭/缓解证据：`os_instance` 测试与双进程探针确认 Unix 二次启动转发 Activate（2026-07-30）；2026-08-02 Windows target 编译通过。
+- 残留风险：Windows/macOS 尚无真实双进程、端口文件权限、异常退出和恢复探针；Unix 异常退出仍可能残留 socket，非 Unix 端口文件也可能陈旧。
+- 负责人和状态：Neo；Unix 已缓解，非 Unix 真实桌面验证开放。
 
 ## R-004：真实捕获能力未验证（高）— fake 回退已移除
 
@@ -58,14 +58,14 @@
 - 回滚或隔离动作：按新 crate/模块边界分阶段迁移；旧壳保留到新主路径通过同等场景验证后再移除。
 - 负责人和状态：未分配；开放。
 
-## R-007：所谓跨平台能力实际绑定 Linux/KDE（高）
+## R-007：跨平台能力仍主要绑定 Linux/KDE（高）
 
-- 证据和影响范围：`src/main.rs` 和 `os_instance.rs` 直接使用 Unix socket；KDE 捕获依赖 `spectacle`、`kscreen-doctor`；剪贴板依赖 `wl-copy`/`xclip`/`xsel`；无 `cfg` 平台模块。
+- 证据和影响范围：`OsSingleInstance` 已按 Unix/非 Unix 条件编译，081 又使 `GlobalHotkeyHub` 在 Windows/macOS/Linux X11 使用同一 GUI 线程生命周期；但 KDE 捕获仍依赖 `spectacle`、`kscreen-doctor`，系统剪贴板仍依赖 `wl-copy`/`xclip`/`xsel`，且没有独立 Windows/macOS/Linux `PlatformServices` adapter。
 - 触发条件：在 Windows/macOS 或非 KDE Linux 上发布，或把 target 编译通过当作跨平台交付。
-- 失败模式：无法构建、无法启动、捕获/热键/剪贴板不可用，且降级状态对用户不透明。
-- 缓解措施和必需验证：建立 `PlatformServices` 能力接口和逐平台 adapter；先使 core 在所有 target 编译，再分别验证捕获、窗口、热键、剪贴板和单实例。
+- 失败模式：进程可构建却仍在截图、剪贴板、热键、权限或窗口隔离上不可用；纯 Wayland 可能没有全局热键，且能力摘要对真实状态不完整。
+- 缓解措施和必需验证：继续建立 `PlatformServices` 能力接口和逐平台 adapter；每项能力分别进行 target 编译、真实桌面探针和受限状态反馈，不把 GitHub runner 的静态门禁当作 GUI 验收。
 - 回滚或隔离动作：默认只声明已验证的平台；未验证平台隐藏为实验状态，不伪造支持。
-- 负责人和状态：未分配；开放。
+- 负责人和状态：Neo；跨 target 编译和热键生命周期部分缓解，逐平台真实能力开放。
 
 ## R-008：发布质量门禁仍不完整（中）— 部分缓解
 
@@ -386,6 +386,15 @@
 - 缓解措施和必需验证：保持有限候选、单实例、受管目录与历史白名单；后续若增加覆盖策略，应在 worker 内实现原子 no-replace 发布并建立跨平台文件系统测试。
 - 回滚或隔离动作：恢复内部 `ImageId.png` 命名；不改变现有 worker、历史、截图、贴图或窗口策略。
 - 负责人和状态：Neo；离线命名、导出、workspace 门禁已验证，跨进程竞态开放。
+
+## R-042：跨平台全局热键仍缺原生桌面证据（高）
+
+- 证据和影响范围：081 将 `GlobalHotKeyManager` 的构造、持有、轮询和析构收敛到 `DesktopApp` 所在的 `winit` GUI 线程；F2/Ctrl+N 为必需注册，Ctrl+Shift+S/F3 逐项可选，tray 摘要读取实际 `GlobalHotkeyHub` 结果。Windows target 编译与离线事件过滤测试已通过。
+- 触发条件：Windows 热键冲突、隐藏 `WS_EX_TOOLWINDOW` 消息窗口的任务栏隔离、macOS 辅助功能/输入监控权限、主 run loop 行为、Linux X11 会话切换或休眠恢复，及纯 Wayland 没有 XDG GlobalShortcuts Portal adapter。
+- 失败模式：用户可能只能看到不可用状态、热键不触发、可选组合缺失，或 Windows 依赖内部窗口意外显示；不得把 manager 存活、CI 或 target 编译宣称为系统热键已经可用，更不得以后台键盘监听绕过权限。
+- 缓解措施和必需验证：保留 tray 和 `pinora capture` IPC；在 Windows、macOS、Linux X11 与 KDE Wayland 原生会话分别验证注册成功/冲突、触发、退出解除、睡眠恢复、tray-only 任务栏/Dock 状态和 Portal 降级。后续热键录制、冲突建议、热更新和 Portal 必须单独实现与验证。
+- 回滚或隔离动作：恢复 Linux 专用热键分支或关闭全局热键入口；tray、IPC、截图、窗口策略和数据格式保持不变。
+- 负责人和状态：Neo；离线生命周期、workspace 门禁与 Windows target 已验证，原生桌面证据开放。
 
 ## 风险一：上下文漂移
 
