@@ -1,6 +1,6 @@
 # 任务 059：全虚拟桌面截图
 
-- 状态：进行中
+- 状态：已完成
 - 计划：`.context/plans/059_virtual_desktop_capture.md`
 - 规模：中
 - 依赖：`.context/tasks/054_auxiliary_window_boundary.md`、`.context/tasks/055_display_targeted_capture.md`、`.context/tasks/058_tray_residency_capture_failures.md`
@@ -61,4 +61,7 @@
 
 ## 完成记录
 
-- 进行中：核心、KDE/xcap 后端与 tray/Overlay 路径已实现；本地定向测试、严格编译检查和全量离线测试已通过，待执行上下文最终校验、Git 提交与三平台 CI。
+- 已实现：`AllDisplays` 被建模为独立捕获意图，工作区外接矩形支持负坐标、显示器间隔并拒绝超出 `PixelRect` 坐标范围的异常拓扑。结果使用 `pinora:virtual-desktop` 来源和 `1.0` 物理像素缩放，不冒充任一显示器来源。
+- 已实现：KDE 以单次 `spectacle -f` 取像，输出尺寸与开始时拓扑外接矩形不匹配时返回 `RetryablePlatform`；xcap 直接返回 `CapabilityUnavailable`，不进行逐屏拼接。tray 的多显示器菜单新增“所有显示器截图”，该路径不消费单屏缓存，成功后以 `window_policy` 创建的无边框虚拟桌面 Overlay 打开全图选区。
+- 已验证：`cargo test -p pinora-core capture -- --nocapture`（9 通过）、KDE/xcap/tray/Overlay 定向测试通过；`cargo fmt --check`、`cargo check --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`（app 159 通过、2 忽略；core 61 通过）、`git diff --check` 和 `ctx validate` 均通过。提交 `085e615` 的 GitHub CI `30737751448` 已在 Linux/macOS/Windows 通过。
+- 未覆盖：没有真实多显示器 KDE 会话，故 Spectacle/KScreen 快照同步、外接矩形中空洞像素、Overlay 位置、任务栏/Dock、tray 交互、HiDPI、输入延迟和其他合成器行为尚未验证；三平台 CI 仅覆盖静态质量门禁。

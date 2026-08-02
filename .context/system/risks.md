@@ -175,6 +175,15 @@
 - 回滚或隔离动作：恢复 `LoadingState` 的旧错误传播仅会改变失败退出行为，不影响捕获数据、持久化、窗口工厂或 tray 菜单。
 - 负责人和状态：Neo；提交 `36ee681` 的本地离线与静态门禁及 GitHub CI `30737231248` 已通过，真实 GUI 验证开放。
 
+## R-021：全虚拟桌面截图的跨屏像素与窗口映射未在原生会话验证（高）
+
+- 证据和影响范围：059 新增 `AllDisplays`：KDE `spectacle -f` 一次取像后与 KScreen/xrandr 开始快照的物理 bounds 严格比对；xcap 返回 `CapabilityUnavailable`，不将逐屏多时刻帧拼成成功资产。tray 多屏菜单进入独立虚拟桌面 Overlay，该窗口仍经 `window_policy` 请求任务栏/Dock 隔离。
+- 触发条件：显示器热插拔、异构缩放、屏幕间物理空洞、KScreen 与 Spectacle 输出不同步、KWin 或其他合成器限制跨屏无边框窗口的位置/尺寸，或平台忽略任务栏/Dock 请求。
+- 失败模式：Pinora 正确拒绝尺寸不匹配的截图，但真实可用拓扑可能频繁受限；或 Overlay 跨屏位置/输入错误、窗口短暂出现在任务栏/Dock，导致用户体验和 tray-only 约束不成立。
+- 缓解措施和必需验证：在真实 KDE 双屏和 HiDPI 会话验证对齐/上下/间隔排列、热插拔、截取/取消/失败、Overlay 像素映射、任务栏/Dock、tray、贴图恢复和输入延迟；再在 Windows、macOS、X11 与非 KDE Wayland 验证受限能力路径，失败时按平台隐藏入口而不伪造成功。
+- 回滚或隔离动作：移除 tray 的 `AllDisplays` 项和桌面状态机分支；保留单屏、区域、窗口、延时截图和既有 `window_policy`。
+- 负责人和状态：Neo；离线契约、workspace 门禁与 GitHub CI `30737751448` 已通过，真实桌面验证开放。
+
 ## 风险一：上下文漂移
 
 - 触发条件：代码、配置或工作流变化后，没有同步更新对应上下文文件。

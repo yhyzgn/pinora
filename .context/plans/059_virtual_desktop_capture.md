@@ -1,6 +1,6 @@
 # 计划 059：全虚拟桌面截图
 
-- 状态：进行中
+- 状态：已完成
 - 负责人：Codex
 - 当前任务：`.context/tasks/059_virtual_desktop_capture.md`
 
@@ -61,3 +61,10 @@
 - 无真实多显示器 KDE 会话时，离线测试只能证明契约、菜单和失败分支，不能证明 KWin/Spectacle 的实际像素、延迟或任务栏/Dock 行为。
 - `spectacle -f` 与 KScreen 拓扑在热插拔瞬间可能失配；严格拒绝优先于裁剪或错误对齐。
 - 跨显示器物理 bounds 中的空洞区域没有可捕获像素；本任务采用外接矩形语义，实际合成器行为必须由真实桌面验收确认。
+
+## 完成记录
+
+- 已实现：新增 `CaptureRequest::AllDisplays`、安全工作区物理外接矩形和明确的虚拟桌面来源 ID。KDE 仅接受严格匹配开始拓扑的单次 `spectacle -f` PNG；xcap 明确返回 `CapabilityUnavailable`，不拼接多时刻显示器帧。
+- 已实现：tray 在多显示器拓扑中提供“所有显示器截图”；桌面状态机拒绝使用单屏 `FrameCache`，成功时以无边框、指定物理位置的虚拟桌面 Overlay 呈现并继续经 `window_policy` 请求任务栏/Dock 隔离。该 Overlay 同时从 xcap 窗口候选中排除。
+- 已验证：本地 fmt、workspace check、严格 Clippy、全量离线测试（app 159 通过、2 忽略；core 61 通过）、`git diff --check` 与 `ctx validate` 通过；提交 `085e615` 的 GitHub CI `30737751448` 已在 Linux/macOS/Windows 通过。
+- 未覆盖：真实多显示器 KDE 会话的 Spectacle/KScreen 同步、像素空洞、Overlay 跨屏映射、任务栏/Dock、托盘事件、HiDPI 与输入延迟仍需原生桌面验证；CI 不构成这些 GUI 行为的证据。
