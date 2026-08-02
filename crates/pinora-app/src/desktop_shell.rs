@@ -43,6 +43,7 @@ use crate::overlay_toolbar::{
 use crate::settings_panel::{SettingsPanelAction, SettingsPanelKey};
 use crate::settings_window::SettingsWindow;
 use crate::tray::{AppTray, TrayAction};
+use crate::tray_capabilities::TrayCapabilitySummary;
 use crate::tray_feedback::{TrayExportOperation, TrayFeedback};
 use crate::window_policy::{self, AuxiliaryWindowKind};
 use pinora_core::{
@@ -182,7 +183,16 @@ where
             Vec::new()
         }
     };
-    let tray = require_tray(AppTray::try_new(&tray_displays, &tray_windows))?;
+    let tray_capabilities = TrayCapabilitySummary::from_runtime(
+        &runtime.state().capabilities,
+        hotkeys.status().available,
+        tesseract_available(),
+    );
+    let tray = require_tray(AppTray::try_new(
+        &tray_displays,
+        &tray_windows,
+        tray_capabilities,
+    ))?;
     println!("pinora: system tray ready (click / menu → capture)");
 
     // 后台预截屏：空闲时持续备帧，F2 时 overlay 瞬时弹出

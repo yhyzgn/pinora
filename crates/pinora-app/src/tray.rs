@@ -10,6 +10,7 @@ use pinora_core::{CaptureWindowInfo, DisplayId, DisplayInfo};
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
+use crate::tray_capabilities::{CAPABILITY_MENU_TITLE, TrayCapabilitySummary};
 use crate::tray_feedback::TrayFeedback;
 
 /// 避免窗口枚举把 tray 菜单膨胀为大量不可快速扫描的项目。
@@ -62,9 +63,12 @@ impl AppTray {
     pub fn try_new(
         displays: &[DisplayInfo],
         windows: &[CaptureWindowInfo],
+        capabilities: TrayCapabilitySummary,
     ) -> Result<Self, String> {
         // tray-icon 内部可能 panic（未 gtk::init），必须 catch
-        match catch_unwind(AssertUnwindSafe(|| try_new_inner(displays, windows))) {
+        match catch_unwind(AssertUnwindSafe(|| {
+            try_new_inner(displays, windows, capabilities)
+        })) {
             Ok(r) => r,
             Err(_) => Err("tray panicked (often GTK not initialized or no display)".into()),
         }
@@ -159,6 +163,7 @@ impl AppTray {
 fn try_new_inner(
     displays: &[DisplayInfo],
     windows: &[CaptureWindowInfo],
+    capabilities: TrayCapabilitySummary,
 ) -> Result<AppTray, String> {
     // Linux tray-icon → appindicator → GTK 菜单；GTK 不应进入其他 target。
     #[cfg(target_os = "linux")]
@@ -172,6 +177,10 @@ fn try_new_inner(
     let icon = make_icon().map_err(|e| format!("tray icon: {e}"))?;
     let menu = Menu::new();
     let status = MenuItem::new(TrayFeedback::Ready.label(), false, None);
+    let capability_heading = MenuItem::new(CAPABILITY_MENU_TITLE, false, None);
+    let capability_items = capabilities
+        .labels()
+        .map(|label| MenuItem::new(label, false, None));
     let capture = MenuItem::new("截图 (F2)", true, None);
     let delay_capture_one = MenuItem::new("延时截图 1 秒", true, None);
     let delay_capture_three = MenuItem::new("延时截图 3 秒", true, None);
@@ -193,6 +202,14 @@ fn try_new_inner(
         .map_err(|e| format!("menu append status: {e}"))?;
     menu.append(&PredefinedMenuItem::separator())
         .map_err(|e| format!("menu sep status: {e}"))?;
+    menu.append(&capability_heading)
+        .map_err(|e| format!("menu append capability heading: {e}"))?;
+    for item in &capability_items {
+        menu.append(item)
+            .map_err(|e| format!("menu append capability item: {e}"))?;
+    }
+    menu.append(&PredefinedMenuItem::separator())
+        .map_err(|e| format!("menu sep capabilities: {e}"))?;
     menu.append(&capture)
         .map_err(|e| format!("menu append capture: {e}"))?;
     menu.append(&delay_capture_one)

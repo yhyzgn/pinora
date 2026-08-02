@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/078_tray_feedback.md`
-- 任务：`.context/tasks/078_tray_feedback.md`
+- 计划：`.context/plans/079_tray_capability_summary.md`
+- 任务：`.context/tasks/079_tray_capability_summary.md`
 
 ## 交付要求
 
