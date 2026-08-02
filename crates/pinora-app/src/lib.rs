@@ -6,6 +6,7 @@ mod capture_select;
 mod capture_xcap;
 mod desktop_shell;
 mod export_job;
+mod export_name;
 mod frame_cache;
 mod history_browser;
 mod history_export;

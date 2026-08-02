@@ -13,9 +13,10 @@ use std::sync::{
     mpsc::{self, Receiver, TryRecvError},
 };
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::export_job::{ExportJobCompletion, ExportJobInput, ExportJobService};
+use crate::export_name::ExportNameAllocator;
 use crate::frame_cache::{FrameCache, rgba_to_xrgb, rgba_to_xrgb_and_dim};
 use crate::history_browser::{HistoryPanelAction, HistoryPanelKey};
 use crate::history_export::{
@@ -240,6 +241,7 @@ where
         frame_cache: Some(frame_cache),
         ocr_jobs: OcrJobService::new(),
         export_jobs: ExportJobService::new(),
+        export_names: ExportNameAllocator::default(),
         history_load_jobs: HistoryLoadJobService::new(),
         pending_exports: HashMap::new(),
         active_history_load: None,
@@ -855,6 +857,7 @@ struct DesktopApp<L, P, C, S> {
     frame_cache: Option<FrameCache>,
     ocr_jobs: OcrJobService,
     export_jobs: ExportJobService,
+    export_names: ExportNameAllocator,
     history_load_jobs: HistoryLoadJobService,
     pending_exports: HashMap<JobId, PendingExport>,
     active_history_load: Option<ActiveHistoryLoad>,
@@ -1109,6 +1112,20 @@ where
         if let Some(tray) = &self.tray {
             tray.set_feedback(feedback);
         }
+    }
+
+    fn allocate_export_path(&mut self) -> Result<PathBuf, PinoraError> {
+        let export_dir = self
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.export_dir().clone())
+            .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "runtime missing"))?;
+        self.export_names
+            .allocate(&export_dir, SystemTime::now(), |path| {
+                path.try_exists().map_err(|_| {
+                    PinoraError::new(ErrorCode::Internal, "managed export path check failed")
+                })
+            })
     }
 
     fn restore_delayed_pins(&mut self) -> bool {
@@ -3537,11 +3554,7 @@ where
                     )?;
                 }
                 OverlayFinish::Save => {
-                    let path = self
-                        .runtime
-                        .as_ref()
-                        .map(|rt| rt.export_dir().join(format!("{}.png", image.id)))
-                        .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "runtime missing"))?;
+                    let path = self.allocate_export_path()?;
                     self.submit_export_job(
                         JobOwner::Pin(pin_id),
                         pin_asset,
@@ -3566,11 +3579,7 @@ where
                     )?;
                 }
                 OverlayFinish::Save => {
-                    let path = self
-                        .runtime
-                        .as_ref()
-                        .map(|rt| rt.export_dir().join(format!("{}.png", image.id)))
-                        .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "runtime missing"))?;
+                    let path = self.allocate_export_path()?;
                     self.submit_export_job(
                         session_owner,
                         asset,
@@ -3673,21 +3682,21 @@ where
         }
 
         let owner = JobOwner::Pin(pin_id);
-        if let Some(path) = self
-            .runtime
-            .as_ref()
-            .map(|rt| rt.export_dir().join(format!("{}.png", export_image.id)))
-            && let Err(error) = self.submit_export_job(
-                owner,
-                asset,
-                ExportJobInput::SavePng {
-                    image: export_image.clone(),
-                    path: path.clone(),
-                },
-                PendingExportAction::SavePng(path),
-            )
-        {
-            eprintln!("pinora: save submit failed: {error}");
+        match self.allocate_export_path() {
+            Ok(path) => {
+                if let Err(error) = self.submit_export_job(
+                    owner,
+                    asset,
+                    ExportJobInput::SavePng {
+                        image: export_image.clone(),
+                        path: path.clone(),
+                    },
+                    PendingExportAction::SavePng(path),
+                ) {
+                    eprintln!("pinora: save submit failed: {error}");
+                }
+            }
+            Err(error) => eprintln!("pinora: save path allocation failed: {}", error.code),
         }
         if let Err(error) = self.submit_export_job(
             owner,
@@ -4392,17 +4401,16 @@ where
         let Some(pin) = self.pins.get(&window_id) else {
             return;
         };
-        let Some(path) = self
-            .runtime
-            .as_ref()
-            .map(|runtime| runtime.export_dir().join(format!("{}.png", pin.image.id)))
-        else {
-            eprintln!("pinora: pin save skipped because runtime is unavailable");
-            return;
-        };
         let owner = JobOwner::Pin(pin.pin_id);
         let asset = pin.asset;
         let image = pin.image.clone();
+        let path = match self.allocate_export_path() {
+            Ok(path) => path,
+            Err(error) => {
+                eprintln!("pinora: pin save path allocation failed: {}", error.code);
+                return;
+            }
+        };
         if let Err(error) = self.submit_export_job(
             owner,
             asset,

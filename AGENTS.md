@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/079_tray_capability_summary.md`
-- 任务：`.context/tasks/079_tray_capability_summary.md`
+- 计划：`.context/plans/080_export_name_allocator.md`
+- 任务：`.context/tasks/080_export_name_allocator.md`
 
 ## 交付要求
 
