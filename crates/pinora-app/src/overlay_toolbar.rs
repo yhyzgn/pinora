@@ -45,6 +45,7 @@ pub fn layout_toolbar(selection: PixelRect, img_w: u32, img_h: u32) -> Vec<Toolb
         (ToolbarAction::Tool(AnnotateTool::Ellipse), "椭圆"),
         (ToolbarAction::Tool(AnnotateTool::Number), "序号"),
         (ToolbarAction::Tool(AnnotateTool::Mosaic), "马赛克"),
+        (ToolbarAction::Tool(AnnotateTool::Blur), "模糊"),
         (ToolbarAction::Tool(AnnotateTool::Text), "文本"),
         (ToolbarAction::Tool(AnnotateTool::ColorPicker), "取色"),
     ];
@@ -190,6 +191,7 @@ fn button_mark(b: &ToolbarButton) -> &'static str {
         ToolbarAction::Tool(AnnotateTool::Ellipse) => "E",
         ToolbarAction::Tool(AnnotateTool::Number) => "N",
         ToolbarAction::Tool(AnnotateTool::Mosaic) => "M",
+        ToolbarAction::Tool(AnnotateTool::Blur) => "B",
         ToolbarAction::Tool(AnnotateTool::Text) => "T",
         ToolbarAction::Tool(AnnotateTool::ColorPicker) => "",
     }
@@ -315,6 +317,7 @@ fn draw_mark(
         ('O', [0b111, 0b101, 0b101, 0b101, 0b111]),
         ('R', [0b110, 0b101, 0b110, 0b101, 0b101]),
         ('A', [0b010, 0b101, 0b111, 0b101, 0b101]),
+        ('B', [0b110, 0b101, 0b110, 0b101, 0b110]),
         ('E', [0b111, 0b100, 0b111, 0b100, 0b111]),
         ('M', [0b101, 0b111, 0b111, 0b101, 0b101]),
         ('L', [0b100, 0b100, 0b100, 0b100, 0b111]),
@@ -383,6 +386,7 @@ mod tests {
             AnnotateTool::RoundedRect,
             AnnotateTool::Line,
             AnnotateTool::Number,
+            AnnotateTool::Blur,
         ] {
             let button = buttons
                 .iter()

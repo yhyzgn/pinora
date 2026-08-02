@@ -19,6 +19,7 @@ pub enum AnnotateTool {
     Ellipse,
     Number,
     Mosaic,
+    Blur,
     Text,
     /// 从当前截图像素采样后续标注颜色；不生成标注事务。
     ColorPicker,
@@ -79,6 +80,11 @@ pub enum Annotation {
         a: PixelPoint,
         b: PixelPoint,
         block: u32,
+    },
+    Blur {
+        a: PixelPoint,
+        b: PixelPoint,
+        radius: u32,
     },
     Text {
         origin: PixelPoint,
@@ -209,6 +215,7 @@ pub enum DraftShape {
     Pen { points: Vec<PixelPoint> },
     Ellipse { a: PixelPoint, b: PixelPoint },
     Mosaic { a: PixelPoint, b: PixelPoint },
+    Blur { a: PixelPoint, b: PixelPoint },
     Text { origin: PixelPoint, content: String },
 }
 
@@ -351,6 +358,7 @@ impl AnnotateSession {
             AnnotateTool::Pen => DraftShape::Pen { points: vec![p] },
             AnnotateTool::Ellipse => DraftShape::Ellipse { a: p, b: p },
             AnnotateTool::Mosaic => DraftShape::Mosaic { a: p, b: p },
+            AnnotateTool::Blur => DraftShape::Blur { a: p, b: p },
             AnnotateTool::Text => unreachable!(),
             AnnotateTool::Number | AnnotateTool::ColorPicker => return,
         });
@@ -365,6 +373,7 @@ impl AnnotateSession {
             Some(DraftShape::Arrow { to, .. }) => *to = p,
             Some(DraftShape::Ellipse { b, .. }) => *b = p,
             Some(DraftShape::Mosaic { b, .. }) => *b = p,
+            Some(DraftShape::Blur { b, .. }) => *b = p,
             Some(DraftShape::Pen { points }) => {
                 if let Some(last) = points.last().copied() {
                     let dx = p.x - last.x;
@@ -487,6 +496,16 @@ impl AnnotateSession {
                 }
                 let block = (stroke * 2).clamp(4, 32);
                 Annotation::Mosaic { a, b, block }
+            }
+            DraftShape::Blur { a, b } => {
+                if (a.x - b.x).abs() < 2 && (a.y - b.y).abs() < 2 {
+                    return;
+                }
+                Annotation::Blur {
+                    a,
+                    b,
+                    radius: blur_radius(stroke),
+                }
             }
             DraftShape::Text { origin, content } => {
                 let content = content.trim().to_string();
@@ -613,6 +632,9 @@ pub fn bake_annotations(source: &CaptureImage, doc: &AnnotationDoc) -> CaptureIm
             Annotation::Mosaic { a, b, block } => {
                 draw_mosaic(&mut bytes, &src_bytes, w, h, *a, *b, *block)
             }
+            Annotation::Blur { a, b, radius } => {
+                draw_blur(&mut bytes, &src_bytes, w, h, *a, *b, *radius)
+            }
             Annotation::Text {
                 origin,
                 content,
@@ -690,6 +712,11 @@ pub fn render_preview_rgba(source: &CaptureImage, session: &AnnotateSession) -> 
                     block,
                 });
             }
+            DraftShape::Blur { a, b } => doc.push(Annotation::Blur {
+                a: *a,
+                b: *b,
+                radius: blur_radius(stroke),
+            }),
             DraftShape::Text { origin, content } => {
                 // 预览时显示光标
                 let mut shown = content.clone();
@@ -1308,6 +1335,157 @@ fn draw_mosaic(
     }
 }
 
+fn blur_radius(stroke: u32) -> u32 {
+    stroke.saturating_mul(2).clamp(4, 24)
+}
+
+/// 对原始截图的局部区域进行可预测的分离滑动盒模糊。
+///
+/// 水平阶段仅保存输出宽度和垂直采样边框，垂直阶段再滑动求平均，因此每个像素只
+/// 经过常数次加减。结果只写回目标矩形，选区外绝不改动。
+fn draw_blur(
+    buf: &mut [u8],
+    source: &[u8],
+    w: i32,
+    h: i32,
+    a: PixelPoint,
+    b: PixelPoint,
+    radius: u32,
+) {
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let x0 = a.x.min(b.x).max(0);
+    let y0 = a.y.min(b.y).max(0);
+    let x1 = a.x.max(b.x).min(w - 1);
+    let y1 = a.y.max(b.y).min(h - 1);
+    if x1 < x0 || y1 < y0 {
+        return;
+    }
+
+    let radius = radius.clamp(1, 24) as i32;
+    let sample_y0 = (y0 - radius).max(0);
+    let sample_y1 = (y1 + radius).min(h - 1);
+    let output_width = match usize::try_from(x1 - x0 + 1) {
+        Ok(width) => width,
+        Err(_) => return,
+    };
+    let sample_height = match usize::try_from(sample_y1 - sample_y0 + 1) {
+        Ok(height) => height,
+        Err(_) => return,
+    };
+    let byte_count = match output_width
+        .checked_mul(sample_height)
+        .and_then(|count| count.checked_mul(4))
+    {
+        Some(count) => count,
+        None => return,
+    };
+    let mut horizontal = vec![0u8; byte_count];
+    let kernel_width = (radius * 2 + 1) as u32;
+
+    for y in sample_y0..=sample_y1 {
+        let mut sum = [0u32; 4];
+        for sx in (x0 - radius)..=(x0 + radius) {
+            add_pixel(&mut sum, source_pixel(source, w, h, sx, y));
+        }
+        let row = (y - sample_y0) as usize * output_width;
+        for offset_x in 0..output_width {
+            let index = (row + offset_x) * 4;
+            write_average(&mut horizontal[index..index + 4], sum, kernel_width);
+            if offset_x + 1 < output_width {
+                let x = x0 + offset_x as i32;
+                subtract_pixel(&mut sum, source_pixel(source, w, h, x - radius, y));
+                add_pixel(&mut sum, source_pixel(source, w, h, x + radius + 1, y));
+            }
+        }
+    }
+
+    let kernel_height = (radius * 2 + 1) as u32;
+    for offset_x in 0..output_width {
+        let mut sum = [0u32; 4];
+        for sy in (y0 - radius)..=(y0 + radius) {
+            let sample_y = sy.clamp(sample_y0, sample_y1) as usize - sample_y0 as usize;
+            let index = (sample_y * output_width + offset_x) * 4;
+            add_pixel(
+                &mut sum,
+                [
+                    horizontal[index],
+                    horizontal[index + 1],
+                    horizontal[index + 2],
+                    horizontal[index + 3],
+                ],
+            );
+        }
+        for y in y0..=y1 {
+            let x = x0 + offset_x as i32;
+            let destination = ((y * w + x) * 4) as usize;
+            if destination + 3 < buf.len() {
+                write_average(&mut buf[destination..destination + 4], sum, kernel_height);
+            }
+            if y < y1 {
+                let outgoing_y =
+                    (y - radius).clamp(sample_y0, sample_y1) as usize - sample_y0 as usize;
+                let incoming_y =
+                    (y + radius + 1).clamp(sample_y0, sample_y1) as usize - sample_y0 as usize;
+                let outgoing = (outgoing_y * output_width + offset_x) * 4;
+                let incoming = (incoming_y * output_width + offset_x) * 4;
+                subtract_pixel(
+                    &mut sum,
+                    [
+                        horizontal[outgoing],
+                        horizontal[outgoing + 1],
+                        horizontal[outgoing + 2],
+                        horizontal[outgoing + 3],
+                    ],
+                );
+                add_pixel(
+                    &mut sum,
+                    [
+                        horizontal[incoming],
+                        horizontal[incoming + 1],
+                        horizontal[incoming + 2],
+                        horizontal[incoming + 3],
+                    ],
+                );
+            }
+        }
+    }
+}
+
+fn source_pixel(source: &[u8], w: i32, h: i32, x: i32, y: i32) -> [u8; 4] {
+    let x = x.clamp(0, w - 1);
+    let y = y.clamp(0, h - 1);
+    let index = ((y * w + x) * 4) as usize;
+    if index + 3 >= source.len() {
+        return [0, 0, 0, 255];
+    }
+    [
+        source[index],
+        source[index + 1],
+        source[index + 2],
+        source[index + 3],
+    ]
+}
+
+fn add_pixel(sum: &mut [u32; 4], pixel: [u8; 4]) {
+    for (channel, value) in sum.iter_mut().zip(pixel) {
+        *channel += u32::from(value);
+    }
+}
+
+fn subtract_pixel(sum: &mut [u32; 4], pixel: [u8; 4]) {
+    for (channel, value) in sum.iter_mut().zip(pixel) {
+        *channel = channel.saturating_sub(u32::from(value));
+    }
+}
+
+fn write_average(destination: &mut [u8], sum: [u32; 4], divisor: u32) {
+    for (channel, value) in destination.iter_mut().zip(sum) {
+        *channel = (value / divisor) as u8;
+    }
+}
+
 /// 候选系统字体路径（优先 CJK TTF）。
 fn font_candidates() -> &'static [&'static str] {
     &[
@@ -1403,6 +1581,23 @@ mod tests {
         CaptureImage::new(
             ImageId::new(),
             RgbaBuffer::solid(PixelSize::new(w, h), [255, 255, 255, 255]),
+            PixelRect::new(0, 0, w, h),
+            CaptureMetadata::new(DisplayId::new("d0"), 1.0, 0),
+        )
+        .unwrap()
+    }
+
+    fn striped(w: u32, h: u32) -> CaptureImage {
+        let mut bytes = Vec::with_capacity((w * h * 4) as usize);
+        for _y in 0..h {
+            for x in 0..w {
+                let value = if x % 2 == 0 { 0 } else { 255 };
+                bytes.extend_from_slice(&[value, 255 - value, value, 255]);
+            }
+        }
+        CaptureImage::new(
+            ImageId::new(),
+            RgbaBuffer::new(PixelSize::new(w, h), bytes).unwrap(),
             PixelRect::new(0, 0, w, h),
             CaptureMetadata::new(DisplayId::new("d0"), 1.0, 0),
         )
@@ -1622,6 +1817,84 @@ mod tests {
         let src = solid(80, 60);
         let out = bake_annotations(&src, &s.doc);
         assert_ne!(out.pixels.bytes, src.pixels.bytes);
+    }
+
+    #[test]
+    fn blur_requires_a_real_drag_freezes_radius_and_matches_its_preview() {
+        let source = striped(32, 24);
+        let mut session = AnnotateSession::new(32, 24);
+        session.tool = AnnotateTool::Blur;
+        let initial_revision = session.doc.revision();
+
+        session.begin(PixelPoint::new(4, 4));
+        session.drag(PixelPoint::new(5, 5));
+        session.commit();
+        assert!(session.doc.is_empty());
+        assert_eq!(session.doc.revision(), initial_revision);
+
+        session.stroke = 8;
+        session.begin(PixelPoint::new(5, 4));
+        session.drag(PixelPoint::new(26, 19));
+        let preview = render_preview_rgba(&source, &session);
+        session.commit();
+        assert!(matches!(
+            session.doc.items(),
+            [Annotation::Blur {
+                a,
+                b,
+                radius: 16,
+            }] if *a == PixelPoint::new(5, 4) && *b == PixelPoint::new(26, 19)
+        ));
+
+        session.stroke = 1;
+        let baked = bake_annotations(&source, &session.doc);
+        assert_eq!(preview, baked.pixels.bytes);
+        assert_ne!(
+            rgba_at(&baked.pixels.bytes, 32, 10, 10),
+            rgba_at(&source.pixels.bytes, 32, 10, 10)
+        );
+
+        for y in 0..24 {
+            for x in 0..32 {
+                if !(5..=26).contains(&x) || !(4..=19).contains(&y) {
+                    assert_eq!(
+                        rgba_at(&baked.pixels.bytes, 32, x, y),
+                        rgba_at(&source.pixels.bytes, 32, x, y),
+                        "pixel outside the blur selection changed at ({x}, {y})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn blur_clamps_oversized_radius_and_handles_reversed_edge_coordinates() {
+        let source = striped(12, 10);
+        let mut doc = AnnotationDoc::new();
+        doc.push(Annotation::Blur {
+            a: PixelPoint::new(10, 8),
+            b: PixelPoint::new(2, 1),
+            radius: u32::MAX,
+        });
+
+        let baked = bake_annotations(&source, &doc);
+        assert_eq!(baked.pixels.bytes.len(), source.pixels.bytes.len());
+        assert_ne!(
+            rgba_at(&baked.pixels.bytes, 12, 6, 4),
+            rgba_at(&source.pixels.bytes, 12, 6, 4)
+        );
+        for y in 0..10 {
+            for x in 0..12 {
+                if !(2..=10).contains(&x) || !(1..=8).contains(&y) {
+                    assert_eq!(
+                        rgba_at(&baked.pixels.bytes, 12, x, y),
+                        rgba_at(&source.pixels.bytes, 12, x, y),
+                        "pixel outside the clamped blur selection changed at ({x}, {y})"
+                    );
+                }
+            }
+        }
+        assert_eq!(source.pixels.bytes, striped(12, 10).pixels.bytes);
     }
 
     #[test]

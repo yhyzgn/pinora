@@ -4372,6 +4372,10 @@ fn handle_overlay_key(
             set_overlay_tool(ov, AnnotateTool::Mosaic);
             println!("pinora: tool = Mosaic");
         }
+        Key::Character(c) if c == "b" || c == "B" => {
+            set_overlay_tool(ov, AnnotateTool::Blur);
+            println!("pinora: tool = Blur");
+        }
         Key::Character(c) if c == "6" || c == "t" || c == "T" => {
             set_overlay_tool(ov, AnnotateTool::Text);
             println!("pinora: tool = Text");
