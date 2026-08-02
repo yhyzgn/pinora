@@ -112,6 +112,15 @@ fn overlay_current_asset(overlay: &OverlayState) -> Option<AssetRef> {
         .map(|identity| identity.current(overlay.annotate.doc.revision()))
 }
 
+fn require_tray(result: Result<AppTray, String>) -> Result<AppTray, PinoraError> {
+    result.map_err(|error| {
+        PinoraError::new(
+            ErrorCode::CapabilityUnavailable,
+            format!("system tray is required for tray-only mode: {error}"),
+        )
+    })
+}
+
 /// 运行统一桌面 shell（阻塞直到退出）。
 pub fn run_desktop_shell<L, P, C, S>(runtime: AppRuntime<L, P, C, S>) -> Result<(), PinoraError>
 where
@@ -140,16 +149,8 @@ where
     let frame_cache = FrameCache::start(provider);
     println!("pinora: frame-cache started (pre-capture for instant overlay)");
 
-    let tray = match AppTray::try_new() {
-        Ok(t) => {
-            println!("pinora: system tray ready (click / menu → capture)");
-            Some(t)
-        }
-        Err(e) => {
-            eprintln!("pinora: system tray unavailable: {e}");
-            None
-        }
-    };
+    let tray = require_tray(AppTray::try_new())?;
+    println!("pinora: system tray ready (click / menu → capture)");
     let settings = runtime.settings();
     let default_pin_opacity = opacity_from_settings_percent(settings.default_pin_opacity_percent);
     let history_store = HistoryStore::new(
@@ -193,7 +194,7 @@ where
         history_index,
         start_capture_wait: None,
         capture_mode: CaptureMode::Region,
-        tray,
+        tray: Some(tray),
         default_pin_opacity,
     };
 
@@ -3709,6 +3710,17 @@ mod overlay_scale_tests {
         assert_eq!(target.initial_selection, OverlayInitialSelection::FullImage);
         assert_eq!(target.presentation, OverlayPresentation::HistoryEditor);
         assert_eq!(target.min_selection_edge, 1);
+    }
+
+    #[test]
+    fn tray_initialization_failure_does_not_leave_an_unreachable_process() {
+        let error = match require_tray(Err("status notifier unavailable".to_owned())) {
+            Ok(_) => panic!("tray failure must prevent tray-only startup"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code, ErrorCode::CapabilityUnavailable);
+        assert!(error.message.contains("tray-only mode"));
     }
 
     #[test]

@@ -35,7 +35,7 @@ pub struct AppTray {
 }
 
 impl AppTray {
-    /// 创建托盘图标。失败时返回错误（无托盘环境不致命，由调用方降级）。
+    /// 创建托盘图标；调用方决定失败是否允许启动。
     pub fn try_new() -> Result<Self, String> {
         // tray-icon 内部可能 panic（未 gtk::init），必须 catch
         match catch_unwind(AssertUnwindSafe(try_new_inner)) {

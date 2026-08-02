@@ -67,3 +67,5 @@
 - 已迁移 `desktop_shell`、`history_window`、`settings_window`、`region_overlay` 和 `pin_window` 的全部 `WindowAttributes` 创建点；macOS event loop 与 package plist 同步为 agent 语义。
 - 已为 KWin 生成受标题限制的 `skipTaskbar`/`skipPager` 脚本，并增加转义、脚本内容与无效脚本 ID 的离线保护。
 - 本地通过策略/脚本/Overlay 定向测试、fmt、workspace check、严格 Clippy、全量测试；GitHub CI `30732620836` 的 Linux、macOS、Windows 质量任务均通过。真实任务栏、Dock、KWin 与其他 Wayland 合成器探针未运行。
+- 2026-08-02：验收复核发现托盘初始化失败后没有可发现的 UI 入口；将补充显式启动失败与单元测试，避免留下不可管理的后台进程。
+- 已将托盘失败转换为 `CapabilityUnavailable`，不再启动无窗口、无托盘的后台进程；新增该分支的定向测试。本地通过 app 122 个、core 55 个单元测试（2 个真实桌面测试忽略）、fmt、workspace check、严格 Clippy、diff 与 ctx validate；待本次修复提交的 GitHub CI。
