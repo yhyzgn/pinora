@@ -1,6 +1,6 @@
 # 计划 050：仅托盘常驻与辅助窗口任务栏隔离
 
-- 状态：进行中
+- 状态：已完成
 - 负责人：Codex
 - 当前任务：`.context/tasks/050_tray_only_windows.md`
 
@@ -76,4 +76,4 @@
 - 2026-08-02：新增 `window_policy`，所有当前和兼容的 Overlay、贴图、历史、设置以及隐藏 display-handle 均经统一入口构造。
 - `desktop_shell` 不再创建、显示、聚焦或处理空闲控制窗口；启动只保持托盘、已注册全局热键、IPC 和后台帧缓存，不会自动弹出截图 Overlay。
 - Windows 请求 `with_skip_taskbar(true)`；X11 请求 Utility 类型；macOS 事件循环使用 `Accessory` 且 app bundle 写入 `LSUIElement`；KDE Wayland 在映射后按 Pinora 标题请求 `skipTaskbar`/`skipPager`。
-- KWin 临时脚本在 load/run 失败时仍卸载并删除自身文件；本地定向与严格质量门禁已通过，待本提交的 GitHub CI。其他 Wayland 和真实任务栏/Dock/KWin 会话仍未验证。
+- KWin 临时脚本在 load/run 失败时仍卸载并删除自身文件；本地定向与严格质量门禁及 GitHub CI `30732620836` 的 Linux、macOS、Windows 质量任务均通过。其他 Wayland 和真实任务栏/Dock/KWin 会话仍未验证。

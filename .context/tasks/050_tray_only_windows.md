@@ -1,6 +1,6 @@
 # 任务 050：仅托盘常驻与辅助窗口任务栏隔离
 
-- 状态：进行中
+- 状态：已完成
 - 计划：`.context/plans/050_tray_only_windows.md`
 - 规模：中
 - 依赖：`.context/tasks/038_cross_platform_delivery.md`
@@ -66,4 +66,4 @@
 - 2026-08-02：已删除 `ControlState`、控制窗口创建/隐藏/事件处理和启动自动截图路径；空闲态只轮询托盘、全局热键与 IPC。
 - 已迁移 `desktop_shell`、`history_window`、`settings_window`、`region_overlay` 和 `pin_window` 的全部 `WindowAttributes` 创建点；macOS event loop 与 package plist 同步为 agent 语义。
 - 已为 KWin 生成受标题限制的 `skipTaskbar`/`skipPager` 脚本，并增加转义、脚本内容与无效脚本 ID 的离线保护。
-- 本地通过策略/脚本/Overlay 定向测试、fmt、workspace check、严格 Clippy、全量测试；待本提交的 GitHub CI。真实任务栏、Dock、KWin 与其他 Wayland 合成器探针未运行。
+- 本地通过策略/脚本/Overlay 定向测试、fmt、workspace check、严格 Clippy、全量测试；GitHub CI `30732620836` 的 Linux、macOS、Windows 质量任务均通过。真实任务栏、Dock、KWin 与其他 Wayland 合成器探针未运行。

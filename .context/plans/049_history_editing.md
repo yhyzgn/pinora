@@ -1,6 +1,6 @@
 # 计划 049：历史图像再次编辑
 
-- 状态：进行中
+- 状态：已完成
 - 负责人：Codex
 - 当前任务：`.context/tasks/049_history_editing.md`
 
@@ -69,4 +69,4 @@
 - 2026-08-02：050 已提供统一辅助窗口策略后，历史面板新增 `Edit` 动作、可见按钮和 `E` 快捷键；Enter 仍只执行重新贴图。
 - `desktop_shell` 只在 `load_history_image` 安全校验成功后构建预览，历史编辑不触发新屏幕捕获，使用普通编辑窗口、全图初始选区、独立会话与 annotation asset。
 - 打开编辑 Overlay 前暂停 `FrameCache`；窗口创建失败立即恢复缓存并保持历史窗口显示 `history_edit_failed`。
-- 本地定向测试、fmt、workspace check、严格 Clippy 和全量测试已通过；待本提交的 GitHub CI。真实窗口、HiDPI、多屏及任务栏/Dock 仍未验证。
+- 本地定向测试、fmt、workspace check、严格 Clippy 和全量测试已通过；GitHub CI `30732620836` 的 Linux、macOS、Windows 质量任务均通过。真实窗口、HiDPI、多屏及任务栏/Dock 仍未验证。

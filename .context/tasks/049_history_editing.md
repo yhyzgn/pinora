@@ -1,6 +1,6 @@
 # 任务 049：历史图像再次编辑
 
-- 状态：进行中
+- 状态：已完成
 - 计划：`.context/plans/049_history_editing.md`
 - 规模：中
 - 依赖：`.context/tasks/042_history_browser.md`、`.context/tasks/047_frame_cache_handoff.md`、`.context/tasks/048_full_display_capture.md`、`.context/tasks/050_tray_only_windows.md`
@@ -62,4 +62,4 @@
 
 - 2026-08-02：已实现 `Edit` 按钮与 `E` 动作，复用 `load_history_image` 的受管路径、文件类型、长度、摘要、PNG RGBA8、尺寸和元数据校验。
 - 已将屏幕捕获方式、初始选区和窗口呈现拆为独立内部概念；历史编辑为普通窗口 `HistoryEditor` 呈现、全图选区、最小边长 1，不尝试恢复旧显示器的全屏位置。
-- 本地通过 `history_browser`、`desktop_shell::overlay_scale_tests`、`fmt`、workspace check、严格 Clippy 与全量测试；待本提交的 GitHub CI。真实 GUI 失败分支、HiDPI 和多屏验收仍未完成。
+- 本地通过 `history_browser`、`desktop_shell::overlay_scale_tests`、`fmt`、workspace check、严格 Clippy 与全量测试；GitHub CI `30732620836` 的 Linux、macOS、Windows 质量任务均通过。真实 GUI 失败分支、HiDPI 和多屏验收仍未完成。
