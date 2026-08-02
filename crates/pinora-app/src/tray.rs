@@ -4,6 +4,7 @@
 //! 编译并在创建托盘前初始化，Windows/macOS 走 tray-icon 原生后端。
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::time::Duration;
 
 use pinora_core::{DisplayId, DisplayInfo};
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
@@ -13,6 +14,8 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayAction {
     Capture,
+    CaptureRegionAfter(Duration),
+    CancelDelayedCapture,
     CaptureFullDisplay,
     CaptureDisplay(DisplayId),
     Settings,
@@ -27,6 +30,10 @@ pub enum TrayAction {
 pub struct AppTray {
     _tray: TrayIcon,
     capture_id: tray_icon::menu::MenuId,
+    delay_capture_ids: [(MenuId, Duration); 3],
+    cancel_delayed_capture_id: tray_icon::menu::MenuId,
+    delay_capture_items: [MenuItem; 3],
+    cancel_delayed_capture_item: MenuItem,
     capture_full_display_id: tray_icon::menu::MenuId,
     capture_display_ids: Vec<(MenuId, DisplayId)>,
     settings_id: tray_icon::menu::MenuId,
@@ -65,6 +72,12 @@ impl AppTray {
             if ev.id == self.capture_id {
                 return Some(TrayAction::Capture);
             }
+            if let Some(action) = delayed_capture_action(&ev.id, &self.delay_capture_ids) {
+                return Some(action);
+            }
+            if ev.id == self.cancel_delayed_capture_id {
+                return Some(TrayAction::CancelDelayedCapture);
+            }
             if ev.id == self.capture_full_display_id {
                 return Some(TrayAction::CaptureFullDisplay);
             }
@@ -92,6 +105,14 @@ impl AppTray {
         }
         None
     }
+
+    /// 延时会话期间只允许取消，避免重复倒计时或在隐藏贴图期间切换截图流程。
+    pub fn set_delayed_capture_active(&self, active: bool) {
+        for item in &self.delay_capture_items {
+            item.set_enabled(!active);
+        }
+        self.cancel_delayed_capture_item.set_enabled(active);
+    }
 }
 
 fn try_new_inner(displays: &[DisplayInfo]) -> Result<AppTray, String> {
@@ -107,6 +128,10 @@ fn try_new_inner(displays: &[DisplayInfo]) -> Result<AppTray, String> {
     let icon = make_icon().map_err(|e| format!("tray icon: {e}"))?;
     let menu = Menu::new();
     let capture = MenuItem::new("截图 (F2)", true, None);
+    let delay_capture_one = MenuItem::new("延时截图 1 秒", true, None);
+    let delay_capture_three = MenuItem::new("延时截图 3 秒", true, None);
+    let delay_capture_five = MenuItem::new("延时截图 5 秒", true, None);
+    let cancel_delayed_capture = MenuItem::new("取消延时截图", false, None);
     let capture_full_display = MenuItem::new("全屏截图 (F3)", true, None);
     let mut capture_display_ids = Vec::new();
     let settings = MenuItem::new("设置", true, None);
@@ -117,6 +142,16 @@ fn try_new_inner(displays: &[DisplayInfo]) -> Result<AppTray, String> {
     let quit = MenuItem::new("退出", true, None);
     menu.append(&capture)
         .map_err(|e| format!("menu append capture: {e}"))?;
+    menu.append(&delay_capture_one)
+        .map_err(|e| format!("menu append delayed capture 1: {e}"))?;
+    menu.append(&delay_capture_three)
+        .map_err(|e| format!("menu append delayed capture 3: {e}"))?;
+    menu.append(&delay_capture_five)
+        .map_err(|e| format!("menu append delayed capture 5: {e}"))?;
+    menu.append(&cancel_delayed_capture)
+        .map_err(|e| format!("menu append cancel delayed capture: {e}"))?;
+    menu.append(&PredefinedMenuItem::separator())
+        .map_err(|e| format!("menu sep delayed capture: {e}"))?;
     menu.append(&capture_full_display)
         .map_err(|e| format!("menu append full-display capture: {e}"))?;
     if displays.len() > 1 {
@@ -147,6 +182,12 @@ fn try_new_inner(displays: &[DisplayInfo]) -> Result<AppTray, String> {
         .map_err(|e| format!("menu append quit: {e}"))?;
 
     let capture_id = capture.id().clone();
+    let delay_capture_ids = [
+        (delay_capture_one.id().clone(), Duration::from_secs(1)),
+        (delay_capture_three.id().clone(), Duration::from_secs(3)),
+        (delay_capture_five.id().clone(), Duration::from_secs(5)),
+    ];
+    let cancel_delayed_capture_id = cancel_delayed_capture.id().clone();
     let capture_full_display_id = capture_full_display.id().clone();
     let settings_id = settings.id().clone();
     let history_id = history.id().clone();
@@ -165,6 +206,10 @@ fn try_new_inner(displays: &[DisplayInfo]) -> Result<AppTray, String> {
     Ok(AppTray {
         _tray: tray,
         capture_id,
+        delay_capture_ids,
+        cancel_delayed_capture_id,
+        delay_capture_items: [delay_capture_one, delay_capture_three, delay_capture_five],
+        cancel_delayed_capture_item: cancel_delayed_capture,
         capture_full_display_id,
         capture_display_ids,
         settings_id,
@@ -196,6 +241,16 @@ fn display_capture_action(
         .iter()
         .find(|(id, _)| id == menu_id)
         .map(|(_, display_id)| TrayAction::CaptureDisplay(display_id.clone()))
+}
+
+fn delayed_capture_action(
+    menu_id: &MenuId,
+    delay_capture_ids: &[(MenuId, Duration); 3],
+) -> Option<TrayAction> {
+    delay_capture_ids
+        .iter()
+        .find(|(id, _)| id == menu_id)
+        .map(|(_, delay)| TrayAction::CaptureRegionAfter(*delay))
 }
 
 fn make_icon() -> Result<Icon, String> {
@@ -266,5 +321,21 @@ mod tests {
         assert!(label.contains("2560x1440"));
         assert!(label.contains("1.25x"));
         assert!(!label.contains("private-backend-id"));
+    }
+
+    #[test]
+    fn delayed_capture_action_preserves_the_requested_duration() {
+        let menu_id = MenuId::new("delay-three");
+        let delays = [
+            (MenuId::new("delay-one"), Duration::from_secs(1)),
+            (menu_id.clone(), Duration::from_secs(3)),
+            (MenuId::new("delay-five"), Duration::from_secs(5)),
+        ];
+
+        assert_eq!(
+            delayed_capture_action(&menu_id, &delays),
+            Some(TrayAction::CaptureRegionAfter(Duration::from_secs(3)))
+        );
+        assert!(delayed_capture_action(&MenuId::new("other"), &delays).is_none());
     }
 }

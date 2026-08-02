@@ -85,6 +85,13 @@ fn pending_asset_for_owner(
         .and_then(|(pending_owner, asset)| (*pending_owner == owner).then_some(*asset))
 }
 
+fn snapshot_visible_ids<T: Copy>(items: impl IntoIterator<Item = (T, bool)>) -> Vec<T> {
+    items
+        .into_iter()
+        .filter_map(|(id, visible)| visible.then_some(id))
+        .collect()
+}
+
 /// 已确认 Overlay 选区的派生图像身份。
 ///
 /// 选区内标注只改变 generation；重选来源像素时才生成新的图像身份。
@@ -188,6 +195,7 @@ where
         // 常驻时只保留托盘入口。FrameCache 仍在后台预热，但绝不因启动而弹出窗口。
         mode: Mode::Idle,
         loading: None,
+        delayed_capture: None,
         overlay: None,
         settings: None,
         history: None,
@@ -217,6 +225,9 @@ where
     event_loop
         .run_app(&mut app)
         .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("desktop loop: {e}")))?;
+
+    // 事件循环无论因何结束，都先恢复倒计时开始时由 Pinora 隐藏的贴图。
+    app.cancel_delayed_capture();
 
     let ocr_shutdown = app.ocr_jobs.cancel_all_and_wait(Duration::from_secs(2));
     println!(
@@ -260,6 +271,8 @@ enum Mode {
     StartCapture,
     /// 正在后台截屏，显示小加载窗。
     LoadingCapture,
+    /// tray 发起的无窗口倒计时；到期后只能走冷捕获。
+    DelayedCapture,
     /// 空闲：仅贴图窗口。
     Idle,
 }
@@ -361,6 +374,28 @@ enum OverlayPresentation {
 struct LoadingState {
     preview_rx: Receiver<Result<PreparedPreview, String>>,
     target: OverlayTarget,
+}
+
+/// 延时区域截图的清理所有者。
+///
+/// 快照只保存倒计时开始时由 Pinora 确认可见的贴图窗口；恢复时已经关闭的窗口
+/// 会被忽略，因此不会复活用户已经关闭的贴图。
+struct DelayedCapture {
+    deadline: Instant,
+    hidden_pin_ids: Vec<WindowId>,
+}
+
+impl DelayedCapture {
+    fn new(delay: Duration, hidden_pin_ids: Vec<WindowId>) -> Self {
+        Self {
+            deadline: Instant::now() + delay,
+            hidden_pin_ids,
+        }
+    }
+
+    fn is_due(&self, now: Instant) -> bool {
+        now >= self.deadline
+    }
 }
 
 /// 打开 Overlay 所需的捕获来源与初始交互意图。
@@ -539,6 +574,8 @@ struct PinWin {
     scale: f64,
     opacity: f64,
     locked: bool,
+    /// winit 没有跨平台的实际可见性查询；这是 Pinora 对自己贴图可见状态的事实记录。
+    visible: bool,
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
     /// 最近一次 OCR 结果。
@@ -582,6 +619,7 @@ struct DesktopApp<L, P, C, S> {
     context: Option<Context<Rc<Window>>>,
     mode: Mode,
     loading: Option<LoadingState>,
+    delayed_capture: Option<DelayedCapture>,
     overlay: Option<OverlayState>,
     /// 显式设置窗口；草稿只在保存成功后应用到 runtime。
     settings: Option<SettingsWindow>,
@@ -634,10 +672,24 @@ where
             }
         }
         for action in tray_actions {
+            if self.delayed_capture.is_some()
+                && !matches!(action, TrayAction::CancelDelayedCapture | TrayAction::Quit)
+            {
+                println!("pinora: tray action ignored while delayed capture is active");
+                continue;
+            }
             match action {
                 TrayAction::Capture => {
                     println!("pinora: tray → capture");
                     self.request_new_capture(event_loop);
+                }
+                TrayAction::CaptureRegionAfter(delay) => {
+                    self.request_delayed_region_capture(delay);
+                }
+                TrayAction::CancelDelayedCapture => {
+                    if self.cancel_delayed_capture() {
+                        println!("pinora: tray → delayed capture cancelled");
+                    }
                 }
                 TrayAction::CaptureFullDisplay => {
                     println!("pinora: tray → full-display capture");
@@ -692,6 +744,14 @@ where
 
         if self.quit {
             event_loop.exit();
+            return;
+        }
+
+        if matches!(self.mode, Mode::DelayedCapture) {
+            self.poll_delayed_capture(event_loop);
+            event_loop.set_control_flow(ControlFlow::WaitUntil(
+                Instant::now() + Duration::from_millis(30),
+            ));
             return;
         }
 
@@ -782,12 +842,61 @@ where
     S: ImageSink,
 {
     fn set_all_pins_visible(&mut self, visible: bool) {
-        for pin in self.pins.values() {
-            pin.window.set_visible(visible);
-        }
+        let window_ids: Vec<_> = self.pins.keys().copied().collect();
+        self.set_pins_visible(&window_ids, visible);
         if visible && let Some(pin) = self.pins.values().next() {
             pin.window.focus_window();
         }
+    }
+
+    fn set_pins_visible(&mut self, window_ids: &[WindowId], visible: bool) {
+        for window_id in window_ids {
+            if let Some(pin) = self.pins.get_mut(window_id) {
+                pin.window.set_visible(visible);
+                pin.visible = visible;
+            }
+        }
+    }
+
+    fn snapshot_visible_pin_ids(&self) -> Vec<WindowId> {
+        snapshot_visible_ids(
+            self.pins
+                .iter()
+                .map(|(window_id, pin)| (*window_id, pin.visible)),
+        )
+    }
+
+    fn set_delayed_capture_tray_state(&self, active: bool) {
+        if let Some(tray) = &self.tray {
+            tray.set_delayed_capture_active(active);
+        }
+    }
+
+    fn restore_delayed_pins(&mut self) -> bool {
+        let Some(delayed) = self.delayed_capture.take() else {
+            return false;
+        };
+        let restored = delayed.hidden_pin_ids.len();
+        self.set_pins_visible(&delayed.hidden_pin_ids, true);
+        self.set_delayed_capture_tray_state(false);
+        if restored > 0 {
+            println!("pinora: restored {restored} delayed-capture pin(s)");
+        }
+        true
+    }
+
+    /// 取消倒计时或已经开始的冷捕获。CaptureProvider 没有可移植的强制取消接口，
+    /// 因此已开始的 worker 会自然结束，但其结果接收端被丢弃，绝不会打开 Overlay。
+    fn cancel_delayed_capture(&mut self) -> bool {
+        if self.delayed_capture.is_none() {
+            return false;
+        }
+        let _ = self.loading.take();
+        self.mode = Mode::Idle;
+        self.start_capture_wait = None;
+        let restored = self.restore_delayed_pins();
+        self.resume_frame_cache();
+        restored
     }
 
     fn close_all_pins(&mut self) {
@@ -925,13 +1034,17 @@ where
             println!("pinora: frame-cache timeout, cold capture…");
         }
         self.start_capture_wait = None;
-        if let Err(e) = self.begin_screen_grab(event_loop) {
+        if let Err(e) = self.begin_screen_grab(event_loop, true) {
             self.handle_capture_start_error(e);
         }
     }
 
     /// 弹出选区 overlay：优先用后台预截帧（瞬时），否则再等一次截屏。
-    fn begin_screen_grab(&mut self, event_loop: &ActiveEventLoop) -> Result<(), PinoraError> {
+    fn begin_screen_grab(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        allow_cached_frame: bool,
+    ) -> Result<(), PinoraError> {
         let capture_mode = self.capture_mode;
         let initial_selection = initial_selection_for_capture(capture_mode);
         let explicit_display = match &self.capture_target {
@@ -946,17 +1059,21 @@ where
         };
         // 1) 缓存命中 → 立刻开 overlay（目标 < 16ms）
         // 允许最多 2s 龄的帧；后台约每 0.5s 刷新一轮
-        let cached_frame = self.frame_cache.as_ref().and_then(|cache| {
-            if let Some(display) = explicit_display.as_ref() {
-                cache
-                    .take_for_display_if_fresh(display, Duration::from_secs(2))
-                    .or_else(|| cache.take_for_display(display))
-            } else {
-                cache
-                    .take_if_fresh(Duration::from_secs(2))
-                    .or_else(|| cache.take_any())
-            }
-        });
+        let cached_frame = allow_cached_frame
+            .then(|| {
+                self.frame_cache.as_ref().and_then(|cache| {
+                    if let Some(display) = explicit_display.as_ref() {
+                        cache
+                            .take_for_display_if_fresh(display, Duration::from_secs(2))
+                            .or_else(|| cache.take_for_display(display))
+                    } else {
+                        cache
+                            .take_if_fresh(Duration::from_secs(2))
+                            .or_else(|| cache.take_any())
+                    }
+                })
+            })
+            .flatten();
         // 截屏/选区期间暂停预截，避免截到自己的窗。暂停会清空任何竞态晚到帧。
         if let Some(cache) = &self.frame_cache {
             cache.pause();
@@ -1732,6 +1849,56 @@ where
         );
     }
 
+    fn request_delayed_region_capture(&mut self, delay: Duration) {
+        if self.delayed_capture.is_some() {
+            println!("pinora: delayed capture already active; use tray cancel first");
+            return;
+        }
+
+        // 延时开始前关闭 Pinora 自己现有的短暂窗口；不创建新的倒计时窗口。
+        if self.loading.is_some() {
+            self.cancel_loading();
+        }
+        if self.overlay.is_some() {
+            self.cancel_overlay();
+        }
+        self.close_settings();
+        self.close_history();
+        self.mode = Mode::Idle;
+        self.start_capture_wait = None;
+        self.capture_mode = CaptureMode::Region;
+        self.capture_target = CaptureTarget::DefaultLargest;
+
+        // 必须先拒绝任何在途预截帧，再隐藏原先可见的贴图，防止到期时拿到旧图像。
+        if let Some(cache) = &self.frame_cache {
+            cache.pause();
+        }
+        let hidden_pin_ids = self.snapshot_visible_pin_ids();
+        self.set_pins_visible(&hidden_pin_ids, false);
+        self.delayed_capture = Some(DelayedCapture::new(delay, hidden_pin_ids));
+        self.set_delayed_capture_tray_state(true);
+        self.mode = Mode::DelayedCapture;
+        println!(
+            "pinora: tray → delayed region capture in {}s (no countdown window)",
+            delay.as_secs()
+        );
+    }
+
+    fn poll_delayed_capture(&mut self, event_loop: &ActiveEventLoop) {
+        let due = self
+            .delayed_capture
+            .as_ref()
+            .is_some_and(|capture| capture.is_due(Instant::now()));
+        if !due {
+            return;
+        }
+
+        println!("pinora: delayed capture due; starting cold capture");
+        if let Err(error) = self.begin_screen_grab(event_loop, false) {
+            self.finish_delayed_capture_failure(error);
+        }
+    }
+
     /// 任意模式触发再截：立刻关 overlay/loading，开新一轮 grab。
     fn request_capture(
         &mut self,
@@ -1739,6 +1906,10 @@ where
         capture_mode: CaptureMode,
         capture_target: CaptureTarget,
     ) {
+        if self.delayed_capture.is_some() {
+            println!("pinora: capture request ignored while delayed capture is active");
+            return;
+        }
         if let Some(ov) = self.overlay.take() {
             self.ocr_jobs.close_owner(JobOwner::Session(ov.session_id));
             self.export_jobs
@@ -1756,7 +1927,7 @@ where
             capture_mode.label(),
             self.capture_target
         );
-        if let Err(e) = self.begin_screen_grab(event_loop) {
+        if let Err(e) = self.begin_screen_grab(event_loop, true) {
             self.handle_capture_start_error(e);
         }
     }
@@ -1769,9 +1940,22 @@ where
         self.resume_frame_cache();
     }
 
+    fn finish_delayed_capture_failure(&mut self, error: PinoraError) {
+        eprintln!(
+            "pinora: delayed capture failed ({}) {error}; returning to tray",
+            error.code
+        );
+        let _ = self.loading.take();
+        self.mode = Mode::Idle;
+        self.start_capture_wait = None;
+        self.restore_delayed_pins();
+        self.resume_frame_cache();
+    }
+
     fn cancel_loading(&mut self) {
         let _ = self.loading.take();
         self.mode = Mode::Idle;
+        self.restore_delayed_pins();
         self.resume_frame_cache();
         println!("pinora: capture cancelled (F2/Ctrl+N 再截，Ctrl+Q 退出)");
         if let Some(pin) = self.pins.values().next() {
@@ -1783,22 +1967,36 @@ where
         let Some(loading) = self.loading.as_ref() else {
             return Ok(());
         };
+        let delayed_capture = self.delayed_capture.is_some();
         let prep = match loading.preview_rx.try_recv() {
             Ok(Ok(p)) => p,
             Ok(Err(err)) => {
                 self.cancel_loading();
-                return Err(PinoraError::new(
+                let error = PinoraError::new(
                     ErrorCode::RetryablePlatform,
                     format!("screen capture failed: {err}"),
-                ));
+                );
+                if delayed_capture {
+                    eprintln!(
+                        "pinora: delayed capture failed ({}) {error}; returning to tray",
+                        error.code
+                    );
+                    return Ok(());
+                }
+                return Err(error);
             }
             Err(TryRecvError::Empty) => return Ok(()),
             Err(TryRecvError::Disconnected) => {
                 self.cancel_loading();
-                return Err(PinoraError::new(
-                    ErrorCode::Internal,
-                    "capture thread disconnected",
-                ));
+                let error = PinoraError::new(ErrorCode::Internal, "capture thread disconnected");
+                if delayed_capture {
+                    eprintln!(
+                        "pinora: delayed capture failed ({}) {error}; returning to tray",
+                        error.code
+                    );
+                    return Ok(());
+                }
+                return Err(error);
             }
         };
 
@@ -1806,16 +2004,35 @@ where
         let img_w = prep.image.pixels.size.width.max(1);
         let img_h = prep.image.pixels.size.height.max(1);
         if prep.base.len() != (img_w as usize) * (img_h as usize) {
-            return Err(PinoraError::new(
-                ErrorCode::Internal,
-                "capture buffer size mismatch",
-            ));
+            let error = PinoraError::new(ErrorCode::Internal, "capture buffer size mismatch");
+            if delayed_capture {
+                self.finish_delayed_capture_failure(error);
+                return Ok(());
+            }
+            return Err(error);
         }
 
         let mut target = loading.target;
         target.image_width = img_w;
         target.image_height = img_h;
-        self.open_overlay_with_preview(event_loop, prep, target)
+        // 此时 capture provider 已经取得真实像素，恢复不会进入本次截图。
+        if delayed_capture {
+            self.restore_delayed_pins();
+        }
+        match self.open_overlay_with_preview(event_loop, prep, target) {
+            Ok(()) => Ok(()),
+            Err(error) if delayed_capture => {
+                eprintln!(
+                    "pinora: delayed overlay open failed ({}) {error}; returning to tray",
+                    error.code
+                );
+                self.mode = Mode::Idle;
+                self.start_capture_wait = None;
+                self.resume_frame_cache();
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn open_overlay_with_preview(
@@ -2941,6 +3158,7 @@ where
                 scale,
                 opacity: opacity.clamp(0.15, 1.0),
                 locked: false,
+                visible: true,
                 window: window.clone(),
                 surface,
                 ocr: None,
@@ -4163,6 +4381,20 @@ mod overlay_scale_tests {
             .unwrap(),
             Some(bounds)
         );
+    }
+
+    #[test]
+    fn delayed_capture_snapshot_keeps_only_previously_visible_ids() {
+        let snapshot = snapshot_visible_ids([(11_u8, true), (12_u8, false), (13_u8, true)]);
+
+        assert_eq!(snapshot, vec![11, 13]);
+    }
+
+    #[test]
+    fn delayed_capture_is_not_due_before_its_deadline() {
+        let delayed = DelayedCapture::new(Duration::from_secs(60), Vec::new());
+
+        assert!(!delayed.is_due(Instant::now()));
     }
 
     #[test]
