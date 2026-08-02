@@ -123,12 +123,12 @@
 
 ## R-015：任务栏与 Dock 策略存在合成器边界（高）
 
-- 证据和影响范围：050 已删除空闲控制窗口；所有辅助窗口经 Windows `skip_taskbar`、X11 Utility、macOS Accessory/`LSUIElement` 和 KDE Wayland `skipTaskbar`/`skipPager` 请求隔离。KWin 脚本只按 Pinora 标题操作，并在失败时清理临时脚本。
+- 证据和影响范围：050 已删除空闲控制窗口；054 已将主 shell、历史、设置与兼容 Overlay/贴图会话的七个生产窗口构造路径收敛至 `window_policy` 工厂。所有辅助窗口经 Windows `skip_taskbar`、X11 Utility、macOS Accessory/`LSUIElement` 和 KDE Wayland `skipTaskbar`/`skipPager` 请求隔离；KWin 脚本只按 Pinora 标题操作，并在失败时清理临时脚本。
 - 触发条件：将条件编译、离线脚本测试或 GitHub runner 绿色结果当作 Windows 任务栏、macOS Dock、KDE Wayland 或其他 Wayland 合成器的真实结果。
 - 失败模式：辅助窗口仍出现在任务栏、Dock 或分页器；未注册全局热键的 Wayland 用户只能通过托盘/IPC 发起截图。
 - 缓解措施和必需验证：在 Windows、macOS、X11、KDE Wayland 原生会话逐一验证启动、Overlay、贴图、历史、设置、退出和多贴图；其他 Wayland 仅记录限制，不伪造支持。
 - 回滚或隔离动作：保留托盘/热键/IPC；按平台回退窗口属性或 KWin 调用，不触及截图、历史、导出或贴图数据。
-- 负责人和状态：Neo；本地静态与离线测试已通过，真实桌面验证开放。
+- 负责人和状态：Neo；054 的工厂收敛、定向策略/KWin 测试、workspace 门禁与 `ctx validate` 已通过，GitHub CI 与真实桌面验证开放。
 
 ## R-016：贴图真实窗口渲染性能仍待验证（中）
 

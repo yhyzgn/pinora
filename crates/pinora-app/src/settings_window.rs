@@ -33,25 +33,23 @@ impl SettingsWindow {
         context: &Context<Rc<Window>>,
         current: AppSettings,
     ) -> Result<Self, PinoraError> {
-        let attrs = window_policy::auxiliary_window_attributes(
+        let attrs = Window::default_attributes()
+            .with_title("Pinora Settings")
+            .with_inner_size(PhysicalSize::new(
+                settings_panel::PANEL_WIDTH,
+                settings_panel::PANEL_HEIGHT,
+            ))
+            .with_resizable(false)
+            .with_window_level(WindowLevel::AlwaysOnTop)
+            .with_visible(true);
+        let window = window_policy::create_auxiliary_window(
+            event_loop,
             AuxiliaryWindowKind::Panel,
-            Window::default_attributes()
-                .with_title("Pinora Settings")
-                .with_inner_size(PhysicalSize::new(
-                    settings_panel::PANEL_WIDTH,
-                    settings_panel::PANEL_HEIGHT,
-                ))
-                .with_resizable(false)
-                .with_window_level(WindowLevel::AlwaysOnTop)
-                .with_visible(true),
-        );
-        let window = event_loop
-            .create_window(attrs)
-            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("settings window: {e}")))?;
+            attrs,
+        )
+        .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("settings window: {e}")))?;
         let window = Rc::new(window);
-        if crate::kwin_place::kwin_available() {
-            crate::kwin_place::mark_auxiliary_window_by_title("Pinora Settings", 50);
-        }
+        window_policy::apply_post_map_policy(AuxiliaryWindowKind::Panel, "Pinora Settings");
         let mut surface = Surface::new(context, window.clone())
             .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("settings surface: {e}")))?;
         if let (Some(width), Some(height)) = (

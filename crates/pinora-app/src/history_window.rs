@@ -38,25 +38,23 @@ impl HistoryWindow {
         context: &Context<Rc<Window>>,
         entries: Vec<HistoryEntry>,
     ) -> Result<Self, PinoraError> {
-        let attrs = window_policy::auxiliary_window_attributes(
+        let attrs = Window::default_attributes()
+            .with_title("Pinora History")
+            .with_inner_size(PhysicalSize::new(
+                history_browser::PANEL_WIDTH,
+                history_browser::PANEL_HEIGHT,
+            ))
+            .with_resizable(false)
+            .with_window_level(WindowLevel::AlwaysOnTop)
+            .with_visible(true);
+        let window = window_policy::create_auxiliary_window(
+            event_loop,
             AuxiliaryWindowKind::Panel,
-            Window::default_attributes()
-                .with_title("Pinora History")
-                .with_inner_size(PhysicalSize::new(
-                    history_browser::PANEL_WIDTH,
-                    history_browser::PANEL_HEIGHT,
-                ))
-                .with_resizable(false)
-                .with_window_level(WindowLevel::AlwaysOnTop)
-                .with_visible(true),
-        );
-        let window = event_loop
-            .create_window(attrs)
-            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("history window: {e}")))?;
+            attrs,
+        )
+        .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("history window: {e}")))?;
         let window = Rc::new(window);
-        if crate::kwin_place::kwin_available() {
-            crate::kwin_place::mark_auxiliary_window_by_title("Pinora History", 50);
-        }
+        window_policy::apply_post_map_policy(AuxiliaryWindowKind::Panel, "Pinora History");
         let mut surface = Surface::new(context, window.clone())
             .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("history surface: {e}")))?;
         if let (Some(width), Some(height)) = (

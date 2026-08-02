@@ -117,17 +117,18 @@ impl ApplicationHandler for OverlayApp {
         }
 
         let title = "Pinora — 拖拽选区，Enter 确认，Esc 取消";
-        let attrs = window_policy::auxiliary_window_attributes(
-            AuxiliaryWindowKind::Overlay,
-            Window::default_attributes()
-                .with_title(title)
-                .with_inner_size(PhysicalSize::new(self.width, self.height))
-                .with_fullscreen(Some(Fullscreen::Borderless(None)))
-                .with_cursor(CursorIcon::Crosshair)
-                .with_decorations(false),
-        );
+        let attrs = Window::default_attributes()
+            .with_title(title)
+            .with_inner_size(PhysicalSize::new(self.width, self.height))
+            .with_fullscreen(Some(Fullscreen::Borderless(None)))
+            .with_cursor(CursorIcon::Crosshair)
+            .with_decorations(false);
 
-        let window = match event_loop.create_window(attrs) {
+        let window = match window_policy::create_auxiliary_window(
+            event_loop,
+            AuxiliaryWindowKind::Overlay,
+            attrs,
+        ) {
             Ok(w) => Rc::new(w),
             Err(e) => {
                 self.error = Some(PinoraError::new(
@@ -138,9 +139,7 @@ impl ApplicationHandler for OverlayApp {
                 return;
             }
         };
-        if crate::kwin_place::kwin_available() {
-            crate::kwin_place::mark_auxiliary_window_by_title(title, 50);
-        }
+        window_policy::apply_post_map_policy(AuxiliaryWindowKind::Overlay, title);
 
         let context = match Context::new(window.clone()) {
             Ok(c) => c,

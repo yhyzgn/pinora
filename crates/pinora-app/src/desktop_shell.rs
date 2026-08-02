@@ -758,13 +758,14 @@ where
             return;
         }
         // 先建一个隐藏、跳过任务栏的占位窗以拿到 display handle（Wayland 需要）。
-        let attrs = window_policy::auxiliary_window_attributes(
-            AuxiliaryWindowKind::Panel,
-            Window::default_attributes()
-                .with_visible(false)
-                .with_title("pinora-display-handle"),
-        );
-        if let Ok(w) = event_loop.create_window(attrs) {
+        let attrs = Window::default_attributes()
+            .with_visible(false)
+            .with_title("pinora-display-handle");
+        if let Ok(w) = window_policy::create_auxiliary_window(
+            event_loop,
+            AuxiliaryWindowKind::DisplayHandle,
+            attrs,
+        ) {
             let w = Rc::new(w);
             if let Ok(ctx) = Context::new(w) {
                 self.context = Some(ctx);
@@ -1770,16 +1771,14 @@ where
                 )
             }
         };
-        let attrs = window_policy::auxiliary_window_attributes(AuxiliaryWindowKind::Overlay, attrs);
-
-        let window = event_loop
-            .create_window(attrs)
-            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("overlay window: {e}")))?;
+        let window =
+            window_policy::create_auxiliary_window(event_loop, AuxiliaryWindowKind::Overlay, attrs)
+                .map_err(|e| {
+                    PinoraError::new(ErrorCode::Internal, format!("overlay window: {e}"))
+                })?;
         let window = Rc::new(window);
         window.focus_window();
-        if crate::kwin_place::kwin_available() {
-            crate::kwin_place::mark_auxiliary_window_by_title(title, 50);
-        }
+        window_policy::apply_post_map_policy(AuxiliaryWindowKind::Overlay, title);
 
         let mut surface = Surface::new(context, window.clone())
             .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("overlay surface: {e}")))?;
@@ -2811,20 +2810,17 @@ where
         let title = format!("Pinora-pin-{pin_id}");
         // 先 Normal 层级 + 不可见：建好、画完、钉位后，再 AlwaysOnTop。
         // 这样定位过程中不会盖过仍显示的 overlay（避免中央闪一下）。
-        let attrs = window_policy::auxiliary_window_attributes(
-            AuxiliaryWindowKind::Pin,
-            Window::default_attributes()
-                .with_title(title.clone())
-                .with_inner_size(PhysicalSize::new(w, h))
-                .with_position(PhysicalPosition::new(position.x, position.y))
-                .with_decorations(false)
-                .with_resizable(true)
-                .with_visible(false),
-        );
+        let attrs = Window::default_attributes()
+            .with_title(title.clone())
+            .with_inner_size(PhysicalSize::new(w, h))
+            .with_position(PhysicalPosition::new(position.x, position.y))
+            .with_decorations(false)
+            .with_resizable(true)
+            .with_visible(false);
 
-        let window = event_loop
-            .create_window(attrs)
-            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("pin window: {e}")))?;
+        let window =
+            window_policy::create_auxiliary_window(event_loop, AuxiliaryWindowKind::Pin, attrs)
+                .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("pin window: {e}")))?;
         let window = Rc::new(window);
         window.set_outer_position(PhysicalPosition::new(position.x, position.y));
 
@@ -2866,6 +2862,7 @@ where
 
         // map 进合成器以便 KWin 能找到（仍在 overlay 下面）
         window.set_visible(true);
+        window_policy::apply_post_map_policy(AuxiliaryWindowKind::Pin, &title);
         if crate::kwin_place::kwin_available() {
             if let Err(e) =
                 crate::kwin_place::place_window_by_title_sync(&title, position.x, position.y, w, h)
@@ -2874,7 +2871,6 @@ where
             }
             crate::kwin_place::place_window_by_title(&title, position.x, position.y, w, h, 50);
             crate::kwin_place::place_window_by_title(&title, position.x, position.y, w, h, 150);
-            crate::kwin_place::mark_auxiliary_window_by_title(&title, 50);
         } else {
             window.set_outer_position(PhysicalPosition::new(position.x, position.y));
         }

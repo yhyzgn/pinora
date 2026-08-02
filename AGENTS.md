@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/053_pin_render_cache.md`
-- 任务：`.context/tasks/053_pin_render_cache.md`
+- 计划：`.context/plans/054_auxiliary_window_boundary.md`
+- 任务：`.context/tasks/054_auxiliary_window_boundary.md`
 
 ## 交付要求
 
