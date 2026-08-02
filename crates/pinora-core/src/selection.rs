@@ -6,6 +6,72 @@ use crate::geometry::{PixelPoint, PixelRect, PixelSize};
 /// 默认最小选区边长（物理像素）。
 pub const MIN_SELECTION_EDGE: u32 = 2;
 
+/// 已确认选区的可调整边或角。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SelectionHandle {
+    NorthWest,
+    North,
+    NorthEast,
+    East,
+    SouthEast,
+    South,
+    SouthWest,
+    West,
+}
+
+impl SelectionHandle {
+    pub const ALL: [Self; 8] = [
+        Self::NorthWest,
+        Self::NorthEast,
+        Self::SouthEast,
+        Self::SouthWest,
+        Self::North,
+        Self::East,
+        Self::South,
+        Self::West,
+    ];
+
+    /// 返回此热区在选区边框上的物理像素中心。
+    pub fn center(self, rect: PixelRect) -> PixelPoint {
+        let left = rect.origin.x;
+        let top = rect.origin.y;
+        let right = rect.right().saturating_sub(1);
+        let bottom = rect.bottom().saturating_sub(1);
+        match self {
+            Self::NorthWest => PixelPoint::new(left, top),
+            Self::North => {
+                PixelPoint::new(left.saturating_add(right.saturating_sub(left) / 2), top)
+            }
+            Self::NorthEast => PixelPoint::new(right, top),
+            Self::East => {
+                PixelPoint::new(right, top.saturating_add(bottom.saturating_sub(top) / 2))
+            }
+            Self::SouthEast => PixelPoint::new(right, bottom),
+            Self::South => {
+                PixelPoint::new(left.saturating_add(right.saturating_sub(left) / 2), bottom)
+            }
+            Self::SouthWest => PixelPoint::new(left, bottom),
+            Self::West => PixelPoint::new(left, top.saturating_add(bottom.saturating_sub(top) / 2)),
+        }
+    }
+
+    const fn moves_west(self) -> bool {
+        matches!(self, Self::NorthWest | Self::SouthWest | Self::West)
+    }
+
+    const fn moves_east(self) -> bool {
+        matches!(self, Self::NorthEast | Self::SouthEast | Self::East)
+    }
+
+    const fn moves_north(self) -> bool {
+        matches!(self, Self::NorthWest | Self::NorthEast | Self::North)
+    }
+
+    const fn moves_south(self) -> bool {
+        matches!(self, Self::SouthWest | Self::SouthEast | Self::South)
+    }
+}
+
 /// 选区拖拽会话。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SelectionSession {
@@ -129,6 +195,46 @@ impl SelectionSession {
         }
     }
 
+    /// 调整当前已确认选区的一条边或一个角。
+    ///
+    /// 调整点始终限制在画布 bounds 内，且边长不会小于 `min_edge`。拖过对边时，
+    /// 被拖动的一侧停在最小尺寸处，选区不会翻转。
+    pub fn resize_from_handle(&mut self, handle: SelectionHandle, point: PixelPoint) -> bool {
+        let Some(rect) = self.preview_rect() else {
+            return false;
+        };
+        if validate_min_size(rect, self.min_edge).is_err() {
+            return false;
+        }
+
+        let point = self.clamp_point(point);
+        let min_span = i32::try_from(self.min_edge.saturating_sub(1)).unwrap_or(i32::MAX);
+        let mut left = rect.origin.x;
+        let mut top = rect.origin.y;
+        let mut right = rect.right().saturating_sub(1);
+        let mut bottom = rect.bottom().saturating_sub(1);
+
+        if handle.moves_west() {
+            left = point.x.min(right.saturating_sub(min_span));
+        }
+        if handle.moves_east() {
+            right = point.x.max(left.saturating_add(min_span));
+        }
+        if handle.moves_north() {
+            top = point.y.min(bottom.saturating_sub(min_span));
+        }
+        if handle.moves_south() {
+            bottom = point.y.max(top.saturating_add(min_span));
+        }
+
+        let anchor = PixelPoint::new(left, top);
+        let cursor = PixelPoint::new(right, bottom);
+        let changed = self.anchor != Some(anchor) || self.cursor != Some(cursor);
+        self.anchor = Some(anchor);
+        self.cursor = Some(cursor);
+        changed
+    }
+
     fn clamp_point(&self, point: PixelPoint) -> PixelPoint {
         let Some(b) = self.bounds else {
             return point;
@@ -214,6 +320,112 @@ mod tests {
         s.nudge(5, -3);
         let r = s.preview_rect().unwrap();
         assert_eq!(r.origin, PixelPoint::new(15, 7));
+    }
+
+    #[test]
+    fn every_handle_resizes_its_expected_edges() {
+        let cases = [
+            (
+                SelectionHandle::NorthWest,
+                PixelPoint::new(4, 5),
+                PixelRect::new(4, 5, 27, 36),
+            ),
+            (
+                SelectionHandle::North,
+                PixelPoint::new(99, 8),
+                PixelRect::new(10, 8, 21, 33),
+            ),
+            (
+                SelectionHandle::NorthEast,
+                PixelPoint::new(35, 7),
+                PixelRect::new(10, 7, 26, 34),
+            ),
+            (
+                SelectionHandle::East,
+                PixelPoint::new(36, 99),
+                PixelRect::new(10, 20, 27, 21),
+            ),
+            (
+                SelectionHandle::SouthEast,
+                PixelPoint::new(37, 48),
+                PixelRect::new(10, 20, 28, 29),
+            ),
+            (
+                SelectionHandle::South,
+                PixelPoint::new(9, 49),
+                PixelRect::new(10, 20, 21, 30),
+            ),
+            (
+                SelectionHandle::SouthWest,
+                PixelPoint::new(3, 47),
+                PixelRect::new(3, 20, 28, 28),
+            ),
+            (
+                SelectionHandle::West,
+                PixelPoint::new(2, 99),
+                PixelRect::new(2, 20, 29, 21),
+            ),
+        ];
+
+        for (handle, point, expected) in cases {
+            let mut session = SelectionSession::new()
+                .with_bounds(PixelRect::new(0, 0, 60, 60))
+                .with_min_edge(2);
+            session.begin_drag(PixelPoint::new(10, 20));
+            session.update_cursor(PixelPoint::new(30, 40));
+
+            assert!(session.resize_from_handle(handle, point), "{handle:?}");
+            assert_eq!(session.try_confirm(), Ok(expected), "{handle:?}");
+        }
+    }
+
+    #[test]
+    fn resize_clamps_to_bounds_and_minimum_size_without_flipping() {
+        let mut session = SelectionSession::new()
+            .with_bounds(PixelRect::new(0, 0, 60, 60))
+            .with_min_edge(5);
+        session.begin_drag(PixelPoint::new(10, 10));
+        session.update_cursor(PixelPoint::new(20, 20));
+
+        assert!(session.resize_from_handle(SelectionHandle::NorthWest, PixelPoint::new(99, 99)));
+        assert_eq!(session.try_confirm(), Ok(PixelRect::new(16, 16, 5, 5)));
+        assert!(!session.resize_from_handle(SelectionHandle::NorthWest, PixelPoint::new(99, 99)));
+
+        assert!(!session.resize_from_handle(SelectionHandle::SouthEast, PixelPoint::new(-8, -8)));
+        assert_eq!(session.try_confirm(), Ok(PixelRect::new(16, 16, 5, 5)));
+
+        let mut bounded = SelectionSession::new()
+            .with_bounds(PixelRect::new(0, 0, 60, 60))
+            .with_min_edge(2);
+        bounded.begin_drag(PixelPoint::new(10, 10));
+        bounded.update_cursor(PixelPoint::new(20, 20));
+        assert!(bounded.resize_from_handle(SelectionHandle::East, PixelPoint::new(99, 10)));
+        assert_eq!(bounded.try_confirm(), Ok(PixelRect::new(10, 10, 50, 11)));
+    }
+
+    #[test]
+    fn handle_centers_are_on_the_selection_border() {
+        let rect = PixelRect::new(10, 20, 21, 11);
+        assert_eq!(
+            SelectionHandle::NorthWest.center(rect),
+            PixelPoint::new(10, 20)
+        );
+        assert_eq!(SelectionHandle::North.center(rect), PixelPoint::new(20, 20));
+        assert_eq!(
+            SelectionHandle::NorthEast.center(rect),
+            PixelPoint::new(30, 20)
+        );
+        assert_eq!(SelectionHandle::East.center(rect), PixelPoint::new(30, 25));
+        assert_eq!(
+            SelectionHandle::SouthEast.center(rect),
+            PixelPoint::new(30, 30)
+        );
+        assert_eq!(SelectionHandle::South.center(rect), PixelPoint::new(20, 30));
+        assert_eq!(
+            SelectionHandle::SouthWest.center(rect),
+            PixelPoint::new(10, 30)
+        );
+        assert_eq!(SelectionHandle::West.center(rect), PixelPoint::new(10, 25));
     }
 
     #[test]

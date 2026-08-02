@@ -46,8 +46,9 @@ use pinora_core::{
     AssetRef, CaptureImage, CaptureProvider, CaptureRequest, CaptureWindowInfo, Command,
     CorrelationId, DisplayId, DisplayInfo, DomainEventKind, ErrorCode, HistoryEntry, HistoryIndex,
     ImageId, ImageSink, JobId, JobKind, JobOwner, JobSpec, OcrResult, OcrTextSelection, OcrWordRef,
-    PinId, PinTransform, PinoraError, PixelPoint, PixelRect, SelectionSession, SessionId,
-    bake_annotations, color_to_hex, render_preview_rgba, resolve_all_displays_rect, sample_rgba_at,
+    PinId, PinTransform, PinoraError, PixelPoint, PixelRect, SelectionHandle, SelectionSession,
+    SessionId, bake_annotations, color_to_hex, render_preview_rgba, resolve_all_displays_rect,
+    sample_rgba_at,
 };
 use softbuffer::{Context, Rect as DamageRect, Surface};
 use winit::application::ApplicationHandler;
@@ -613,6 +614,8 @@ struct OverlayState {
     /// Ready 下按下后尚未移动足够距离，暂不退出 Ready。
     pending_reselect: bool,
     drag_anchor: PixelPoint,
+    /// 当前正在拖动的选区边/角；只在无标注的 Ready 选区内有效。
+    selection_handle_drag: Option<SelectionHandle>,
     /// 在选区内画标注。
     annotate_dragging: bool,
     annotate: AnnotateSession,
@@ -2374,6 +2377,7 @@ where
             dragging: false,
             pending_reselect: false,
             drag_anchor: PixelPoint::new(0, 0),
+            selection_handle_drag: None,
             annotate_dragging: false,
             annotate: AnnotateSession::new(1, 1),
             selected_annotation: None,
@@ -2559,12 +2563,25 @@ where
                 );
                 if ov.dragging {
                     let p = ov.last_cursor;
-                    if ov.pending_reselect {
+                    if let Some(handle) = ov.selection_handle_drag {
+                        if ov.session.resize_from_handle(handle, p) {
+                            let dx = (p.x - ov.last_draw_cursor.x).abs();
+                            let dy = (p.y - ov.last_draw_cursor.y).abs();
+                            if dx >= 2
+                                || dy >= 2
+                                || ov.last_present.elapsed() >= Duration::from_millis(32)
+                            {
+                                ov.last_draw_cursor = p;
+                                refresh_overlay_resize_preview(ov);
+                            }
+                        }
+                    } else if ov.pending_reselect {
                         let dx = (p.x - ov.drag_anchor.x).abs();
                         let dy = (p.y - ov.drag_anchor.y).abs();
                         if dx >= 4 || dy >= 4 {
                             // 确认重选：退出 Ready，清工具栏
                             ov.pending_reselect = false;
+                            ov.selection_handle_drag = None;
                             ov.phase = OverlayPhase::Selecting;
                             ov.toolbar.clear();
                             ov.toolbar_pressed = None;
@@ -2685,6 +2702,15 @@ where
                     && let Ok(sel) = ov.session.try_confirm()
                     && sel.contains_point(p)
                 {
+                    if overlay_can_resize_selection(ov)
+                        && let Some(handle) = selection_handle_at(sel, p)
+                    {
+                        ov.dragging = true;
+                        ov.pending_reselect = false;
+                        ov.selection_handle_drag = Some(handle);
+                        ov.annotate_dragging = false;
+                        return;
+                    }
                     let now = Instant::now();
                     let is_double = ov
                         .last_click_at
@@ -2739,6 +2765,7 @@ where
                 ov.dragging = true;
                 ov.drag_anchor = p;
                 ov.annotate_dragging = false;
+                ov.selection_handle_drag = None;
                 if ov.phase == OverlayPhase::Ready {
                     ov.pending_reselect = true;
                 } else {
@@ -2789,6 +2816,10 @@ where
                     }
                 } else if ov.dragging {
                     ov.dragging = false;
+                    if ov.selection_handle_drag.take().is_some() {
+                        refresh_overlay_ready(ov);
+                        return;
+                    }
                     if ov.pending_reselect {
                         // 未移动够：当作误触，保持 Ready
                         ov.pending_reselect = false;
@@ -3252,6 +3283,12 @@ where
         event_loop: &ActiveEventLoop,
         action: OverlayFinish,
     ) -> Result<(), PinoraError> {
+        if let Some(ov) = self.overlay.as_mut()
+            && ov.selection_handle_drag.take().is_some()
+        {
+            ov.dragging = false;
+            refresh_overlay_ready(ov);
+        }
         self.commit_overlay_draft();
         let (src_rect, display_id, session_owner, asset, global, edit_pin_id) = {
             let ov = self
@@ -4517,7 +4554,11 @@ fn set_overlay_tool(ov: &mut OverlayState, tool: AnnotateTool) {
     if tool != AnnotateTool::Select {
         let had_selection = ov.selected_annotation.take().is_some();
         let had_drag = ov.selected_drag.take().is_some();
-        if had_selection || had_drag {
+        let had_selection_resize = ov.selection_handle_drag.take().is_some();
+        if had_selection_resize {
+            ov.dragging = false;
+        }
+        if had_selection || had_drag || had_selection_resize {
             ov.annotate_dirty = true;
         }
     }
@@ -4546,6 +4587,45 @@ fn nudge_selected_annotation(ov: &mut OverlayState, dx: i32, dy: i32) -> bool {
     true
 }
 
+const SELECTION_HANDLE_HIT_RADIUS: i32 = 7;
+const SELECTION_HANDLE_RENDER_RADIUS: i32 = 4;
+
+fn overlay_can_resize_selection(ov: &OverlayState) -> bool {
+    ov.phase == OverlayPhase::Ready
+        && selection_resize_allowed(ov.annotate.doc.is_empty(), ov.annotate.draft.is_some())
+}
+
+fn selection_resize_allowed(document_is_empty: bool, has_draft: bool) -> bool {
+    document_is_empty && !has_draft
+}
+
+fn selection_handle_at(rect: PixelRect, point: PixelPoint) -> Option<SelectionHandle> {
+    SelectionHandle::ALL
+        .into_iter()
+        .filter_map(|handle| {
+            let center = handle.center(rect);
+            let dx = (i64::from(point.x) - i64::from(center.x)).abs();
+            let dy = (i64::from(point.y) - i64::from(center.y)).abs();
+            (dx <= i64::from(SELECTION_HANDLE_HIT_RADIUS)
+                && dy <= i64::from(SELECTION_HANDLE_HIT_RADIUS))
+            .then_some((
+                handle,
+                dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy)),
+            ))
+        })
+        .min_by_key(|(_, distance_squared)| *distance_squared)
+        .map(|(handle, _)| handle)
+}
+
+fn refresh_overlay_resize_preview(ov: &mut OverlayState) {
+    if let Ok(selection) = ov.session.try_confirm()
+        && ov.phase == OverlayPhase::Ready
+    {
+        ov.toolbar = layout_toolbar(selection, ov.buf_w, ov.buf_h);
+    }
+    ov.needs_redraw = true;
+}
+
 fn refresh_overlay_ready(ov: &mut OverlayState) {
     if let Ok(sel) = ov.session.try_confirm()
         && ov.phase == OverlayPhase::Ready
@@ -4556,6 +4636,7 @@ fn refresh_overlay_ready(ov: &mut OverlayState) {
         if source_changed {
             ov.selected_annotation = None;
             ov.selected_drag = None;
+            ov.selection_handle_drag = None;
             ov.active_src_rect = Some(src_sel);
             ov.annotation_asset = Some(OverlayAssetIdentity::new());
             ov.annotate_cache = None;
@@ -4570,6 +4651,7 @@ fn refresh_overlay_ready(ov: &mut OverlayState) {
             ov.annotate = AnnotateSession::new(src_sel.size.width, src_sel.size.height);
             ov.selected_annotation = None;
             ov.selected_drag = None;
+            ov.selection_handle_drag = None;
             ov.annotate.tool = tool;
             ov.annotate.color = color;
             ov.annotate.stroke = stroke;
@@ -4597,6 +4679,7 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
 
     let sel_changed = ov.last_drawn_rect != new_rect;
     let tb_layout_changed = ov.last_toolbar_bounds != new_tb;
+    let selection_chrome_padding = SELECTION_HANDLE_RENDER_RADIUS + 3;
     let chrome_only = ov.toolbar_chrome_dirty
         && !ov.annotate_dirty
         && !sel_changed
@@ -4624,7 +4707,7 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
         ov.toolbar_chrome_dirty = false;
     } else if ov.annotate_dirty || sel_changed || tb_layout_changed || !ov.buffer_synced {
         if let Some(old) = ov.last_drawn_rect {
-            let expanded = expand_rect(old, 3, ov.buf_w, ov.buf_h);
+            let expanded = expand_rect(old, selection_chrome_padding, ov.buf_w, ov.buf_h);
             blit_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, expanded);
             damage.push(expanded);
         }
@@ -4672,7 +4755,15 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
                 );
             }
             draw_rect_border(&mut ov.frame, img_w, img_h, rect, 0x00_FF_CC_33);
-            damage.push(expand_rect(rect, 3, ov.buf_w, ov.buf_h));
+            if overlay_can_resize_selection(ov) {
+                draw_selection_handles(&mut ov.frame, img_w, img_h, rect);
+            }
+            damage.push(expand_rect(
+                rect,
+                selection_chrome_padding,
+                ov.buf_w,
+                ov.buf_h,
+            ));
         }
 
         if ov.phase == OverlayPhase::Ready && !ov.toolbar.is_empty() {
@@ -5175,6 +5266,49 @@ fn draw_rect_border(buf: &mut [u32], stride: usize, height: usize, rect: PixelRe
     }
 }
 
+fn draw_selection_handles(buf: &mut [u32], stride: usize, height: usize, rect: PixelRect) {
+    for handle in SelectionHandle::ALL {
+        let center = handle.center(rect);
+        fill_xrgb_rect(
+            buf,
+            stride,
+            height,
+            PixelRect::new(
+                center.x.saturating_sub(SELECTION_HANDLE_RENDER_RADIUS),
+                center.y.saturating_sub(SELECTION_HANDLE_RENDER_RADIUS),
+                (SELECTION_HANDLE_RENDER_RADIUS * 2 + 1) as u32,
+                (SELECTION_HANDLE_RENDER_RADIUS * 2 + 1) as u32,
+            ),
+            0x00_23_29_33,
+        );
+        fill_xrgb_rect(
+            buf,
+            stride,
+            height,
+            PixelRect::new(
+                center.x.saturating_sub(SELECTION_HANDLE_RENDER_RADIUS - 1),
+                center.y.saturating_sub(SELECTION_HANDLE_RENDER_RADIUS - 1),
+                (SELECTION_HANDLE_RENDER_RADIUS * 2 - 1) as u32,
+                (SELECTION_HANDLE_RENDER_RADIUS * 2 - 1) as u32,
+            ),
+            0x00_FF_FF_FF,
+        );
+    }
+}
+
+fn fill_xrgb_rect(buf: &mut [u32], stride: usize, height: usize, rect: PixelRect, color: u32) {
+    let x0 = rect.origin.x.max(0) as usize;
+    let y0 = rect.origin.y.max(0) as usize;
+    let x1 = (rect.right() as usize).min(stride);
+    let y1 = (rect.bottom() as usize).min(height);
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    for y in y0..y1 {
+        buf[y * stride + x0..y * stride + x1].fill(color);
+    }
+}
+
 /// XRGB 缓冲区上画轴对齐矩形轮廓（OCR 词框）。
 fn draw_rect_outline_xrgb(
     buf: &mut [u32],
@@ -5281,6 +5415,31 @@ mod overlay_scale_tests {
     fn selected_annotation_nudge_uses_one_or_ten_pixel_steps() {
         assert_eq!(annotation_nudge_step(ModifiersState::empty()), 1);
         assert_eq!(annotation_nudge_step(ModifiersState::SHIFT), 10);
+    }
+
+    #[test]
+    fn selection_resize_hotspots_prefer_corners_and_reject_document_edits() {
+        let rect = PixelRect::new(10, 20, 101, 101);
+        assert_eq!(
+            selection_handle_at(rect, PixelPoint::new(10, 20)),
+            Some(SelectionHandle::NorthWest)
+        );
+        assert_eq!(
+            selection_handle_at(rect, PixelPoint::new(60, 20)),
+            Some(SelectionHandle::North)
+        );
+        assert_eq!(
+            selection_handle_at(rect, PixelPoint::new(110, 120)),
+            Some(SelectionHandle::SouthEast)
+        );
+        assert_eq!(
+            selection_handle_at(PixelRect::new(0, 0, 3, 9), PixelPoint::new(2, 4)),
+            Some(SelectionHandle::East)
+        );
+        assert_eq!(selection_handle_at(rect, PixelPoint::new(60, 70)), None);
+        assert!(selection_resize_allowed(true, false));
+        assert!(!selection_resize_allowed(false, false));
+        assert!(!selection_resize_allowed(true, true));
     }
 
     #[test]

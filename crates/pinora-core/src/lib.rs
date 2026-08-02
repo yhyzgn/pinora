@@ -51,8 +51,8 @@ pub use ocr::{
 };
 pub use pin::{Pin, PinMode, PinTransform};
 pub use selection::{
-    MIN_SELECTION_EDGE, SelectionOutcome, SelectionSession, clamp_to_image, normalize_rect,
-    validate_min_size,
+    MIN_SELECTION_EDGE, SelectionHandle, SelectionOutcome, SelectionSession, clamp_to_image,
+    normalize_rect, validate_min_size,
 };
 pub use settings::{
     AppSettings, DEFAULT_HISTORY_LIMIT, DEFAULT_PIN_LIMIT, DEFAULT_PIN_OPACITY_PERCENT,

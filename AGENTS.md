@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/071_annotation_move_transaction.md`
-- 任务：`.context/tasks/071_annotation_move_transaction.md`
+- 计划：`.context/plans/072_selection_resize_handles.md`
+- 任务：`.context/tasks/072_selection_resize_handles.md`
 
 ## 交付要求
 
