@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/074_multiline_text_composition.md`
-- 任务：`.context/tasks/074_multiline_text_composition.md`
+- 计划：`.context/plans/075_restore_closed_pin.md`
+- 任务：`.context/tasks/075_restore_closed_pin.md`
 
 ## 交付要求
 

@@ -214,6 +214,7 @@ where
         settings: None,
         history: None,
         pins: HashMap::new(),
+        recent_closed_pin: None,
         drag_pin: None,
         modifiers: ModifiersState::empty(),
         error: None,
@@ -752,6 +753,16 @@ struct PinPresentation {
     pixels_xrgb: Option<Vec<u32>>,
 }
 
+#[derive(Clone)]
+struct ClosedPinSnapshot {
+    image: CaptureImage,
+    position: PixelPoint,
+    scale: f64,
+    opacity: f64,
+    locked: bool,
+    always_on_top: bool,
+}
+
 struct DesktopApp<L, P, C, S> {
     runtime: Option<AppRuntime<L, P, C, S>>,
     context: Option<Context<Rc<Window>>>,
@@ -764,6 +775,7 @@ struct DesktopApp<L, P, C, S> {
     /// 受管历史浏览窗口；文件读取和删除必须经 history_export 安全边界。
     history: Option<HistoryWindow>,
     pins: HashMap<WindowId, PinWin>,
+    recent_closed_pin: Option<ClosedPinSnapshot>,
     drag_pin: Option<WindowId>,
     modifiers: ModifiersState,
     error: Option<PinoraError>,
@@ -869,6 +881,7 @@ where
                     println!("pinora: tray → close all pins");
                     self.close_all_pins();
                 }
+                TrayAction::UndoClosePin => self.restore_closed_pin(event_loop),
                 TrayAction::Quit => {
                     println!("pinora: tray → quit");
                     self.quit = true;
@@ -1054,6 +1067,7 @@ where
         for window_id in window_ids {
             self.close_pin(window_id);
         }
+        self.set_recent_closed_pin(None);
     }
 
     fn ensure_context(&mut self, event_loop: &ActiveEventLoop) {
@@ -4241,12 +4255,26 @@ where
 
     fn close_pin(&mut self, window_id: WindowId) {
         if let Some(pin) = self.pins.remove(&window_id) {
+            let position = pin
+                .window
+                .outer_position()
+                .map(|position| PixelPoint::new(position.x, position.y))
+                .unwrap_or(PixelPoint::new(0, 0));
+            let snapshot = ClosedPinSnapshot {
+                image: pin.image.clone(),
+                position,
+                scale: pin.scale,
+                opacity: pin.opacity,
+                locked: pin.locked,
+                always_on_top: pin.always_on_top,
+            };
             self.ocr_jobs.close_owner(JobOwner::Pin(pin.pin_id));
             self.export_jobs.close_owner(JobOwner::Pin(pin.pin_id));
             println!("pinora: pin {} closed", pin.pin_id);
             if let Some(rt) = self.runtime.as_mut() {
                 let _ = rt.dispatch(Command::close_pin(pin.pin_id));
             }
+            self.set_recent_closed_pin(Some(snapshot));
         }
         self.drag_pin = None;
         if self.pins.is_empty() && self.overlay.is_none() {
@@ -4254,6 +4282,92 @@ where
             self.mode = Mode::Idle;
             println!("pinora: all pins closed (F2/Ctrl+N 再截，Ctrl+Q 退出)");
         }
+    }
+
+    fn set_recent_closed_pin(&mut self, snapshot: Option<ClosedPinSnapshot>) {
+        let available = snapshot.is_some();
+        self.recent_closed_pin = snapshot;
+        if let Some(tray) = &self.tray {
+            tray.set_undo_close_pin_available(available);
+        }
+    }
+
+    fn restore_closed_pin(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(snapshot) = self.recent_closed_pin.clone() else {
+            return;
+        };
+        let create = self
+            .runtime
+            .as_mut()
+            .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "runtime missing"))
+            .and_then(|runtime| {
+                runtime.dispatch(Command::create_pin(
+                    snapshot.image.clone(),
+                    snapshot.position,
+                ))
+            });
+        let pin_id = match create {
+            Ok(result) => result
+                .events
+                .iter()
+                .find_map(|event| match event.event.kind {
+                    DomainEventKind::PinCreated { pin_id, .. } => Some(pin_id),
+                    _ => None,
+                }),
+            Err(error) => {
+                eprintln!("pinora: restore closed pin failed: {error}");
+                return;
+            }
+        };
+        let Some(pin_id) = pin_id else {
+            eprintln!("pinora: restore closed pin missing PinCreated event");
+            return;
+        };
+        if let Err(error) = self.spawn_pin(
+            event_loop,
+            pin_id,
+            snapshot.image.clone(),
+            PinPresentation {
+                position: snapshot.position,
+                scale: snapshot.scale,
+                opacity: snapshot.opacity,
+                pixels_xrgb: None,
+            },
+        ) {
+            if let Some(runtime) = self.runtime.as_mut() {
+                let _ = runtime.dispatch(Command::close_pin(pin_id));
+            }
+            eprintln!("pinora: restore closed pin window failed: {error}");
+            return;
+        }
+        let restored_window_id = self
+            .pins
+            .iter()
+            .find_map(|(window_id, pin)| (pin.pin_id == pin_id).then_some(*window_id));
+        if let Some(window_id) = restored_window_id
+            && let Some(pin) = self.pins.get_mut(&window_id)
+        {
+            pin.locked = snapshot.locked;
+            pin.always_on_top = snapshot.always_on_top;
+            pin.window.set_window_level(if snapshot.always_on_top {
+                WindowLevel::AlwaysOnTop
+            } else {
+                WindowLevel::Normal
+            });
+            pin.window.request_redraw();
+        }
+        if let Some(window_id) = restored_window_id {
+            self.sync_pin_transform(window_id);
+        }
+        if let Some(runtime) = self.runtime.as_mut() {
+            let _ = runtime.dispatch(Command::set_pin_locked(pin_id, snapshot.locked));
+            let _ = runtime.dispatch(Command::set_pin_always_on_top(
+                pin_id,
+                snapshot.always_on_top,
+            ));
+        }
+        self.set_recent_closed_pin(None);
+        println!("pinora: restored closed pin as {pin_id}");
     }
 
     fn paint_pin(&mut self, window_id: WindowId) -> Result<(), PinoraError> {

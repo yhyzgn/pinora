@@ -16,7 +16,7 @@
 | --- | --- |
 | 截屏尝试 | KDE 优先 spectacle/KWin；否则 xcap；两者不可用时返回 `CapabilityUnavailable`，不生成 fake 图像 |
 | 区域与全屏 Overlay | F2/Ctrl+N 拖选；选区实时显示源图物理像素宽高与全局左上坐标；已确认且未标注的选区可拖四边/四角精确调整；F3/托盘默认全屏自动确认当前完整图像；多显示器 tray 可指定目标全屏；双击复制、中键/Enter 贴图；选区内标注/OCR |
-| 贴图窗口 | 无边框置顶、拖动、滚轮缩放、Esc 关闭；客户区右键菜单、锁定/压暗/置顶、原位编辑；多贴图 |
+| 贴图窗口 | 无边框置顶、拖动、滚轮缩放、Esc 关闭；tray 可撤销最近关闭一次（恢复为新 PinId）；客户区右键菜单、锁定/压暗/置顶、原位编辑；多贴图 |
 | 导出 | PNG 文件 + 内存剪贴板 + 系统剪贴板（wl-copy/xclip） |
 | 全局热键 | F2/Ctrl+N/Ctrl+Shift+S 区域、F3 单显示器全屏（注册成功时）+ `pinora capture` IPC |
 | 单实例 | flock + Unix socket Activate/CAPTURE/QUIT |
@@ -57,6 +57,7 @@
 - 2026-08-02 的 072 为区域 Overlay 已确认且未标注的选区增加四边/四角调整：八方向几何、最小尺寸和 bounds 约束集中于 `SelectionSession`；热区在现有呈现帧绘制，最近中心命中并复用 2 像素/32ms 拖动节流。拖动期间不更新导出、OCR、贴图或后台任务输入，抬起/快捷完成时才同步当前源选区；有草稿或已提交标注时保持既有重选路径。没有新增窗口、事件循环、系统菜单、截图或 worker，tray-only 与 `window_policy` 边界不变；真实热区、HiDPI、帧时间与任务栏/Dock/分页器仍未验证。
 - 2026-08-02 的 073 为当前 Overlay 增加选区物理像素读数：`W… H… X… Y…` 中的尺寸来自源图，坐标为 `buf_rect_to_src` 后叠加当前捕获会话 `display_origin`，支持负全局 origin。独立读数模块优先将 panel 放在选区上方并避让下方工具栏；极小画布仍限制在既有帧内。读数的新旧 bounds 均参与脏区恢复，普通拖选、键盘移动和八方向调整复用原有节流；没有新增窗口、事件循环、系统菜单、截图或 worker，tray-only 与 `window_policy` 边界不变；真实可读性、HiDPI、帧时间与任务栏/Dock/分页器仍未验证。
 - 2026-08-02 的 074 为 Overlay 文本标注增加多行与明确提交边界：`Shift+Enter` 在草稿中插入换行、`Enter`/`Ctrl+Enter` 提交、`Esc` 显式取消。文本绘制、fallback、bounds 和命中均共享行距，空白行保留垂直空间；外部重选或工具切换前先提交非空草稿，空白草稿可安全清除。没有新增窗口、事件循环、系统菜单、截图或 worker，tray-only 与 `window_policy` 边界不变；真实输入法、字体、HiDPI、帧时间与任务栏/Dock/分页器仍未验证。
+- 2026-08-02 的 075 增加 tray 最近关闭贴图撤销：内存快照不包含窗口或任务句柄，关闭先使旧 owner/runtime Pin 失效；恢复通过新的 `PinId`、asset 和既有 `spawn_pin` 重新创建受策略保护的贴图窗口，创建失败保留快照重试。没有新增窗口类型、事件循环、截图或 worker；真实 tray、首帧、HiDPI、焦点与任务栏/Dock/分页器仍未验证。
 - GitHub Actions CI `30732620836`、`30732765136`、`30732906042`、`30733684203`、`30734154282`、`30734583848`、`30734867309` 与 `30735354166` 已于 2026-08-02 在 Linux、macOS、Windows 原生 runner 通过格式、workspace 编译、严格 Clippy 和单元测试；这些运行未创建 GUI 会话，不能作为任务栏、Dock、窗口交互、KWin 行为、真实多显示器或渲染延迟的证据。
 - `pinora-core::asset` 已于 2026-08-01 新增 `AssetGeneration` 和 `AssetRef` 领域契约；它只组合既有 `ImageId`，可判定陈旧结果，已用于桌面贴图及 Overlay OCR、复制、保存任务的结果门禁。
 - `pinora-core::job` 与 `pinora-app::JobSupervisor` 已于 2026-08-01 新增：任务元数据绑定 `JobId`、关联 ID、`AssetRef`、领域 owner、类型和截止时间；监督器可协作式取消、关闭 owner、标记超时并拒绝终态或陈旧版本结果。桌面 OCR、导出和剪贴板均已接入，但这不代表所有后台进程均已在真实桌面环境验证。

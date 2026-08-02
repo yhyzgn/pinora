@@ -28,6 +28,7 @@ pub enum TrayAction {
     ShowAllPins,
     HideAllPins,
     CloseAllPins,
+    UndoClosePin,
     Quit,
 }
 
@@ -48,6 +49,8 @@ pub struct AppTray {
     show_all_pins_id: tray_icon::menu::MenuId,
     hide_all_pins_id: tray_icon::menu::MenuId,
     close_all_pins_id: tray_icon::menu::MenuId,
+    undo_close_pin_id: tray_icon::menu::MenuId,
+    undo_close_pin_item: MenuItem,
     quit_id: tray_icon::menu::MenuId,
 }
 
@@ -117,6 +120,9 @@ impl AppTray {
             if ev.id == self.close_all_pins_id {
                 return Some(TrayAction::CloseAllPins);
             }
+            if ev.id == self.undo_close_pin_id {
+                return Some(TrayAction::UndoClosePin);
+            }
             if ev.id == self.quit_id {
                 return Some(TrayAction::Quit);
             }
@@ -130,6 +136,10 @@ impl AppTray {
             item.set_enabled(!active);
         }
         self.cancel_delayed_capture_item.set_enabled(active);
+    }
+
+    pub fn set_undo_close_pin_available(&self, available: bool) {
+        self.undo_close_pin_item.set_enabled(available);
     }
 }
 
@@ -163,6 +173,7 @@ fn try_new_inner(
     let show_all_pins = MenuItem::new("显示全部贴图", true, None);
     let hide_all_pins = MenuItem::new("隐藏全部贴图", true, None);
     let close_all_pins = MenuItem::new("关闭全部贴图", true, None);
+    let undo_close_pin = MenuItem::new("撤销关闭贴图", false, None);
     let quit = MenuItem::new("退出", true, None);
     menu.append(&capture)
         .map_err(|e| format!("menu append capture: {e}"))?;
@@ -215,6 +226,8 @@ fn try_new_inner(
         .map_err(|e| format!("menu append hide pins: {e}"))?;
     menu.append(&close_all_pins)
         .map_err(|e| format!("menu append close pins: {e}"))?;
+    menu.append(&undo_close_pin)
+        .map_err(|e| format!("menu append undo close pin: {e}"))?;
     menu.append(&PredefinedMenuItem::separator())
         .map_err(|e| format!("menu sep: {e}"))?;
     menu.append(&quit)
@@ -234,6 +247,7 @@ fn try_new_inner(
     let show_all_pins_id = show_all_pins.id().clone();
     let hide_all_pins_id = hide_all_pins.id().clone();
     let close_all_pins_id = close_all_pins.id().clone();
+    let undo_close_pin_id = undo_close_pin.id().clone();
     let quit_id = quit.id().clone();
 
     let tray = TrayIconBuilder::new()
@@ -259,6 +273,8 @@ fn try_new_inner(
         show_all_pins_id,
         hide_all_pins_id,
         close_all_pins_id,
+        undo_close_pin_id,
+        undo_close_pin_item: undo_close_pin,
         quit_id,
     })
 }
