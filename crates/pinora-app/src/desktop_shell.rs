@@ -63,9 +63,9 @@ use winit::window::{CursorIcon, Fullscreen, ResizeDirection, Window, WindowId, W
 
 use crate::pin_context_menu::{self, PinContextMenu, PinMenuAction};
 use crate::pin_layout::{
-    PinResizeHandle, PinResizeTarget, fit_to_image_target, pin_resize_anchor_position,
-    pin_resize_handle_at, pin_resize_target_from_drag, proportional_resize_target,
-    scaled_window_size,
+    PinResizeHandle, PinResizeTarget, default_pin_position, fit_to_image_target,
+    pin_resize_anchor_position, pin_resize_handle_at, pin_resize_target_from_drag,
+    proportional_resize_target, scaled_window_size,
 };
 use crate::platform::CapabilityProbe;
 use crate::runtime::AppRuntime;
@@ -3390,7 +3390,7 @@ where
             refresh_overlay_ready(ov);
         }
         self.commit_overlay_draft();
-        let (src_rect, display_id, session_owner, asset, global, edit_pin_id) = {
+        let (src_rect, display_id, session_owner, asset, global, placement_bounds, edit_pin_id) = {
             let ov = self
                 .overlay
                 .as_ref()
@@ -3424,6 +3424,7 @@ where
                 JobOwner::Session(ov.session_id),
                 asset,
                 global,
+                ov.full_image.source_rect,
                 ov.edit_pin_id,
             )
         };
@@ -3436,8 +3437,6 @@ where
                 return Err(error);
             }
         };
-        let position = PixelPoint::new(global.origin.x, global.origin.y);
-
         if let Some(ov) = self.overlay.take() {
             self.ocr_jobs.close_owner(JobOwner::Session(ov.session_id));
             self.export_jobs
@@ -3516,6 +3515,7 @@ where
                 }
                 OverlayFinish::Pin => {
                     // 贴图：先出窗再异步保存/复制，避免主路径串行卡顿
+                    let position = default_pin_position(global, placement_bounds, image.size());
                     self.open_pin_from_image(event_loop, image, position, true)?;
                 }
             }

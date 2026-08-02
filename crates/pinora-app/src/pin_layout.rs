@@ -2,7 +2,7 @@
 //!
 //! 此模块不持有窗口、事件循环或平台资源，因此可由受 tray 监督的桌面壳安全复用。
 
-use pinora_core::{PixelPoint, PixelSize};
+use pinora_core::{PixelPoint, PixelRect, PixelSize};
 
 /// 贴图缩放的领域兼容范围。与 `PinTransform::clamped` 保持一致。
 pub const PIN_MIN_SCALE: f64 = 0.05;
@@ -10,6 +10,9 @@ pub const PIN_MAX_SCALE: f64 = 8.0;
 
 /// 无边框贴图用于命中尺寸操作的客户区边距（物理像素）。
 pub const PIN_RESIZE_GRIP: u32 = 10;
+
+/// 新贴图与截图来源区域之间的最小物理像素间距。
+pub const PIN_PLACEMENT_GAP: i32 = 16;
 
 /// 客户区内可发起原生尺寸操作的八个方向。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -72,6 +75,50 @@ pub fn fit_to_image_target(image: PixelSize) -> PinResizeTarget {
         scale: 1.0,
         size: PixelSize::new(width, height),
     }
+}
+
+/// 为普通 Overlay 创建的贴图选择初始左上坐标。
+///
+/// 候选严格按右、左、下、上顺序尝试。每个候选必须完整落在已知捕获范围内，并且
+/// 不与截图来源区域相交；无法避让时只返回范围内的确定性回退坐标，不猜测其他显示器。
+pub fn default_pin_position(
+    source: PixelRect,
+    available_bounds: PixelRect,
+    pin_size: PixelSize,
+) -> PixelPoint {
+    let source_right = rect_right(source);
+    let source_bottom = rect_bottom(source);
+    let candidates = [
+        (
+            source_right + i64::from(PIN_PLACEMENT_GAP),
+            i64::from(source.origin.y),
+        ),
+        (
+            i64::from(source.origin.x) - i64::from(PIN_PLACEMENT_GAP) - i64::from(pin_size.width),
+            i64::from(source.origin.y),
+        ),
+        (
+            i64::from(source.origin.x),
+            source_bottom + i64::from(PIN_PLACEMENT_GAP),
+        ),
+        (
+            i64::from(source.origin.x),
+            i64::from(source.origin.y) - i64::from(PIN_PLACEMENT_GAP) - i64::from(pin_size.height),
+        ),
+    ];
+
+    for (x, y) in candidates {
+        let Some(position) = point_from_i64(x, y) else {
+            continue;
+        };
+        if pin_fits_within(position, pin_size, available_bounds)
+            && !pin_intersects_source(position, pin_size, source)
+        {
+            return position;
+        }
+    }
+
+    clamp_pin_origin(source.origin, available_bounds, pin_size)
 }
 
 /// 根据图像尺寸与缩放计算窗口物理像素大小。
@@ -222,6 +269,56 @@ fn normalized_scale(scale: f64) -> f64 {
     }
 }
 
+fn pin_fits_within(position: PixelPoint, pin_size: PixelSize, bounds: PixelRect) -> bool {
+    if bounds.size.is_empty() {
+        return false;
+    }
+    let left = i64::from(position.x);
+    let top = i64::from(position.y);
+    let right = left + i64::from(pin_size.width);
+    let bottom = top + i64::from(pin_size.height);
+    left >= i64::from(bounds.origin.x)
+        && top >= i64::from(bounds.origin.y)
+        && right <= rect_right(bounds)
+        && bottom <= rect_bottom(bounds)
+}
+
+fn pin_intersects_source(position: PixelPoint, pin_size: PixelSize, source: PixelRect) -> bool {
+    let left = i64::from(position.x);
+    let top = i64::from(position.y);
+    let right = left + i64::from(pin_size.width);
+    let bottom = top + i64::from(pin_size.height);
+    left < rect_right(source)
+        && right > i64::from(source.origin.x)
+        && top < rect_bottom(source)
+        && bottom > i64::from(source.origin.y)
+}
+
+fn clamp_pin_origin(source: PixelPoint, bounds: PixelRect, pin_size: PixelSize) -> PixelPoint {
+    let min_x = i64::from(bounds.origin.x);
+    let min_y = i64::from(bounds.origin.y);
+    let max_x = (rect_right(bounds) - i64::from(pin_size.width)).max(min_x);
+    let max_y = (rect_bottom(bounds) - i64::from(pin_size.height)).max(min_y);
+    let x = i64::from(source.x).clamp(min_x, max_x);
+    let y = i64::from(source.y).clamp(min_y, max_y);
+    point_from_i64(x, y).unwrap_or(bounds.origin)
+}
+
+fn point_from_i64(x: i64, y: i64) -> Option<PixelPoint> {
+    Some(PixelPoint::new(
+        i32::try_from(x).ok()?,
+        i32::try_from(y).ok()?,
+    ))
+}
+
+fn rect_right(rect: PixelRect) -> i64 {
+    i64::from(rect.origin.x) + i64::from(rect.size.width)
+}
+
+fn rect_bottom(rect: PixelRect) -> i64 {
+    i64::from(rect.origin.y) + i64::from(rect.size.height)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,5 +439,70 @@ mod tests {
                 size: PixelSize::new(1_920, 1_080),
             }
         );
+    }
+
+    #[test]
+    fn default_pin_position_prefers_the_right_of_the_source() {
+        let position = default_pin_position(
+            PixelRect::new(300, 200, 200, 100),
+            PixelRect::new(0, 0, 1_920, 1_080),
+            PixelSize::new(200, 100),
+        );
+
+        assert_eq!(position, PixelPoint::new(516, 200));
+    }
+
+    #[test]
+    fn default_pin_position_uses_left_then_bottom_then_top_candidates() {
+        let bounds = PixelRect::new(0, 0, 800, 600);
+        let pin_size = PixelSize::new(200, 100);
+
+        assert_eq!(
+            default_pin_position(PixelRect::new(600, 200, 200, 100), bounds, pin_size),
+            PixelPoint::new(384, 200)
+        );
+        assert_eq!(
+            default_pin_position(PixelRect::new(0, 200, 800, 100), bounds, pin_size),
+            PixelPoint::new(0, 316)
+        );
+        assert_eq!(
+            default_pin_position(PixelRect::new(0, 500, 800, 100), bounds, pin_size),
+            PixelPoint::new(0, 384)
+        );
+    }
+
+    #[test]
+    fn default_pin_position_preserves_negative_coordinates() {
+        let position = default_pin_position(
+            PixelRect::new(-1_600, 40, 300, 200),
+            PixelRect::new(-1_920, 0, 1_920, 1_080),
+            PixelSize::new(300, 200),
+        );
+
+        assert_eq!(position, PixelPoint::new(-1_284, 40));
+    }
+
+    #[test]
+    fn default_pin_position_falls_back_inside_the_available_bounds() {
+        let bounds = PixelRect::new(0, 0, 800, 600);
+        let position = default_pin_position(
+            PixelRect::new(0, 0, 800, 600),
+            bounds,
+            PixelSize::new(800, 600),
+        );
+
+        assert_eq!(position, PixelPoint::new(0, 0));
+    }
+
+    #[test]
+    fn oversized_pin_uses_the_available_bounds_origin_without_overflow() {
+        let bounds = PixelRect::new(-20, -10, 100, 80);
+        let position = default_pin_position(
+            PixelRect::new(30, 40, 10, 10),
+            bounds,
+            PixelSize::new(u32::MAX, u32::MAX),
+        );
+
+        assert_eq!(position, bounds.origin);
     }
 }
