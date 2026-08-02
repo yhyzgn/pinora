@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/052_history_render_preprocessing.md`
-- 任务：`.context/tasks/052_history_render_preprocessing.md`
+- 计划：`.context/plans/053_pin_render_cache.md`
+- 任务：`.context/tasks/053_pin_render_cache.md`
 
 ## 交付要求
 

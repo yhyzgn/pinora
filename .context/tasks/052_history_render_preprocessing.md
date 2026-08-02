@@ -1,6 +1,6 @@
 # 任务 052：历史图像后台渲染预处理
 
-- 状态：进行中
+- 状态：已完成
 - 计划：`.context/plans/052_history_render_preprocessing.md`
 - 规模：中
 - 依赖：`.context/tasks/047_frame_cache_handoff.md`、`.context/tasks/049_history_editing.md`、`.context/tasks/051_history_async_loading.md`
@@ -59,4 +59,4 @@
 
 - 2026-08-02：实现按预览、重新贴图、编辑区分的 worker 输出；预览不传递 RGBA，贴图和编辑分别复用预先生成的 XRGB 与 base/dimmed。取消、陈旧结果、owner/条目/generation/当前选择门禁及编辑失败后的帧缓存恢复路径保持不变。
 - 已新增预览、贴图、编辑三类准备结果和单通道 XRGB 转换的离线测试；本地通过 fmt、workspace check、严格 Clippy、全量 workspace 测试（app 135 通过、2 个真实桌面测试忽略；core 55 通过）及 `git diff --check`。
-- ctx validate 已通过；GitHub 三平台 CI 尚待本次提交后执行，因此任务仍为进行中；真实慢盘、GUI 帧率、HiDPI、无障碍和原生窗口探针未覆盖。
+- ctx validate 已通过；GitHub Actions CI `30734154282` 已在 Linux、macOS、Windows 原生 runner 通过格式、workspace 编译、严格 Clippy 与单元测试。真实慢盘、GUI 帧率、HiDPI、无障碍和原生窗口探针未覆盖，CI 不能替代这些验证。

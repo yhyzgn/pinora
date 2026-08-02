@@ -1,6 +1,6 @@
 # 计划 052：历史图像后台渲染预处理
 
-- 状态：进行中
+- 状态：已完成
 - 负责人：Codex
 - 当前任务：`.context/tasks/052_history_render_preprocessing.md`
 
@@ -68,4 +68,4 @@
 
 - 2026-08-02：`HistoryLoadJobService` 新增按意图的 `Preview`、`Pin`、`Editor` 负载；worker 在摘要校验与 PNG 解码后生成相应 XRGB/base/dimmed 像素。预览负载仅传递尺寸与 XRGB，不向 UI 回传 RGBA 原图。
 - 历史预览缓存、重新贴图和再次编辑分别复用 worker 输出；历史完成分支不再执行这些整图转换。贴图接收预处理像素时验证其长度与图像尺寸一致，不匹配时明确失败而不退回 UI 线程重算。
-- 本地验证：`cargo fmt --check`、`cargo check --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`、`git diff --check` 与 ctx validate 通过（app 135 通过、2 个真实桌面测试忽略；core 55 通过）。GitHub 三平台 CI 尚未运行，本任务保持进行中；真实慢盘、窗口重绘、HiDPI、读屏和输入延迟探针未覆盖。
+- 本地验证：`cargo fmt --check`、`cargo check --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`、`git diff --check` 与 ctx validate 通过（app 135 通过、2 个真实桌面测试忽略；core 55 通过）。GitHub Actions CI `30734154282` 已在 Linux、macOS、Windows 原生 runner 通过相同质量门禁。真实慢盘、窗口重绘、HiDPI、读屏和输入延迟探针未覆盖。
