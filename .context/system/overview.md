@@ -22,7 +22,7 @@
 | 单实例 | flock + Unix socket Activate/CAPTURE/QUIT |
 | 帧缓存 | 空闲预截；热键命中以所有权移交预处理帧，避免复制全屏图像与双 XRGB 缓冲；暂停以代际拒绝晚到帧 |
 | 基础标注 | Overlay 选区内：选择、矩形/圆角矩形/直线/箭头/画笔/椭圆/序号/马赛克/区域模糊/文本/截图内取色；文本 `Shift+Enter` 换行、`Enter` 提交、`Esc` 取消，非空草稿在重选/切换工具前提交；`V` 选择，选中对象可拖动或以方向键移动（Shift 为 10 像素），`Q` 圆角矩形，`L` 直线，`N` 序号，`B` 区域模糊，`F` 切换后续封闭图形的半透明填充，C 颜色，I 取色，+/- 线宽，Delete/Backspace 删除选中项；`Ctrl+Z` 撤销，`Ctrl+Shift+Z`/`Ctrl+Y` 重做，工具栏“清空”可一次撤销/重做整个标注文档 |
-| 系统托盘 | 截图、1/3/5 秒延时区域截图及取消、显示器指定全屏、可用 xcap 后端的最多 20 个经清洗窗口截图候选、设置、历史、显示/隐藏/关闭全部贴图、退出（tray-icon；真实跨平台菜单与窗口枚举仍待探针） |
+| 系统托盘 | 截图、1/3/5 秒延时区域截图及取消、显示器指定全屏、可用 xcap 后端的最多 20 个经清洗窗口截图候选、设置、历史、显示/隐藏/关闭全部贴图、退出；菜单禁用状态项与图标 tooltip 显示最近一次受控截图/OCR/导出状态（tray-icon；真实跨平台菜单与窗口枚举仍待探针） |
 | 后台驻留与窗口隔离 | 启动后只保留托盘、可用全局热键、IPC 与帧缓存，不自动截图；无法创建托盘时以 `CapabilityUnavailable` 退出；所有辅助窗口必须由 `window_policy` 工厂创建并请求跳过任务栏/Dock，真实桌面验证仍待完成 |
 | 贴图控制 | L 锁定，`[` `]` 透明度（压暗近似）；`O` 本地 OCR；`T` 词框 |
 | OCR | 系统 `tesseract` CLI；全文复制剪贴板；词框叠加；缺引擎可降级提示 |
@@ -32,7 +32,7 @@
 - 生产入口仍是 `src/main.rs`，但使用 `std::os::unix::net::UnixStream`；没有平台条件编译，因此 Windows target 无法完成 workspace 检查。
 - `crates/pinora-app/src/desktop_shell.rs` 当前约 3679 行，仍集中承载 winit/softbuffer 窗口事件、截图编排、Overlay 绘制、标注输入、贴图生命周期、OCR 触发、托盘和 IPC 轮询；045/046 已将历史和设置窗口的资源、草稿/预览缓存、resize、存储调用和呈现迁至专属适配器，但 Overlay/贴图仍在 shell 中，单体化风险保持开放。
 - 当前依赖树把 `gtk`/`tray-icon`、`xcap`/PipeWire、`winit`/`softbuffer` 和 Linux CLI 后端直接放入 `pinora-app`；没有 Windows/macOS/Linux 适配器边界。
-- `cargo fmt --check`、`cargo check --workspace` 和 `cargo clippy --workspace --all-targets -- -D warnings` 已于 2026-08-02 通过；当前 `PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace` 通过 app 191 个、core 85 个单元测试，另有 2 个真实桌面测试被忽略；仍没有 GUI 端到端测试。
+- `cargo fmt --check`、`cargo check --workspace` 和 `cargo clippy --workspace --all-targets -- -D warnings` 已于 2026-08-02 通过；当前 `PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace` 通过 app 202 个、core 85 个单元测试，另有 2 个真实桌面测试被忽略；仍没有 GUI 端到端测试。
 - `cargo check --workspace --target x86_64-pc-windows-msvc` 失败于 GTK 的 `gdk-pixbuf-sys`/`glib-sys` pkg-config 交叉编译，尚未进入应用代码编译阶段。
 - OCR 通过 `tesseract` 子进程和临时 PNG 工作；适配器已持有自身 `Child`，支持协作式取消、30 秒截止时间、16 MiB 输出上限和 RAII 临时文件清理，不再调用外部 `kill`。贴图与 Overlay UI 已经通过 `OcrJobService` 提交到 `JobSupervisor`，结果交付受 owner、终态和 `AssetRef` generation 门禁保护；worker 不触碰窗口或剪贴板。
 - 截图后端自动选择 KDE `spectacle` → xcap → `Unavailable`；两者不可用时保留后端失败摘要并由 provider 返回 `CapabilityUnavailable`，`fake` 只能通过显式测试/开发注入使用。
@@ -60,6 +60,7 @@
 - 2026-08-02 的 075 增加 tray 最近关闭贴图撤销：内存快照不包含窗口或任务句柄，关闭先使旧 owner/runtime Pin 失效；恢复通过新的 `PinId`、asset 和既有 `spawn_pin` 重新创建受策略保护的贴图窗口，创建失败保留快照重试。没有新增窗口类型、事件循环、截图或 worker；真实 tray、首帧、HiDPI、焦点与任务栏/Dock/分页器仍未验证。
 - 2026-08-02 的 076 为既有贴图增加四边/四角等比缩放与 100% 原图恢复：八方向几何、比例、边界和手动回退锚点在 `pin_layout` 纯逻辑中覆盖；当前 Pin 先用 `drag_resize_window`，平台不支持时才在同一窗口内请求尺寸。原生 resize 不再重复改左/上位置，客户区指针按热区变化且去重，OCR Ctrl+拖选优先于尺寸操作。双击或客户区菜单 `100%` 仅修改当前未锁定贴图；实际尺寸/缩放变化才失效缓存并同步领域 transform。没有新增窗口、事件循环、展示入口、截图或 worker，tray-only 与 `window_policy` 边界不变；真实原生 resize、HiDPI、焦点、任务栏/Dock/分页器和帧时间仍未验证。
 - 2026-08-02 的 077 为普通 Overlay 新贴图增加来源避让：`pin_layout` 仅以当前完整捕获的物理像素范围，在右、左、下、上顺序寻找完整容纳且不与来源选区相交的位置；无候选时将来源左上角确定性钳制于该范围，且使用宽位中间值避免坐标溢出。策略仅在普通 `OverlayFinish::Pin` 创建既有贴图窗口前执行，复制、保存、贴图编辑、历史重新贴图、关闭撤销和手动位置操作均不变。没有新增窗口、事件循环、展示入口、截图或 worker，tray-only 与 `window_policy` 边界不变；真实初始位置、跨屏映射、HiDPI、焦点、任务栏/Dock/分页器和帧时间仍未验证。
+- 2026-08-02 的 078 为现有 tray 增加最近异步状态反馈：受限纯模型以静态中文文案和稳定 `ErrorCode` 映射生成截图、延时截图、OCR 与导出的进行中、成功、失败/取消状态；禁用菜单项与 tooltip 共享同一文本，不包含图像、OCR 文本、路径或原始错误。桌面壳只在启动或 owner/`AssetRef` 匹配的完成分支更新状态；OCR、导出 worker 错误也复核当前资产，陈旧或关闭 owner 的失败被丢弃。没有新增窗口、事件循环、worker、通知或网络路径，tray-only 与 `window_policy` 边界不变；真实 tray 动态刷新、任务栏/Dock/分页器和原生桌面体验仍未验证。
 - GitHub Actions CI `30732620836`、`30732765136`、`30732906042`、`30733684203`、`30734154282`、`30734583848`、`30734867309` 与 `30735354166` 已于 2026-08-02 在 Linux、macOS、Windows 原生 runner 通过格式、workspace 编译、严格 Clippy 和单元测试；这些运行未创建 GUI 会话，不能作为任务栏、Dock、窗口交互、KWin 行为、真实多显示器或渲染延迟的证据。
 - `pinora-core::asset` 已于 2026-08-01 新增 `AssetGeneration` 和 `AssetRef` 领域契约；它只组合既有 `ImageId`，可判定陈旧结果，已用于桌面贴图及 Overlay OCR、复制、保存任务的结果门禁。
 - `pinora-core::job` 与 `pinora-app::JobSupervisor` 已于 2026-08-01 新增：任务元数据绑定 `JobId`、关联 ID、`AssetRef`、领域 owner、类型和截止时间；监督器可协作式取消、关闭 owner、标记超时并拒绝终态或陈旧版本结果。桌面 OCR、导出和剪贴板均已接入，但这不代表所有后台进程均已在真实桌面环境验证。

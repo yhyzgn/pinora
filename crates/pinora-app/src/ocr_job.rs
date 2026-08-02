@@ -196,29 +196,47 @@ where
                         }
                     }
                 }
-                Err(error) => match self.supervisor.fail(worker.reference.job_id) {
-                    Ok(JobState::Finished(JobTerminalState::Failed)) => {
-                        completions.push(OcrJobCompletion::Failed {
-                            job_id: worker.reference.job_id,
-                            owner: spec.owner,
-                            error,
-                        });
-                    }
-                    Ok(JobState::Finished(terminal)) => {
+                Err(error) => {
+                    let Some(asset) = current_asset(spec.owner) else {
+                        self.supervisor.close_owner(spec.owner);
                         completions.push(OcrJobCompletion::Discarded {
                             job_id: worker.reference.job_id,
-                            terminal,
+                            terminal: JobTerminalState::OwnerClosed,
                         });
-                    }
-                    Ok(JobState::Running) => {}
-                    Err(supervisor_error) => {
-                        completions.push(OcrJobCompletion::Failed {
+                        continue;
+                    };
+                    if asset != worker.reference.asset {
+                        let _ = self.supervisor.fail(worker.reference.job_id);
+                        completions.push(OcrJobCompletion::Discarded {
                             job_id: worker.reference.job_id,
-                            owner: spec.owner,
-                            error: supervisor_error,
+                            terminal: JobTerminalState::StaleAsset,
                         });
+                        continue;
                     }
-                },
+                    match self.supervisor.fail(worker.reference.job_id) {
+                        Ok(JobState::Finished(JobTerminalState::Failed)) => {
+                            completions.push(OcrJobCompletion::Failed {
+                                job_id: worker.reference.job_id,
+                                owner: spec.owner,
+                                error,
+                            });
+                        }
+                        Ok(JobState::Finished(terminal)) => {
+                            completions.push(OcrJobCompletion::Discarded {
+                                job_id: worker.reference.job_id,
+                                terminal,
+                            });
+                        }
+                        Ok(JobState::Running) => {}
+                        Err(supervisor_error) => {
+                            completions.push(OcrJobCompletion::Failed {
+                                job_id: worker.reference.job_id,
+                                owner: spec.owner,
+                                error: supervisor_error,
+                            });
+                        }
+                    }
+                }
             }
         }
         let _ = reap_finished_workers(&mut self.workers);
@@ -437,6 +455,39 @@ mod tests {
             completions.as_slice(),
             [OcrJobCompletion::Discarded { job_id, terminal }]
                 if *job_id == ticket.id && *terminal == JobTerminalState::StaleAsset
+        ));
+    }
+
+    #[test]
+    fn changed_asset_generation_discards_failure() {
+        let image = sample_image(6);
+        let submitted_asset = AssetRef::initial(image.id);
+        let current_asset = submitted_asset.advance().expect("advance generation");
+        let mut service = OcrJobService::with_runner(FailureRunner);
+        let ticket = service
+            .start(spec(6, submitted_asset, 100), image)
+            .expect("start");
+        let completions = poll_until(&mut service, 1, |_| Some(current_asset));
+
+        assert!(matches!(
+            completions.as_slice(),
+            [OcrJobCompletion::Discarded { job_id, terminal }]
+                if *job_id == ticket.id && *terminal == JobTerminalState::StaleAsset
+        ));
+    }
+
+    #[test]
+    fn missing_owner_discards_failure() {
+        let image = sample_image(7);
+        let asset = AssetRef::initial(image.id);
+        let mut service = OcrJobService::with_runner(FailureRunner);
+        let ticket = service.start(spec(7, asset, 100), image).expect("start");
+        let completions = poll_until(&mut service, 1, |_| None);
+
+        assert!(matches!(
+            completions.as_slice(),
+            [OcrJobCompletion::Discarded { job_id, terminal }]
+                if *job_id == ticket.id && *terminal == JobTerminalState::OwnerClosed
         ));
     }
 

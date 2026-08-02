@@ -10,6 +10,8 @@ use pinora_core::{CaptureWindowInfo, DisplayId, DisplayInfo};
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
+use crate::tray_feedback::TrayFeedback;
+
 /// 避免窗口枚举把 tray 菜单膨胀为大量不可快速扫描的项目。
 const MAX_WINDOW_CAPTURE_CANDIDATES: usize = 20;
 
@@ -34,7 +36,8 @@ pub enum TrayAction {
 
 /// 托盘句柄：持有 TrayIcon 与菜单项 id。
 pub struct AppTray {
-    _tray: TrayIcon,
+    tray: TrayIcon,
+    status_item: MenuItem,
     capture_id: tray_icon::menu::MenuId,
     delay_capture_ids: [(MenuId, Duration); 3],
     cancel_delayed_capture_id: tray_icon::menu::MenuId,
@@ -141,6 +144,16 @@ impl AppTray {
     pub fn set_undo_close_pin_available(&self, available: bool) {
         self.undo_close_pin_item.set_enabled(available);
     }
+
+    /// 同步更新现有菜单中的禁用状态项和图标 tooltip。Linux tray 后端可能不显示
+    /// tooltip，但菜单项仍是可扫描的本地反馈；更新失败不影响业务流程。
+    pub fn set_feedback(&self, feedback: TrayFeedback) {
+        let label = feedback.label();
+        self.status_item.set_text(label);
+        if self.tray.set_tooltip(Some(label)).is_err() {
+            eprintln!("pinora: tray tooltip update unavailable");
+        }
+    }
 }
 
 fn try_new_inner(
@@ -158,6 +171,7 @@ fn try_new_inner(
 
     let icon = make_icon().map_err(|e| format!("tray icon: {e}"))?;
     let menu = Menu::new();
+    let status = MenuItem::new(TrayFeedback::Ready.label(), false, None);
     let capture = MenuItem::new("截图 (F2)", true, None);
     let delay_capture_one = MenuItem::new("延时截图 1 秒", true, None);
     let delay_capture_three = MenuItem::new("延时截图 3 秒", true, None);
@@ -175,6 +189,10 @@ fn try_new_inner(
     let close_all_pins = MenuItem::new("关闭全部贴图", true, None);
     let undo_close_pin = MenuItem::new("撤销关闭贴图", false, None);
     let quit = MenuItem::new("退出", true, None);
+    menu.append(&status)
+        .map_err(|e| format!("menu append status: {e}"))?;
+    menu.append(&PredefinedMenuItem::separator())
+        .map_err(|e| format!("menu sep status: {e}"))?;
     menu.append(&capture)
         .map_err(|e| format!("menu append capture: {e}"))?;
     menu.append(&delay_capture_one)
@@ -258,7 +276,8 @@ fn try_new_inner(
         .map_err(|e| format!("tray build: {e}"))?;
 
     Ok(AppTray {
-        _tray: tray,
+        tray,
+        status_item: status,
         capture_id,
         delay_capture_ids,
         cancel_delayed_capture_id,

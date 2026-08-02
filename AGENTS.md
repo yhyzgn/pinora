@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/077_pin_placement.md`
-- 任务：`.context/tasks/077_pin_placement.md`
+- 计划：`.context/plans/078_tray_feedback.md`
+- 任务：`.context/tasks/078_tray_feedback.md`
 
 ## 交付要求
 

@@ -267,28 +267,48 @@ where
                         }),
                     }
                 }
-                Err(error) => match self.supervisor.fail(worker.reference.job_id) {
-                    Ok(JobState::Finished(JobTerminalState::Failed)) => {
-                        completions.push(ExportJobCompletion::Failed {
-                            job_id: worker.reference.job_id,
-                            owner: spec.owner,
-                            error,
-                        });
-                    }
-                    Ok(JobState::Finished(terminal)) => {
+                Err(error) => {
+                    let Some(asset) = current_asset(worker.reference.job_id, spec.owner) else {
+                        self.supervisor.close_owner(spec.owner);
                         completions.push(ExportJobCompletion::Discarded {
                             job_id: worker.reference.job_id,
                             owner: spec.owner,
-                            terminal,
+                            terminal: JobTerminalState::OwnerClosed,
                         });
+                        continue;
+                    };
+                    if asset != worker.reference.asset {
+                        let _ = self.supervisor.fail(worker.reference.job_id);
+                        completions.push(ExportJobCompletion::Discarded {
+                            job_id: worker.reference.job_id,
+                            owner: spec.owner,
+                            terminal: JobTerminalState::StaleAsset,
+                        });
+                        continue;
                     }
-                    Ok(JobState::Running) => {}
-                    Err(supervisor_error) => completions.push(ExportJobCompletion::Failed {
-                        job_id: worker.reference.job_id,
-                        owner: spec.owner,
-                        error: supervisor_error,
-                    }),
-                },
+                    match self.supervisor.fail(worker.reference.job_id) {
+                        Ok(JobState::Finished(JobTerminalState::Failed)) => {
+                            completions.push(ExportJobCompletion::Failed {
+                                job_id: worker.reference.job_id,
+                                owner: spec.owner,
+                                error,
+                            });
+                        }
+                        Ok(JobState::Finished(terminal)) => {
+                            completions.push(ExportJobCompletion::Discarded {
+                                job_id: worker.reference.job_id,
+                                owner: spec.owner,
+                                terminal,
+                            });
+                        }
+                        Ok(JobState::Running) => {}
+                        Err(supervisor_error) => completions.push(ExportJobCompletion::Failed {
+                            job_id: worker.reference.job_id,
+                            owner: spec.owner,
+                            error: supervisor_error,
+                        }),
+                    }
+                }
             }
         }
         let _ = reap_finished_workers(&mut self.workers);
@@ -607,6 +627,47 @@ mod tests {
             completions.as_slice(),
             [ExportJobCompletion::Discarded { job_id, terminal, .. }]
                 if *job_id == ticket.id && *terminal == JobTerminalState::StaleAsset
+        ));
+    }
+
+    #[test]
+    fn changed_asset_generation_discards_failure() {
+        let image = sample_image(9);
+        let submitted = AssetRef::initial(image.id);
+        let current = submitted.advance().expect("advance generation");
+        let mut service = ExportJobService::with_runner(FailureRunner);
+        let ticket = service
+            .start(
+                spec(9, submitted, JobKind::Clipboard, 100),
+                ExportJobInput::CopyImage { image },
+            )
+            .expect("start");
+        let completions = poll_until(&mut service, 1, |_, _| Some(current));
+
+        assert!(matches!(
+            completions.as_slice(),
+            [ExportJobCompletion::Discarded { job_id, terminal, .. }]
+                if *job_id == ticket.id && *terminal == JobTerminalState::StaleAsset
+        ));
+    }
+
+    #[test]
+    fn missing_owner_discards_failure() {
+        let image = sample_image(10);
+        let asset = AssetRef::initial(image.id);
+        let mut service = ExportJobService::with_runner(FailureRunner);
+        let ticket = service
+            .start(
+                spec(10, asset, JobKind::Clipboard, 100),
+                ExportJobInput::CopyImage { image },
+            )
+            .expect("start");
+        let completions = poll_until(&mut service, 1, |_, _| None);
+
+        assert!(matches!(
+            completions.as_slice(),
+            [ExportJobCompletion::Discarded { job_id, terminal, .. }]
+                if *job_id == ticket.id && *terminal == JobTerminalState::OwnerClosed
         ));
     }
 }

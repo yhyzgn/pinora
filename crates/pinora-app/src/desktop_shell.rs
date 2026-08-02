@@ -43,6 +43,7 @@ use crate::overlay_toolbar::{
 use crate::settings_panel::{SettingsPanelAction, SettingsPanelKey};
 use crate::settings_window::SettingsWindow;
 use crate::tray::{AppTray, TrayAction};
+use crate::tray_feedback::{TrayExportOperation, TrayFeedback};
 use crate::window_policy::{self, AuxiliaryWindowKind};
 use pinora_core::{
     ActionId, AnnotateSession, AnnotateTool, Annotation, AnnotationRevision, AssetGeneration,
@@ -584,6 +585,14 @@ enum PendingExportAction {
     CopyText,
 }
 
+fn tray_export_operation(action: &PendingExportAction) -> TrayExportOperation {
+    match action {
+        PendingExportAction::SavePng(_) => TrayExportOperation::SavePng,
+        PendingExportAction::CopyImage => TrayExportOperation::CopyImage,
+        PendingExportAction::CopyText => TrayExportOperation::CopyText,
+    }
+}
+
 #[derive(Debug)]
 struct PendingExport {
     owner: JobOwner,
@@ -1086,6 +1095,12 @@ where
         }
     }
 
+    fn set_tray_feedback(&self, feedback: TrayFeedback) {
+        if let Some(tray) = &self.tray {
+            tray.set_feedback(feedback);
+        }
+    }
+
     fn restore_delayed_pins(&mut self) -> bool {
         let Some(delayed) = self.delayed_capture.take() else {
             return false;
@@ -1110,6 +1125,9 @@ where
         self.start_capture_wait = None;
         let restored = self.restore_delayed_pins();
         self.resume_frame_cache();
+        if restored {
+            self.set_tray_feedback(TrayFeedback::DelayedCaptureCancelled);
+        }
         restored
     }
 
@@ -2153,6 +2171,7 @@ where
         self.delayed_capture = Some(DelayedCapture::new(delay, hidden_pin_ids));
         self.set_delayed_capture_tray_state(true);
         self.mode = Mode::DelayedCapture;
+        self.set_tray_feedback(TrayFeedback::DelayedCaptureScheduled);
         println!(
             "pinora: tray → delayed region capture in {}s (no countdown window)",
             delay.as_secs()
@@ -2169,6 +2188,7 @@ where
         }
 
         println!("pinora: delayed capture due; starting cold capture");
+        self.set_tray_feedback(TrayFeedback::CapturePreparing);
         if let Err(error) = self.begin_screen_grab(event_loop, false) {
             self.finish_delayed_capture_failure(error);
         }
@@ -2205,6 +2225,7 @@ where
         self.capture_mode = capture_mode;
         self.capture_target = capture_target;
         self.mode = Mode::StartCapture;
+        self.set_tray_feedback(TrayFeedback::CapturePreparing);
         println!(
             "pinora: new {} capture requested ({})",
             capture_mode.label(),
@@ -2232,6 +2253,7 @@ where
         self.mode = Mode::Idle;
         self.start_capture_wait = None;
         self.resume_frame_cache();
+        self.set_tray_feedback(TrayFeedback::CaptureFailed(error.code));
     }
 
     fn finish_delayed_capture_failure(&mut self, error: PinoraError) {
@@ -2244,6 +2266,7 @@ where
         self.start_capture_wait = None;
         self.restore_delayed_pins();
         self.resume_frame_cache();
+        self.set_tray_feedback(TrayFeedback::DelayedCaptureFailed(error.code));
     }
 
     fn cancel_loading(&mut self) {
@@ -2251,6 +2274,7 @@ where
         self.mode = Mode::Idle;
         self.restore_delayed_pins();
         self.resume_frame_cache();
+        self.set_tray_feedback(TrayFeedback::CaptureCancelled);
         println!("pinora: capture cancelled (F2/Ctrl+N 再截，Ctrl+Q 退出)");
         if let Some(pin) = self.pins.values().next() {
             pin.window.focus_window();
@@ -2263,6 +2287,7 @@ where
         self.mode = Mode::Idle;
         self.start_capture_wait = None;
         self.resume_frame_cache();
+        self.set_tray_feedback(TrayFeedback::CaptureFailed(error.code));
     }
 
     fn finish_capture_failure_in_scope(&mut self, scope: CaptureFailureScope, error: PinoraError) {
@@ -2319,8 +2344,9 @@ where
         if self.delayed_capture.is_some() {
             self.restore_delayed_pins();
         }
-        if let Err(error) = self.open_overlay_with_preview(event_loop, prep, target) {
-            self.finish_capture_failure_in_scope(failure_scope, error);
+        match self.open_overlay_with_preview(event_loop, prep, target) {
+            Ok(()) => self.set_tray_feedback(TrayFeedback::CaptureReady),
+            Err(error) => self.finish_capture_failure_in_scope(failure_scope, error),
         }
     }
 
@@ -3041,11 +3067,17 @@ where
             monotonic_ms().saturating_add(OCR_JOB_TIMEOUT_MS),
         );
         match self.ocr_jobs.start(spec, image) {
-            Ok(ticket) => println!(
-                "pinora: OCR job {} started owner={owner:?} {}x{}",
-                ticket.id, size.width, size.height
-            ),
-            Err(error) => eprintln!("pinora: OCR submit failed: {error}"),
+            Ok(ticket) => {
+                self.set_tray_feedback(TrayFeedback::OcrRunning);
+                println!(
+                    "pinora: OCR job {} started owner={owner:?} {}x{}",
+                    ticket.id, size.width, size.height
+                );
+            }
+            Err(error) => {
+                self.set_tray_feedback(TrayFeedback::OcrFailed(error.code));
+                eprintln!("pinora: OCR submit failed: {error}");
+            }
         }
     }
 
@@ -3060,6 +3092,7 @@ where
             history_candidate_for_export(runtime.export_dir(), owner, asset, &input)
         });
         let kind = input.kind();
+        let feedback_operation = tray_export_operation(&action);
         let spec = JobSpec::new(
             JobId::new(),
             CorrelationId::new(),
@@ -3068,7 +3101,13 @@ where
             kind,
             monotonic_ms().saturating_add(EXPORT_JOB_TIMEOUT_MS),
         );
-        let ticket = self.export_jobs.start(spec, input)?;
+        let ticket = match self.export_jobs.start(spec, input) {
+            Ok(ticket) => ticket,
+            Err(error) => {
+                self.set_tray_feedback(TrayFeedback::ExportFailed(feedback_operation, error.code));
+                return Err(error);
+            }
+        };
         self.pending_exports.insert(
             ticket.id,
             PendingExport {
@@ -3082,6 +3121,7 @@ where
             "pinora: export job {} started owner={owner:?} kind={kind:?}",
             ticket.id
         );
+        self.set_tray_feedback(TrayFeedback::ExportRunning(feedback_operation));
         Ok(ticket.id)
     }
 
@@ -3106,6 +3146,7 @@ where
         for completion in completions {
             match completion {
                 OcrJobCompletion::Completed { job, result } => {
+                    self.set_tray_feedback(TrayFeedback::OcrCompleted);
                     println!(
                         "pinora: OCR ok owner={:?} — {} words",
                         job.owner,
@@ -3137,7 +3178,10 @@ where
                     job_id,
                     owner,
                     error,
-                } => eprintln!("pinora: OCR job {job_id} failed owner={owner:?}: {error}"),
+                } => {
+                    self.set_tray_feedback(TrayFeedback::OcrFailed(error.code));
+                    eprintln!("pinora: OCR job {job_id} failed owner={owner:?}: {error}");
+                }
                 OcrJobCompletion::Discarded { job_id, terminal } => {
                     println!("pinora: OCR job {job_id} discarded ({terminal:?})");
                 }
@@ -3184,6 +3228,9 @@ where
                             action: PendingExportAction::SavePng(path),
                             history,
                         }) => {
+                            self.set_tray_feedback(TrayFeedback::ExportCompleted(
+                                TrayExportOperation::SavePng,
+                            ));
                             println!("pinora: saved {} -> {}", job.asset.image_id, path.display());
                             if let Some(candidate) = history
                                 && owner == job.owner
@@ -3239,12 +3286,18 @@ where
                             action: PendingExportAction::CopyImage,
                             ..
                         }) => {
+                            self.set_tray_feedback(TrayFeedback::ExportCompleted(
+                                TrayExportOperation::CopyImage,
+                            ));
                             println!("pinora: copied image {}", job.asset.image_id);
                         }
                         Some(PendingExport {
                             action: PendingExportAction::CopyText,
                             ..
                         }) => {
+                            self.set_tray_feedback(TrayFeedback::ExportCompleted(
+                                TrayExportOperation::CopyText,
+                            ));
                             println!("pinora: copied text for {}", job.asset.image_id);
                         }
                         None => println!("pinora: export job {} completed", job.id),
@@ -3255,7 +3308,12 @@ where
                     owner,
                     error,
                 } => {
-                    self.pending_exports.remove(&job_id);
+                    if let Some(pending) = self.pending_exports.remove(&job_id) {
+                        self.set_tray_feedback(TrayFeedback::ExportFailed(
+                            tray_export_operation(&pending.action),
+                            error.code,
+                        ));
+                    }
                     eprintln!("pinora: export job {job_id} failed owner={owner:?}: {error}");
                 }
                 ExportJobCompletion::Discarded {
