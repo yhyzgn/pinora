@@ -42,11 +42,11 @@ use crate::settings_window::SettingsWindow;
 use crate::tray::{AppTray, TrayAction};
 use crate::window_policy::{self, AuxiliaryWindowKind};
 use pinora_core::{
-    ActionId, AnnotateSession, AnnotateTool, AnnotationRevision, AssetGeneration, AssetRef,
-    CaptureImage, CaptureProvider, CaptureRequest, CaptureWindowInfo, Command, CorrelationId,
-    DisplayId, DisplayInfo, DomainEventKind, ErrorCode, HistoryEntry, HistoryIndex, ImageId,
-    ImageSink, JobId, JobKind, JobOwner, JobSpec, OcrResult, OcrTextSelection, OcrWordRef, PinId,
-    PinTransform, PinoraError, PixelPoint, PixelRect, SelectionSession, SessionId,
+    ActionId, AnnotateSession, AnnotateTool, Annotation, AnnotationRevision, AssetGeneration,
+    AssetRef, CaptureImage, CaptureProvider, CaptureRequest, CaptureWindowInfo, Command,
+    CorrelationId, DisplayId, DisplayInfo, DomainEventKind, ErrorCode, HistoryEntry, HistoryIndex,
+    ImageId, ImageSink, JobId, JobKind, JobOwner, JobSpec, OcrResult, OcrTextSelection, OcrWordRef,
+    PinId, PinTransform, PinoraError, PixelPoint, PixelRect, SelectionSession, SessionId,
     bake_annotations, color_to_hex, render_preview_rgba, resolve_all_displays_rect, sample_rgba_at,
 };
 use softbuffer::{Context, Rect as DamageRect, Surface};
@@ -618,6 +618,8 @@ struct OverlayState {
     annotate: AnnotateSession,
     /// 当前 UI 选择；只索引当前文档，任何文档或选区变化都会清除。
     selected_annotation: Option<usize>,
+    /// 选中对象的瞬态平移预览；释放时才写入标注文档。
+    selected_drag: Option<SelectedAnnotationDrag>,
     /// 进入取色器前的绘图工具；采样后立即恢复，避免下次点击误进入取色模式。
     last_drawing_tool: AnnotateTool,
     /// 标注预览缓存（选区在缓冲分辨率下的 XRGB）。
@@ -662,6 +664,14 @@ struct OverlayState {
     annotation_asset: Option<OverlayAssetIdentity>,
     /// 编辑既有贴图时保留其稳定领域身份；取消必须恢复原窗口。
     edit_pin_id: Option<PinId>,
+}
+
+#[derive(Debug, Clone)]
+struct SelectedAnnotationDrag {
+    index: usize,
+    anchor: PixelPoint,
+    original: Annotation,
+    preview: Annotation,
 }
 
 struct PinWin {
@@ -2367,6 +2377,7 @@ where
             annotate_dragging: false,
             annotate: AnnotateSession::new(1, 1),
             selected_annotation: None,
+            selected_drag: None,
             last_drawing_tool: AnnotateTool::Rect,
             annotate_cache: None,
             annotate_cache_wh: (0, 0),
@@ -2448,6 +2459,13 @@ where
                 if matches!(key.logical_key, Key::Named(NamedKey::Escape)) {
                     // 有草稿先取消草稿，否则关 overlay
                     if let Some(ov) = self.overlay.as_mut()
+                        && ov.selected_drag.take().is_some()
+                    {
+                        ov.annotate_dirty = true;
+                        ov.needs_redraw = true;
+                        return;
+                    }
+                    if let Some(ov) = self.overlay.as_mut()
                         && ov.annotate.draft.is_some()
                     {
                         ov.annotate.cancel_draft();
@@ -2467,6 +2485,7 @@ where
                         ov.annotate.commit();
                         if ov.annotate.doc.revision() != revision {
                             ov.selected_annotation = None;
+                            ov.selected_drag = None;
                             ov.annotate_dirty = true;
                         }
                         ov.needs_redraw = true;
@@ -2552,6 +2571,7 @@ where
                             ov.last_toolbar_bounds = None;
                             ov.annotate = AnnotateSession::new(1, 1);
                             ov.selected_annotation = None;
+                            ov.selected_drag = None;
                             ov.annotate_cache = None;
                             ov.annotate_preview_cache.clear();
                             ov.active_src_rect = None;
@@ -2575,12 +2595,23 @@ where
                             ov.needs_redraw = true;
                         }
                     }
-                } else if ov.annotate_dragging
-                    && let Some(local) = overlay_annotate_local(ov, ov.last_cursor)
-                {
-                    ov.annotate.drag(local);
-                    ov.annotate_dirty = true;
-                    ov.needs_redraw = true;
+                } else if let Some(local) = overlay_annotate_local_unclamped(ov, ov.last_cursor) {
+                    if let Some(drag) = ov.selected_drag.as_mut() {
+                        let dx = local.x.saturating_sub(drag.anchor.x);
+                        let dy = local.y.saturating_sub(drag.anchor.y);
+                        let preview = drag.original.translated(dx, dy);
+                        if preview != drag.preview {
+                            drag.preview = preview;
+                            ov.annotate_dirty = true;
+                            ov.needs_redraw = true;
+                        }
+                    } else if ov.annotate_dragging
+                        && overlay_annotate_local(ov, ov.last_cursor).is_some()
+                    {
+                        ov.annotate.drag(local);
+                        ov.annotate_dirty = true;
+                        ov.needs_redraw = true;
+                    }
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -2673,6 +2704,16 @@ where
                     if let Some(local) = overlay_annotate_local(ov, p) {
                         if ov.annotate.tool == AnnotateTool::Select {
                             let selected = ov.annotate.doc.hit_test(local);
+                            ov.selected_drag = selected.and_then(|index| {
+                                ov.annotate.doc.items().get(index).cloned().map(|original| {
+                                    SelectedAnnotationDrag {
+                                        index,
+                                        anchor: local,
+                                        preview: original.clone(),
+                                        original,
+                                    }
+                                })
+                            });
                             if ov.selected_annotation != selected {
                                 ov.selected_annotation = selected;
                                 ov.annotate_dirty = true;
@@ -2738,7 +2779,15 @@ where
                 let Some(ov) = self.overlay.as_mut() else {
                     return;
                 };
-                if ov.dragging {
+                if let Some(drag) = ov.selected_drag.take() {
+                    if drag.preview != drag.original
+                        && ov.annotate.doc.replace_at(drag.index, drag.preview)
+                    {
+                        ov.selected_annotation = Some(drag.index);
+                        ov.annotate_dirty = true;
+                        ov.needs_redraw = true;
+                    }
+                } else if ov.dragging {
                     ov.dragging = false;
                     if ov.pending_reselect {
                         // 未移动够：当作误触，保持 Ready
@@ -2758,6 +2807,7 @@ where
                         // 标注坐标系 = 原图选区像素
                         ov.annotate = AnnotateSession::new(src_sel.size.width, src_sel.size.height);
                         ov.selected_annotation = None;
+                        ov.selected_drag = None;
                         ov.annotate.tool = tool;
                         ov.annotate.color = color;
                         ov.annotate.stroke = stroke;
@@ -2787,6 +2837,7 @@ where
                     ov.annotate_dragging = false;
                     if ov.annotate.doc.revision() != revision {
                         ov.selected_annotation = None;
+                        ov.selected_drag = None;
                     }
                     ov.annotate_dirty = true;
                     ov.needs_redraw = true;
@@ -2823,7 +2874,8 @@ where
                     let had_draft = ov.annotate.draft.is_some();
                     ov.annotate.cancel_draft();
                     let had_selection = ov.selected_annotation.take().is_some();
-                    if ov.annotate.doc.clear() || had_draft || had_selection {
+                    let had_drag = ov.selected_drag.take().is_some();
+                    if ov.annotate.doc.clear() || had_draft || had_selection || had_drag {
                         ov.annotate_dirty = true;
                         ov.needs_redraw = true;
                     }
@@ -3122,6 +3174,7 @@ where
         ov.annotate_dragging = false;
         if ov.annotate.doc.revision() != revision {
             ov.selected_annotation = None;
+            ov.selected_drag = None;
             ov.annotate_dirty = true;
             ov.needs_redraw = true;
         }
@@ -4295,7 +4348,7 @@ fn handle_overlay_key(
     ov: &mut OverlayState,
     event: &winit::event::KeyEvent,
 ) {
-    let step = if modifiers.shift_key() { 10 } else { 1 };
+    let step = annotation_nudge_step(modifiers);
 
     if ov.phase == OverlayPhase::Ready && ov.annotate.is_text_editing() {
         match &event.logical_key {
@@ -4328,6 +4381,7 @@ fn handle_overlay_key(
         };
         if changed {
             ov.selected_annotation = None;
+            ov.selected_drag = None;
             ov.annotate_dirty = true;
             ov.needs_redraw = true;
         }
@@ -4343,29 +4397,29 @@ fn handle_overlay_key(
     {
         if ov.annotate.doc.delete_at(index).is_some() {
             ov.selected_annotation = None;
+            ov.selected_drag = None;
             ov.annotate_dirty = true;
             ov.needs_redraw = true;
         }
         return;
     }
 
+    let arrow_delta = match &event.logical_key {
+        Key::Named(NamedKey::ArrowLeft) => Some((-step, 0)),
+        Key::Named(NamedKey::ArrowRight) => Some((step, 0)),
+        Key::Named(NamedKey::ArrowUp) => Some((0, -step)),
+        Key::Named(NamedKey::ArrowDown) => Some((0, step)),
+        _ => None,
+    };
+    if let Some((dx, dy)) = arrow_delta {
+        if !nudge_selected_annotation(ov, dx, dy) {
+            ov.session.nudge(dx, dy);
+            refresh_overlay_ready(ov);
+        }
+        return;
+    }
+
     match &event.logical_key {
-        Key::Named(NamedKey::ArrowLeft) => {
-            ov.session.nudge(-step, 0);
-            refresh_overlay_ready(ov);
-        }
-        Key::Named(NamedKey::ArrowRight) => {
-            ov.session.nudge(step, 0);
-            refresh_overlay_ready(ov);
-        }
-        Key::Named(NamedKey::ArrowUp) => {
-            ov.session.nudge(0, -step);
-            refresh_overlay_ready(ov);
-        }
-        Key::Named(NamedKey::ArrowDown) => {
-            ov.session.nudge(0, step);
-            refresh_overlay_ready(ov);
-        }
         Key::Character(c)
             if (c == "c" || c == "C")
                 && !modifiers.control_key()
@@ -4448,6 +4502,10 @@ fn handle_overlay_key(
     }
 }
 
+fn annotation_nudge_step(modifiers: ModifiersState) -> i32 {
+    if modifiers.shift_key() { 10 } else { 1 }
+}
+
 fn overlay_click_finishes_copy(tool: AnnotateTool, is_double_click: bool) -> bool {
     is_double_click && !matches!(tool, AnnotateTool::Number | AnnotateTool::Select)
 }
@@ -4456,12 +4514,36 @@ fn set_overlay_tool(ov: &mut OverlayState, tool: AnnotateTool) {
     if !matches!(tool, AnnotateTool::ColorPicker | AnnotateTool::Select) {
         ov.last_drawing_tool = tool;
     }
-    if tool != AnnotateTool::Select && ov.selected_annotation.take().is_some() {
-        ov.annotate_dirty = true;
+    if tool != AnnotateTool::Select {
+        let had_selection = ov.selected_annotation.take().is_some();
+        let had_drag = ov.selected_drag.take().is_some();
+        if had_selection || had_drag {
+            ov.annotate_dirty = true;
+        }
     }
     ov.annotate.tool = tool;
     ov.toolbar_chrome_dirty = true;
     ov.needs_redraw = true;
+}
+
+/// 优先移动当前选中对象；返回 false 时由调用方继续处理选区移动。
+fn nudge_selected_annotation(ov: &mut OverlayState, dx: i32, dy: i32) -> bool {
+    let Some(index) = ov.selected_annotation else {
+        return false;
+    };
+    let Some(item) = ov.annotate.doc.items().get(index).cloned() else {
+        ov.selected_annotation = None;
+        ov.selected_drag = None;
+        ov.annotate_dirty = true;
+        ov.needs_redraw = true;
+        return false;
+    };
+    ov.selected_drag = None;
+    if ov.annotate.doc.replace_at(index, item.translated(dx, dy)) {
+        ov.annotate_dirty = true;
+        ov.needs_redraw = true;
+    }
+    true
 }
 
 fn refresh_overlay_ready(ov: &mut OverlayState) {
@@ -4473,6 +4555,7 @@ fn refresh_overlay_ready(ov: &mut OverlayState) {
         let source_changed = ov.active_src_rect != Some(src_sel);
         if source_changed {
             ov.selected_annotation = None;
+            ov.selected_drag = None;
             ov.active_src_rect = Some(src_sel);
             ov.annotation_asset = Some(OverlayAssetIdentity::new());
             ov.annotate_cache = None;
@@ -4486,6 +4569,7 @@ fn refresh_overlay_ready(ov: &mut OverlayState) {
             let shape_fill_enabled = ov.annotate.shape_fill_enabled();
             ov.annotate = AnnotateSession::new(src_sel.size.width, src_sel.size.height);
             ov.selected_annotation = None;
+            ov.selected_drag = None;
             ov.annotate.tool = tool;
             ov.annotate.color = color;
             ov.annotate.stroke = stroke;
@@ -4694,9 +4778,11 @@ fn selected_annotation_display_bounds(
 ) -> Option<PixelRect> {
     let index = ov.selected_annotation?;
     let local = ov
-        .annotate
-        .doc
-        .selection_bounds(index)?
+        .selected_drag
+        .as_ref()
+        .filter(|drag| drag.index == index)
+        .map(|drag| drag.preview.selection_bounds())
+        .or_else(|| ov.annotate.doc.selection_bounds(index))?
         .clamp_to(PixelRect::new(
             0,
             0,
@@ -4743,9 +4829,13 @@ fn ensure_annotate_cache(ov: &mut OverlayState, disp_rect: PixelRect) {
     let Some(src_rect) = ov.active_src_rect else {
         return;
     };
-    let Some(rgba) = ov
-        .annotate_preview_cache
-        .compose(&ov.full_image, src_rect, &ov.annotate)
+    let replacement = ov
+        .selected_drag
+        .as_ref()
+        .map(|drag| (drag.index, &drag.preview));
+    let Some(rgba) =
+        ov.annotate_preview_cache
+            .compose(&ov.full_image, src_rect, &ov.annotate, replacement)
     else {
         return;
     };
@@ -4783,15 +4873,37 @@ fn buf_rect_to_src(disp: PixelRect, buf_w: u32, buf_h: u32, src_w: u32, src_h: u
 fn overlay_annotate_local(ov: &OverlayState, buf_cursor: PixelPoint) -> Option<PixelPoint> {
     let disp_sel = ov.session.try_confirm().ok()?;
     let src_sel = ov.active_src_rect?;
-    if !disp_sel.contains_point(buf_cursor) {
+    selection_to_annotation_local(disp_sel, src_sel, buf_cursor, true)
+}
+
+/// 缓冲坐标光标 → 原图选区局部坐标，允许落在选区外。
+///
+/// 仅选中对象的移动使用该映射，因而可把对象拖出当前画布；普通绘制、取色仍使用
+/// [`overlay_annotate_local`] 的选区内边界。
+fn overlay_annotate_local_unclamped(
+    ov: &OverlayState,
+    buf_cursor: PixelPoint,
+) -> Option<PixelPoint> {
+    let disp_sel = ov.session.try_confirm().ok()?;
+    let src_sel = ov.active_src_rect?;
+    selection_to_annotation_local(disp_sel, src_sel, buf_cursor, false)
+}
+
+fn selection_to_annotation_local(
+    display_selection: PixelRect,
+    source_selection: PixelRect,
+    buffer_cursor: PixelPoint,
+    require_inside_selection: bool,
+) -> Option<PixelPoint> {
+    if require_inside_selection && !display_selection.contains_point(buffer_cursor) {
         return None;
     }
-    let lx = buf_cursor.x - disp_sel.origin.x;
-    let ly = buf_cursor.y - disp_sel.origin.y;
-    let dw = disp_sel.size.width.max(1) as i64;
-    let dh = disp_sel.size.height.max(1) as i64;
-    let sw = src_sel.size.width.max(1) as i64;
-    let sh = src_sel.size.height.max(1) as i64;
+    let lx = buffer_cursor.x.saturating_sub(display_selection.origin.x);
+    let ly = buffer_cursor.y.saturating_sub(display_selection.origin.y);
+    let dw = display_selection.size.width.max(1) as i64;
+    let dh = display_selection.size.height.max(1) as i64;
+    let sw = source_selection.size.width.max(1) as i64;
+    let sh = source_selection.size.height.max(1) as i64;
     Some(PixelPoint::new(
         (i64::from(lx) * sw / dw) as i32,
         (i64::from(ly) * sh / dh) as i32,
@@ -5145,6 +5257,30 @@ mod overlay_scale_tests {
         let r = buf_rect_to_src(PixelRect::new(0, 0, 1920, 1080), 1920, 1080, 3840, 2160);
         assert_eq!(r.size.width, 3840);
         assert_eq!(r.size.height, 2160);
+    }
+
+    #[test]
+    fn selected_drag_mapping_allows_objects_to_move_beyond_the_selection() {
+        let display = PixelRect::new(100, 50, 200, 100);
+        let source = PixelRect::new(0, 0, 400, 200);
+        assert_eq!(
+            selection_to_annotation_local(display, source, PixelPoint::new(150, 75), true),
+            Some(PixelPoint::new(100, 50))
+        );
+        assert_eq!(
+            selection_to_annotation_local(display, source, PixelPoint::new(90, 40), true),
+            None
+        );
+        assert_eq!(
+            selection_to_annotation_local(display, source, PixelPoint::new(90, 40), false),
+            Some(PixelPoint::new(-20, -20))
+        );
+    }
+
+    #[test]
+    fn selected_annotation_nudge_uses_one_or_ten_pixel_steps() {
+        assert_eq!(annotation_nudge_step(ModifiersState::empty()), 1);
+        assert_eq!(annotation_nudge_step(ModifiersState::SHIFT), 10);
     }
 
     #[test]

@@ -140,7 +140,15 @@ pub struct AnnotationDoc {
 enum AnnotationTransaction {
     Add(Annotation),
     Clear(Vec<Annotation>),
-    Delete { index: usize, item: Annotation },
+    Delete {
+        index: usize,
+        item: Annotation,
+    },
+    Replace {
+        index: usize,
+        before: Annotation,
+        after: Annotation,
+    },
 }
 
 impl AnnotationDoc {
@@ -174,6 +182,15 @@ impl AnnotationDoc {
                 self.items.insert(*index, item.clone());
                 item.clone()
             }
+            AnnotationTransaction::Replace {
+                index,
+                before,
+                after,
+            } => {
+                let replaced = std::mem::replace(&mut self.items[*index], before.clone());
+                debug_assert_eq!(&replaced, after);
+                before.clone()
+            }
         };
         self.redo.push(transaction);
         self.revision = self.revision.advance();
@@ -199,6 +216,15 @@ impl AnnotationDoc {
                 let removed = self.items.remove(*index);
                 debug_assert_eq!(&removed, item);
                 removed
+            }
+            AnnotationTransaction::Replace {
+                index,
+                before,
+                after,
+            } => {
+                let replaced = std::mem::replace(&mut self.items[*index], after.clone());
+                debug_assert_eq!(&replaced, before);
+                after.clone()
             }
         };
         self.undo.push(transaction);
@@ -231,6 +257,27 @@ impl AnnotationDoc {
         });
         self.revision = self.revision.advance();
         Some(item)
+    }
+
+    /// 用新对象替换给定绘制位置的标注，并保存旧对象供 undo 原位恢复。
+    ///
+    /// 相同对象不是有效编辑：不会丢弃 redo 分支，也不会推进 revision。
+    pub fn replace_at(&mut self, index: usize, after: Annotation) -> bool {
+        let Some(before) = self.items.get(index).cloned() else {
+            return false;
+        };
+        if before == after {
+            return false;
+        }
+        self.items[index] = after.clone();
+        self.redo.clear();
+        self.undo.push(AnnotationTransaction::Replace {
+            index,
+            before,
+            after,
+        });
+        self.revision = self.revision.advance();
+        true
     }
 
     /// 返回视觉上最顶层、可由选择工具命中的标注索引。
@@ -271,6 +318,119 @@ impl AnnotationDoc {
 const SELECTION_HIT_TOLERANCE: f64 = 6.0;
 
 impl Annotation {
+    /// 返回保留所有视觉字段、仅平移几何坐标后的副本。
+    pub fn translated(&self, dx: i32, dy: i32) -> Self {
+        match self {
+            Self::Rect {
+                a,
+                b,
+                color,
+                stroke,
+                fill,
+            } => Self::Rect {
+                a: translate_point(*a, dx, dy),
+                b: translate_point(*b, dx, dy),
+                color: *color,
+                stroke: *stroke,
+                fill: *fill,
+            },
+            Self::RoundedRect {
+                a,
+                b,
+                color,
+                stroke,
+                radius,
+                fill,
+            } => Self::RoundedRect {
+                a: translate_point(*a, dx, dy),
+                b: translate_point(*b, dx, dy),
+                color: *color,
+                stroke: *stroke,
+                radius: *radius,
+                fill: *fill,
+            },
+            Self::Line {
+                from,
+                to,
+                color,
+                stroke,
+            } => Self::Line {
+                from: translate_point(*from, dx, dy),
+                to: translate_point(*to, dx, dy),
+                color: *color,
+                stroke: *stroke,
+            },
+            Self::Arrow {
+                from,
+                to,
+                color,
+                stroke,
+            } => Self::Arrow {
+                from: translate_point(*from, dx, dy),
+                to: translate_point(*to, dx, dy),
+                color: *color,
+                stroke: *stroke,
+            },
+            Self::Pen {
+                points,
+                color,
+                stroke,
+            } => Self::Pen {
+                points: points
+                    .iter()
+                    .map(|point| translate_point(*point, dx, dy))
+                    .collect(),
+                color: *color,
+                stroke: *stroke,
+            },
+            Self::Ellipse {
+                a,
+                b,
+                color,
+                stroke,
+                fill,
+            } => Self::Ellipse {
+                a: translate_point(*a, dx, dy),
+                b: translate_point(*b, dx, dy),
+                color: *color,
+                stroke: *stroke,
+                fill: *fill,
+            },
+            Self::Number {
+                center,
+                value,
+                color,
+                diameter,
+            } => Self::Number {
+                center: translate_point(*center, dx, dy),
+                value: *value,
+                color: *color,
+                diameter: *diameter,
+            },
+            Self::Mosaic { a, b, block } => Self::Mosaic {
+                a: translate_point(*a, dx, dy),
+                b: translate_point(*b, dx, dy),
+                block: *block,
+            },
+            Self::Blur { a, b, radius } => Self::Blur {
+                a: translate_point(*a, dx, dy),
+                b: translate_point(*b, dx, dy),
+                radius: *radius,
+            },
+            Self::Text {
+                origin,
+                content,
+                color,
+                size,
+            } => Self::Text {
+                origin: translate_point(*origin, dx, dy),
+                content: content.clone(),
+                color: *color,
+                size: *size,
+            },
+        }
+    }
+
     fn contains_selection_point(&self, point: PixelPoint) -> bool {
         match self {
             Self::Rect {
@@ -329,7 +489,8 @@ impl Annotation {
         }
     }
 
-    fn selection_bounds(&self) -> PixelRect {
+    /// 返回对象在图像坐标系中的选择框；仅用于 UI 呈现和命中。
+    pub fn selection_bounds(&self) -> PixelRect {
         match self {
             Self::Rect { a, b, stroke, .. } | Self::Ellipse { a, b, stroke, .. } => {
                 expand_pixel_rect(inclusive_rect(*a, *b), (*stroke as i32 / 2).max(1))
@@ -372,6 +533,10 @@ impl Annotation {
             } => text_bounds(*origin, content, *size),
         }
     }
+}
+
+fn translate_point(point: PixelPoint, dx: i32, dy: i32) -> PixelPoint {
+    PixelPoint::new(point.x.saturating_add(dx), point.y.saturating_add(dy))
 }
 
 fn inclusive_rect(a: PixelPoint, b: PixelPoint) -> PixelRect {
@@ -1003,9 +1168,24 @@ pub fn render_draft_rgba(
     let Some(draft) = draft_annotation(session) else {
         return false;
     };
-    let w = source.pixels.size.width as i32;
-    let h = source.pixels.size.height as i32;
-    draw_annotation(destination, &source.pixels.bytes, w, h, &draft);
+    render_annotation_rgba(source, &draft, destination)
+}
+
+/// 将一条瞬态标注叠加到既有 RGBA 帧。
+///
+/// 调用方负责提供与 `source` 同尺寸的独立呈现缓冲。马赛克和模糊始终从不可变
+/// `source` 读取，因此瞬态移动预览不会读取已提交标注层。
+pub fn render_annotation_rgba(
+    source: &CaptureImage,
+    annotation: &Annotation,
+    destination: &mut [u8],
+) -> bool {
+    if destination.len() != source.pixels.bytes.len() {
+        return false;
+    }
+    let width = source.pixels.size.width as i32;
+    let height = source.pixels.size.height as i32;
+    draw_annotation(destination, &source.pixels.bytes, width, height, annotation);
     true
 }
 
@@ -2812,6 +2992,232 @@ mod tests {
             Some(annotations.len())
         );
         assert_eq!(doc.hit_test(PixelPoint::new(100, 100)), None);
+    }
+
+    #[test]
+    fn translated_annotation_preserves_every_visual_field() {
+        let annotations = vec![
+            Annotation::Rect {
+                a: PixelPoint::new(1, 2),
+                b: PixelPoint::new(3, 4),
+                color: [1, 2, 3, 4],
+                stroke: 5,
+                fill: Some([6, 7, 8, 9]),
+            },
+            Annotation::RoundedRect {
+                a: PixelPoint::new(1, 2),
+                b: PixelPoint::new(3, 4),
+                color: [1, 2, 3, 4],
+                stroke: 5,
+                radius: 6,
+                fill: Some([7, 8, 9, 10]),
+            },
+            Annotation::Line {
+                from: PixelPoint::new(1, 2),
+                to: PixelPoint::new(3, 4),
+                color: [1, 2, 3, 4],
+                stroke: 5,
+            },
+            Annotation::Arrow {
+                from: PixelPoint::new(1, 2),
+                to: PixelPoint::new(3, 4),
+                color: [1, 2, 3, 4],
+                stroke: 5,
+            },
+            Annotation::Pen {
+                points: vec![PixelPoint::new(1, 2), PixelPoint::new(3, 4)],
+                color: [1, 2, 3, 4],
+                stroke: 5,
+            },
+            Annotation::Ellipse {
+                a: PixelPoint::new(1, 2),
+                b: PixelPoint::new(3, 4),
+                color: [1, 2, 3, 4],
+                stroke: 5,
+                fill: Some([6, 7, 8, 9]),
+            },
+            Annotation::Number {
+                center: PixelPoint::new(1, 2),
+                value: 7,
+                color: [1, 2, 3, 4],
+                diameter: 8,
+            },
+            Annotation::Mosaic {
+                a: PixelPoint::new(1, 2),
+                b: PixelPoint::new(3, 4),
+                block: 5,
+            },
+            Annotation::Blur {
+                a: PixelPoint::new(1, 2),
+                b: PixelPoint::new(3, 4),
+                radius: 5,
+            },
+            Annotation::Text {
+                origin: PixelPoint::new(1, 2),
+                content: "移动后文本不变".to_owned(),
+                color: [1, 2, 3, 4],
+                size: 12.5,
+            },
+        ];
+        let expected = vec![
+            Annotation::Rect {
+                a: PixelPoint::new(4, -3),
+                b: PixelPoint::new(6, -1),
+                color: [1, 2, 3, 4],
+                stroke: 5,
+                fill: Some([6, 7, 8, 9]),
+            },
+            Annotation::RoundedRect {
+                a: PixelPoint::new(4, -3),
+                b: PixelPoint::new(6, -1),
+                color: [1, 2, 3, 4],
+                stroke: 5,
+                radius: 6,
+                fill: Some([7, 8, 9, 10]),
+            },
+            Annotation::Line {
+                from: PixelPoint::new(4, -3),
+                to: PixelPoint::new(6, -1),
+                color: [1, 2, 3, 4],
+                stroke: 5,
+            },
+            Annotation::Arrow {
+                from: PixelPoint::new(4, -3),
+                to: PixelPoint::new(6, -1),
+                color: [1, 2, 3, 4],
+                stroke: 5,
+            },
+            Annotation::Pen {
+                points: vec![PixelPoint::new(4, -3), PixelPoint::new(6, -1)],
+                color: [1, 2, 3, 4],
+                stroke: 5,
+            },
+            Annotation::Ellipse {
+                a: PixelPoint::new(4, -3),
+                b: PixelPoint::new(6, -1),
+                color: [1, 2, 3, 4],
+                stroke: 5,
+                fill: Some([6, 7, 8, 9]),
+            },
+            Annotation::Number {
+                center: PixelPoint::new(4, -3),
+                value: 7,
+                color: [1, 2, 3, 4],
+                diameter: 8,
+            },
+            Annotation::Mosaic {
+                a: PixelPoint::new(4, -3),
+                b: PixelPoint::new(6, -1),
+                block: 5,
+            },
+            Annotation::Blur {
+                a: PixelPoint::new(4, -3),
+                b: PixelPoint::new(6, -1),
+                radius: 5,
+            },
+            Annotation::Text {
+                origin: PixelPoint::new(4, -3),
+                content: "移动后文本不变".to_owned(),
+                color: [1, 2, 3, 4],
+                size: 12.5,
+            },
+        ];
+
+        for (annotation, expected) in annotations.iter().zip(expected) {
+            assert_eq!(annotation.translated(3, -5), expected);
+        }
+        let at_bounds = Annotation::Number {
+            center: PixelPoint::new(i32::MAX, i32::MIN),
+            value: 1,
+            color: DEFAULT_STROKE,
+            diameter: 20,
+        };
+        assert_eq!(at_bounds.translated(1, -1), at_bounds);
+    }
+
+    #[test]
+    fn replace_transaction_preserves_order_across_delete_clear_undo_and_redo() {
+        let first = Annotation::Line {
+            from: PixelPoint::new(1, 1),
+            to: PixelPoint::new(4, 4),
+            color: DEFAULT_STROKE,
+            stroke: DEFAULT_WIDTH,
+        };
+        let second = Annotation::Mosaic {
+            a: PixelPoint::new(6, 2),
+            b: PixelPoint::new(12, 8),
+            block: 4,
+        };
+        let third = Annotation::Blur {
+            a: PixelPoint::new(14, 4),
+            b: PixelPoint::new(22, 12),
+            radius: 5,
+        };
+        let moved_second = second.translated(3, -2);
+        let mut doc = AnnotationDoc::new();
+        doc.push(first.clone());
+        doc.push(second.clone());
+        doc.push(third.clone());
+
+        assert!(doc.replace_at(1, moved_second.clone()));
+        assert_eq!(
+            doc.items(),
+            [first.clone(), moved_second.clone(), third.clone()]
+        );
+        assert_eq!(doc.delete_at(0), Some(first.clone()));
+        assert!(doc.clear());
+        assert!(doc.is_empty());
+
+        assert_eq!(doc.undo(), Some(third.clone()));
+        assert_eq!(doc.items(), [moved_second.clone(), third.clone()]);
+        assert_eq!(doc.undo(), Some(first.clone()));
+        assert_eq!(
+            doc.items(),
+            [first.clone(), moved_second.clone(), third.clone()]
+        );
+        assert_eq!(doc.undo(), Some(second.clone()));
+        assert_eq!(doc.items(), [first.clone(), second.clone(), third.clone()]);
+        assert_eq!(doc.redo(), Some(moved_second.clone()));
+        assert_eq!(
+            doc.items(),
+            [first.clone(), moved_second.clone(), third.clone()]
+        );
+        assert_eq!(doc.redo(), Some(first.clone()));
+        assert_eq!(doc.items(), [moved_second.clone(), third.clone()]);
+        assert_eq!(doc.redo(), Some(third));
+        assert!(doc.is_empty());
+    }
+
+    #[test]
+    fn unchanged_or_invalid_replace_keeps_revision_and_redo_branch() {
+        let first = Annotation::Line {
+            from: PixelPoint::new(1, 1),
+            to: PixelPoint::new(4, 4),
+            color: DEFAULT_STROKE,
+            stroke: DEFAULT_WIDTH,
+        };
+        let second = Annotation::Mosaic {
+            a: PixelPoint::new(6, 2),
+            b: PixelPoint::new(12, 8),
+            block: 4,
+        };
+        let mut doc = AnnotationDoc::new();
+        doc.push(first.clone());
+        doc.push(second);
+        assert!(doc.undo().is_some());
+        let revision = doc.revision();
+
+        assert!(!doc.replace_at(0, first));
+        assert!(!doc.replace_at(
+            99,
+            Annotation::Mosaic {
+                a: PixelPoint::new(1, 1),
+                b: PixelPoint::new(2, 2),
+                block: 4,
+            }
+        ));
+        assert_eq!(doc.revision(), revision);
+        assert!(doc.can_redo());
     }
 
     #[test]

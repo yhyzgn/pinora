@@ -4,8 +4,8 @@
 //! 叠加。缓存绝不跨 Overlay 会话保存，马赛克和模糊仍由 core 从不可变源裁剪取样。
 
 use pinora_core::{
-    AnnotateSession, AnnotationRevision, CaptureImage, PixelRect, bake_annotations,
-    render_draft_rgba,
+    AnnotateSession, Annotation, AnnotationRevision, CaptureImage, PixelRect, bake_annotations,
+    render_annotation_rgba, render_draft_rgba,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,11 +14,19 @@ struct CacheKey {
     revision: AnnotationRevision,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReplacementKey {
+    cache: CacheKey,
+    index: usize,
+}
+
 #[derive(Default)]
 pub(crate) struct OverlayPreviewCache {
     key: Option<CacheKey>,
     source_crop: Option<CaptureImage>,
     committed_rgba: Vec<u8>,
+    replacement_key: Option<ReplacementKey>,
+    replacement_prefix_rgba: Vec<u8>,
     #[cfg(test)]
     rebuild_count: usize,
 }
@@ -28,6 +36,8 @@ impl OverlayPreviewCache {
         self.key = None;
         self.source_crop = None;
         self.committed_rgba.clear();
+        self.replacement_key = None;
+        self.replacement_prefix_rgba.clear();
     }
 
     /// 合成当前草稿，返回独立的预览缓冲以供调用方转换为显示像素。
@@ -36,6 +46,7 @@ impl OverlayPreviewCache {
         full_image: &CaptureImage,
         source_rect: PixelRect,
         session: &AnnotateSession,
+        replacement: Option<(usize, &Annotation)>,
     ) -> Option<Vec<u8>> {
         let key = CacheKey {
             source_rect,
@@ -53,8 +64,30 @@ impl OverlayPreviewCache {
             }
         }
 
-        let mut preview = self.committed_rgba.clone();
         let source = self.source_crop.as_ref()?;
+        let mut preview = match replacement {
+            Some((index, replacement)) if session.doc.items().get(index).is_some() => {
+                let replacement_key = ReplacementKey { cache: key, index };
+                if self.replacement_key != Some(replacement_key) {
+                    self.replacement_prefix_rgba = source.pixels.bytes.clone();
+                    for annotation in session.doc.items().iter().take(index) {
+                        let _ = render_annotation_rgba(
+                            source,
+                            annotation,
+                            &mut self.replacement_prefix_rgba,
+                        );
+                    }
+                    self.replacement_key = Some(replacement_key);
+                }
+                let mut preview = self.replacement_prefix_rgba.clone();
+                let _ = render_annotation_rgba(source, replacement, &mut preview);
+                for annotation in session.doc.items().iter().skip(index + 1) {
+                    let _ = render_annotation_rgba(source, annotation, &mut preview);
+                }
+                preview
+            }
+            _ => self.committed_rgba.clone(),
+        };
         let _ = render_draft_rgba(source, session, &mut preview);
         Some(preview)
     }
@@ -112,28 +145,28 @@ mod tests {
         let mut cache = OverlayPreviewCache::default();
         let first_crop = image.crop_local(first_rect).unwrap();
         assert_eq!(
-            cache.compose(&image, first_rect, &session),
+            cache.compose(&image, first_rect, &session, None),
             Some(render_preview_rgba(&first_crop, &session))
         );
         assert_eq!(cache.rebuild_count(), 1);
 
         session.drag(PixelPoint::new(21, 13));
         assert_eq!(
-            cache.compose(&image, first_rect, &session),
+            cache.compose(&image, first_rect, &session, None),
             Some(render_preview_rgba(&first_crop, &session))
         );
         assert_eq!(cache.rebuild_count(), 1);
 
         session.commit();
         assert_eq!(
-            cache.compose(&image, first_rect, &session),
+            cache.compose(&image, first_rect, &session, None),
             Some(render_preview_rgba(&first_crop, &session))
         );
         assert_eq!(cache.rebuild_count(), 2);
 
         let second_crop = image.crop_local(second_rect).unwrap();
         assert_eq!(
-            cache.compose(&image, second_rect, &session),
+            cache.compose(&image, second_rect, &session, None),
             Some(render_preview_rgba(&second_crop, &session))
         );
         assert_eq!(cache.rebuild_count(), 3);
@@ -150,14 +183,53 @@ mod tests {
             radius: 4,
         });
         let mut cache = OverlayPreviewCache::default();
-        assert!(cache.compose(&image, rect, &session).is_some());
+        assert!(cache.compose(&image, rect, &session, None).is_some());
         assert_eq!(cache.rebuild_count(), 1);
 
         assert_eq!(
-            cache.compose(&image, PixelRect::new(20, 20, 8, 8), &session),
+            cache.compose(&image, PixelRect::new(20, 20, 8, 8), &session, None),
             None
         );
-        assert!(cache.compose(&image, rect, &session).is_some());
+        assert!(cache.compose(&image, rect, &session, None).is_some());
         assert_eq!(cache.rebuild_count(), 2);
+    }
+
+    #[test]
+    fn replacement_preview_matches_the_committed_transaction_without_mutating_the_document() {
+        let image = source(40, 30);
+        let rect = PixelRect::new(2, 3, 24, 18);
+        let mut session = AnnotateSession::new(24, 18);
+        session.doc.push(Annotation::Mosaic {
+            a: PixelPoint::new(3, 3),
+            b: PixelPoint::new(10, 10),
+            block: 4,
+        });
+        session.doc.push(Annotation::Line {
+            from: PixelPoint::new(2, 14),
+            to: PixelPoint::new(18, 14),
+            color: [255, 64, 64, 255],
+            stroke: 3,
+        });
+        let before = session.doc.clone();
+        let moved = session.doc.items()[0].translated(7, 4);
+        let crop = image.crop_local(rect).expect("crop");
+        let mut expected = session.clone();
+        assert!(expected.doc.replace_at(0, moved.clone()));
+
+        let mut cache = OverlayPreviewCache::default();
+        assert_eq!(
+            cache.compose(&image, rect, &session, Some((0, &moved))),
+            Some(bake_annotations(&crop, &expected.doc).pixels.bytes)
+        );
+        assert_eq!(session.doc, before);
+        assert_eq!(cache.rebuild_count(), 1);
+
+        let moved_again = session.doc.items()[0].translated(8, 5);
+        assert!(expected.doc.replace_at(0, moved_again.clone()));
+        assert_eq!(
+            cache.compose(&image, rect, &session, Some((0, &moved_again))),
+            Some(bake_annotations(&crop, &expected.doc).pixels.bytes)
+        );
+        assert_eq!(cache.rebuild_count(), 1);
     }
 }
