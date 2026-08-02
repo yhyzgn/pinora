@@ -197,6 +197,8 @@ where
         &tray_displays,
         &tray_windows,
         tray_capabilities,
+        settings.region_hotkey,
+        settings.full_display_hotkey,
     ))?;
     println!("pinora: system tray ready (click / menu → capture)");
 
@@ -1805,6 +1807,9 @@ where
                 if let Some(settings) = self.settings.as_mut() {
                     settings.mark_saved();
                     settings.request_redraw();
+                }
+                if let Some(tray) = &self.tray {
+                    tray.set_hotkey_bindings(draft.region_hotkey, draft.full_display_hotkey);
                 }
                 self.refresh_diagnostics();
                 println!("pinora: settings saved (theme={:?})", draft.theme);

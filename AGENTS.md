@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/085_diagnostics_capability_feedback.md`
-- 任务：`.context/tasks/085_diagnostics_capability_feedback.md`
+- 计划：`.context/plans/086_tray_hotkey_labels.md`
+- 任务：`.context/tasks/086_tray_hotkey_labels.md`
 
 ## 交付要求
 

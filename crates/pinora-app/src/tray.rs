@@ -6,7 +6,7 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::Duration;
 
-use pinora_core::{CaptureWindowInfo, DisplayId, DisplayInfo};
+use pinora_core::{CaptureWindowInfo, DisplayId, DisplayInfo, HotkeyBinding};
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
@@ -40,11 +40,13 @@ pub enum TrayAction {
 pub struct AppTray {
     tray: TrayIcon,
     status_item: MenuItem,
+    capture_item: MenuItem,
     capture_id: tray_icon::menu::MenuId,
     delay_capture_ids: [(MenuId, Duration); 3],
     cancel_delayed_capture_id: tray_icon::menu::MenuId,
     delay_capture_items: [MenuItem; 3],
     cancel_delayed_capture_item: MenuItem,
+    capture_full_display_item: MenuItem,
     capture_full_display_id: tray_icon::menu::MenuId,
     capture_all_displays_id: Option<MenuId>,
     capture_display_ids: Vec<(MenuId, DisplayId)>,
@@ -66,10 +68,18 @@ impl AppTray {
         displays: &[DisplayInfo],
         windows: &[CaptureWindowInfo],
         capabilities: TrayCapabilitySummary,
+        region_hotkey: HotkeyBinding,
+        full_display_hotkey: HotkeyBinding,
     ) -> Result<Self, String> {
         // tray-icon 内部可能 panic（未 gtk::init），必须 catch
         match catch_unwind(AssertUnwindSafe(|| {
-            try_new_inner(displays, windows, capabilities)
+            try_new_inner(
+                displays,
+                windows,
+                capabilities,
+                region_hotkey,
+                full_display_hotkey,
+            )
         })) {
             Ok(r) => r,
             Err(_) => Err("tray panicked (often GTK not initialized or no display)".into()),
@@ -154,6 +164,18 @@ impl AppTray {
         self.undo_close_pin_item.set_enabled(available);
     }
 
+    /// 标签表示已保存的有限热键配置；实际 OS 注册状态仍由能力摘要和诊断面板提供。
+    pub fn set_hotkey_bindings(
+        &self,
+        region_hotkey: HotkeyBinding,
+        full_display_hotkey: HotkeyBinding,
+    ) {
+        self.capture_item
+            .set_text(capture_menu_label(region_hotkey));
+        self.capture_full_display_item
+            .set_text(full_display_menu_label(full_display_hotkey));
+    }
+
     /// 同步更新现有菜单中的禁用状态项和图标 tooltip。Linux tray 后端可能不显示
     /// tooltip，但菜单项仍是可扫描的本地反馈；更新失败不影响业务流程。
     pub fn set_feedback(&self, feedback: TrayFeedback) {
@@ -169,6 +191,8 @@ fn try_new_inner(
     displays: &[DisplayInfo],
     windows: &[CaptureWindowInfo],
     capabilities: TrayCapabilitySummary,
+    region_hotkey: HotkeyBinding,
+    full_display_hotkey: HotkeyBinding,
 ) -> Result<AppTray, String> {
     // Linux tray-icon → appindicator → GTK 菜单；GTK 不应进入其他 target。
     #[cfg(target_os = "linux")]
@@ -186,12 +210,13 @@ fn try_new_inner(
     let capability_items = capabilities
         .labels()
         .map(|label| MenuItem::new(label, false, None));
-    let capture = MenuItem::new("截图 (F2)", true, None);
+    let capture = MenuItem::new(capture_menu_label(region_hotkey), true, None);
     let delay_capture_one = MenuItem::new("延时截图 1 秒", true, None);
     let delay_capture_three = MenuItem::new("延时截图 3 秒", true, None);
     let delay_capture_five = MenuItem::new("延时截图 5 秒", true, None);
     let cancel_delayed_capture = MenuItem::new("取消延时截图", false, None);
-    let capture_full_display = MenuItem::new("全屏截图 (F3)", true, None);
+    let capture_full_display =
+        MenuItem::new(full_display_menu_label(full_display_hotkey), true, None);
     let capture_all_displays =
         (displays.len() > 1).then(|| MenuItem::new("所有显示器截图", true, None));
     let mut capture_display_ids = Vec::new();
@@ -304,11 +329,13 @@ fn try_new_inner(
     Ok(AppTray {
         tray,
         status_item: status,
+        capture_item: capture,
         capture_id,
         delay_capture_ids,
         cancel_delayed_capture_id,
         delay_capture_items: [delay_capture_one, delay_capture_three, delay_capture_five],
         cancel_delayed_capture_item: cancel_delayed_capture,
+        capture_full_display_item: capture_full_display,
         capture_full_display_id,
         capture_all_displays_id,
         capture_display_ids,
@@ -327,6 +354,14 @@ fn try_new_inner(
 
 fn tray_window_candidates(windows: &[CaptureWindowInfo]) -> &[CaptureWindowInfo] {
     &windows[..windows.len().min(MAX_WINDOW_CAPTURE_CANDIDATES)]
+}
+
+fn capture_menu_label(region_hotkey: HotkeyBinding) -> String {
+    format!("截图 ({region_hotkey})")
+}
+
+fn full_display_menu_label(full_display_hotkey: HotkeyBinding) -> String {
+    format!("全屏截图 ({full_display_hotkey})")
 }
 
 fn display_capture_label(display: &DisplayInfo) -> String {
@@ -455,7 +490,7 @@ fn make_icon() -> Result<Icon, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pinora_core::{CaptureWindowId, PixelRect};
+    use pinora_core::{CaptureWindowId, HotkeyCode, HotkeyModifiers, PixelRect};
 
     fn display(id: &str, name: &str, x: i32, y: i32) -> DisplayInfo {
         DisplayInfo {
@@ -488,6 +523,27 @@ mod tests {
             Some(TrayAction::CaptureDisplay(DisplayId::new("display-two")))
         );
         assert!(display_capture_action(&MenuId::new("other"), &displays).is_none());
+    }
+
+    #[test]
+    fn hotkey_labels_follow_the_limited_binding_format_without_control_characters() {
+        let region = HotkeyBinding::new(
+            HotkeyModifiers::CONTROL | HotkeyModifiers::ALT,
+            HotkeyCode::KeyR,
+        );
+        let full_display = HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F12);
+        let labels = [
+            capture_menu_label(region),
+            full_display_menu_label(full_display),
+        ];
+
+        assert_eq!(labels[0], "截图 (Ctrl+Alt+R)");
+        assert_eq!(labels[1], "全屏截图 (F12)");
+        for label in labels {
+            assert!(!label.contains('\n'));
+            assert!(!label.contains('\r'));
+            assert!(!label.contains("/home/"));
+        }
     }
 
     #[test]
