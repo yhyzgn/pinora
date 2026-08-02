@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/051_history_async_loading.md`
-- 任务：`.context/tasks/051_history_async_loading.md`
+- 计划：`.context/plans/052_history_render_preprocessing.md`
+- 任务：`.context/tasks/052_history_render_preprocessing.md`
 
 ## 交付要求
 

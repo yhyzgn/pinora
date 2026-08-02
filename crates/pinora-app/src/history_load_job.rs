@@ -13,9 +13,10 @@ use std::time::Duration;
 
 use pinora_core::{
     AssetRef, CaptureImage, ErrorCode, HistoryEntry, JobId, JobKind, JobOwner, JobResultRef,
-    JobSpec, JobTerminalState, PinoraError,
+    JobSpec, JobTerminalState, PinoraError, PixelSize,
 };
 
+use crate::frame_cache::{rgba_to_xrgb, rgba_to_xrgb_and_dim};
 use crate::history_export::load_history_image;
 use crate::job_supervisor::{
     AcceptedJobResult, JobCancellation, JobResultDisposition, JobState, JobSupervisor, JobTicket,
@@ -27,6 +28,43 @@ use crate::worker_lifecycle::{WorkerWaitOutcome, reap_finished_workers, wait_for
 pub(crate) struct HistoryLoadInput {
     pub export_dir: PathBuf,
     pub entry: HistoryEntry,
+    pub preparation: HistoryLoadPreparation,
+}
+
+/// 由历史加载 worker 预先生成的最小显示材料。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HistoryLoadPreparation {
+    Preview,
+    Pin,
+    Editor,
+}
+
+/// 已经通过历史文件校验且按消费意图完成像素准备的结果。
+#[derive(Debug)]
+pub(crate) enum HistoryLoadPayload {
+    Preview {
+        size: PixelSize,
+        pixels_xrgb: Vec<u32>,
+    },
+    Pin {
+        image: CaptureImage,
+        pixels_xrgb: Vec<u32>,
+    },
+    Editor {
+        image: CaptureImage,
+        base: Vec<u32>,
+        dimmed: Vec<u32>,
+    },
+}
+
+impl HistoryLoadPayload {
+    pub(crate) const fn preparation(&self) -> HistoryLoadPreparation {
+        match self {
+            Self::Preview { .. } => HistoryLoadPreparation::Preview,
+            Self::Pin { .. } => HistoryLoadPreparation::Pin,
+            Self::Editor { .. } => HistoryLoadPreparation::Editor,
+        }
+    }
 }
 
 /// 可替换的历史读取执行端口。生产实现只读受管 PNG，测试可注入内存 runner。
@@ -72,7 +110,7 @@ fn ensure_not_cancelled(cancellation: &JobCancellation) -> Result<(), PinoraErro
 #[derive(Debug)]
 struct WorkerResult {
     reference: JobResultRef,
-    result: Result<CaptureImage, PinoraError>,
+    result: Result<HistoryLoadPayload, PinoraError>,
 }
 
 /// 主线程处理历史读取 worker 的唯一输出。
@@ -80,7 +118,7 @@ struct WorkerResult {
 pub(crate) enum HistoryLoadCompletion {
     Completed {
         job: AcceptedJobResult,
-        image: CaptureImage,
+        payload: HistoryLoadPayload,
     },
     Failed {
         job_id: JobId,
@@ -91,6 +129,34 @@ pub(crate) enum HistoryLoadCompletion {
         job_id: JobId,
         terminal: JobTerminalState,
     },
+}
+
+fn prepare_history_payload(
+    image: CaptureImage,
+    preparation: HistoryLoadPreparation,
+    cancellation: &JobCancellation,
+) -> Result<HistoryLoadPayload, PinoraError> {
+    ensure_not_cancelled(cancellation)?;
+    let payload = match preparation {
+        HistoryLoadPreparation::Preview => HistoryLoadPayload::Preview {
+            size: image.pixels.size,
+            pixels_xrgb: rgba_to_xrgb(&image.pixels.bytes),
+        },
+        HistoryLoadPreparation::Pin => HistoryLoadPayload::Pin {
+            pixels_xrgb: rgba_to_xrgb(&image.pixels.bytes),
+            image,
+        },
+        HistoryLoadPreparation::Editor => {
+            let (base, dimmed) = rgba_to_xrgb_and_dim(&image.pixels.bytes);
+            HistoryLoadPayload::Editor {
+                image,
+                base,
+                dimmed,
+            }
+        }
+    };
+    ensure_not_cancelled(cancellation)?;
+    Ok(payload)
 }
 
 /// 历史窗口只允许一个实际文件读取 worker，避免快速搜索或切换时堆积大图解码。
@@ -164,7 +230,11 @@ where
         let worker = thread::Builder::new()
             .name(format!("pinora-history-load-{}", ticket.id.raw()))
             .spawn(move || {
-                let result = runner.load(&input.export_dir, &input.entry, &cancellation);
+                let result = runner
+                    .load(&input.export_dir, &input.entry, &cancellation)
+                    .and_then(|image| {
+                        prepare_history_payload(image, input.preparation, &cancellation)
+                    });
                 let _ = sender.send(WorkerResult { reference, result });
             });
         let worker = worker.map_err(|error| {
@@ -210,7 +280,7 @@ where
                 continue;
             };
             match worker.result {
-                Ok(image) => {
+                Ok(payload) => {
                     let disposition = match current_asset(worker.reference.job_id, spec.owner) {
                         Some(asset) => {
                             self.supervisor
@@ -230,7 +300,7 @@ where
                     };
                     match disposition {
                         Ok(JobResultDisposition::Accepted(job)) => {
-                            completions.push(HistoryLoadCompletion::Completed { job, image });
+                            completions.push(HistoryLoadCompletion::Completed { job, payload });
                         }
                         Ok(JobResultDisposition::Rejected(terminal)) => {
                             completions.push(HistoryLoadCompletion::Discarded {
@@ -382,9 +452,17 @@ mod tests {
     }
 
     fn input(entry: HistoryEntry) -> HistoryLoadInput {
+        input_with_preparation(entry, HistoryLoadPreparation::Preview)
+    }
+
+    fn input_with_preparation(
+        entry: HistoryEntry,
+        preparation: HistoryLoadPreparation,
+    ) -> HistoryLoadInput {
         HistoryLoadInput {
             export_dir: PathBuf::from("history-test"),
             entry,
+            preparation,
         }
     }
 
@@ -407,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn matching_entry_delivers_fresh_image_to_main_thread() {
+    fn matching_entry_delivers_prepared_preview_to_main_thread() {
         let entry = entry(1);
         let asset = AssetRef::new(entry.image_id, entry.generation);
         let mut service = HistoryLoadJobService::with_runner(SuccessRunner);
@@ -421,9 +499,89 @@ mod tests {
 
         assert!(matches!(
             completions.as_slice(),
-            [HistoryLoadCompletion::Completed { job, image }]
-                if job.id == ticket.id && job.asset == asset && image.id != asset.image_id
+            [HistoryLoadCompletion::Completed {
+                job,
+                payload: HistoryLoadPayload::Preview { size, pixels_xrgb },
+            }]
+                if job.id == ticket.id
+                    && job.asset == asset
+                    && *size == PixelSize::new(4, 4)
+                    && pixels_xrgb == &vec![0x00ff_ffff; 16]
         ));
+    }
+
+    #[test]
+    fn pin_preparation_keeps_image_and_precomputed_xrgb() {
+        let entry = entry(11);
+        let asset = AssetRef::new(entry.image_id, entry.generation);
+        let mut service = HistoryLoadJobService::with_runner(SuccessRunner);
+        let ticket = service
+            .start(
+                spec(11, &entry, JobKind::HistoryLoad),
+                input_with_preparation(entry, HistoryLoadPreparation::Pin),
+            )
+            .expect("start");
+
+        let completions = poll_until(&mut service, |job_id, owner| {
+            (job_id == ticket.id && owner == JobOwner::History(asset.image_id)).then_some(asset)
+        });
+
+        assert!(matches!(
+            completions.as_slice(),
+            [HistoryLoadCompletion::Completed {
+                payload: HistoryLoadPayload::Pin { image, pixels_xrgb },
+                ..
+            }] if image.pixels.size == PixelSize::new(4, 4)
+                && pixels_xrgb == &vec![0x00ff_ffff; 16]
+        ));
+    }
+
+    #[test]
+    fn editor_preparation_keeps_image_base_and_dimmed_pixels() {
+        let entry = entry(12);
+        let asset = AssetRef::new(entry.image_id, entry.generation);
+        let mut service = HistoryLoadJobService::with_runner(SuccessRunner);
+        let ticket = service
+            .start(
+                spec(12, &entry, JobKind::HistoryLoad),
+                input_with_preparation(entry, HistoryLoadPreparation::Editor),
+            )
+            .expect("start");
+
+        let completions = poll_until(&mut service, |job_id, owner| {
+            (job_id == ticket.id && owner == JobOwner::History(asset.image_id)).then_some(asset)
+        });
+
+        assert!(matches!(
+            completions.as_slice(),
+            [HistoryLoadCompletion::Completed {
+                payload: HistoryLoadPayload::Editor { image, base, dimmed },
+                ..
+            }] if image.pixels.size == PixelSize::new(4, 4)
+                && base == &vec![0x00ff_ffff; 16]
+                && dimmed == &vec![0x008c_8c8c; 16]
+        ));
+    }
+
+    #[test]
+    fn payload_preparation_matches_its_variant() {
+        let preview = HistoryLoadPayload::Preview {
+            size: PixelSize::new(1, 1),
+            pixels_xrgb: vec![0],
+        };
+        let pin = HistoryLoadPayload::Pin {
+            image: sample_image(13),
+            pixels_xrgb: vec![0],
+        };
+        let editor = HistoryLoadPayload::Editor {
+            image: sample_image(14),
+            base: vec![0],
+            dimmed: vec![0],
+        };
+
+        assert_eq!(preview.preparation(), HistoryLoadPreparation::Preview);
+        assert_eq!(pin.preparation(), HistoryLoadPreparation::Pin);
+        assert_eq!(editor.preparation(), HistoryLoadPreparation::Editor);
     }
 
     #[test]

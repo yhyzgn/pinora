@@ -16,14 +16,17 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::export_job::{ExportJobCompletion, ExportJobInput, ExportJobService};
-use crate::frame_cache::{FrameCache, rgba_to_xrgb_and_dim};
+use crate::frame_cache::{FrameCache, rgba_to_xrgb, rgba_to_xrgb_and_dim};
 use crate::history_browser::{HistoryPanelAction, HistoryPanelKey};
 use crate::history_export::{
     HistoryExportCandidate, cleanup_history_tombstones, clear_history_entries,
     delete_history_entry, history_candidate_for_export, load_history_index,
     record_history_candidate,
 };
-use crate::history_load_job::{HistoryLoadCompletion, HistoryLoadInput, HistoryLoadJobService};
+use crate::history_load_job::{
+    HistoryLoadCompletion, HistoryLoadInput, HistoryLoadJobService, HistoryLoadPayload,
+    HistoryLoadPreparation,
+};
 use crate::history_store::{HistoryStore, default_history_path};
 use crate::history_window::HistoryWindow;
 use crate::hotkey::GlobalHotkeyHub;
@@ -511,6 +514,14 @@ struct PinWin {
     ocr_selection: OcrTextSelection,
 }
 
+/// 创建贴图窗口所需的呈现参数。预处理像素仅由受监督的历史读取 worker 提供。
+struct PinPresentation {
+    position: PixelPoint,
+    scale: f64,
+    opacity: f64,
+    pixels_xrgb: Option<Vec<u32>>,
+}
+
 struct DesktopApp<L, P, C, S> {
     runtime: Option<AppRuntime<L, P, C, S>>,
     context: Option<Context<Rc<Window>>>,
@@ -917,14 +928,7 @@ where
                 .capture(CaptureRequest::FullDisplay {
                     display: display_id,
                 })
-                .map(|image| {
-                    let (base, dimmed) = rgba_to_xrgb_and_dim(&image.pixels.bytes);
-                    PreparedPreview {
-                        image,
-                        base,
-                        dimmed,
-                    }
-                })
+                .map(prepare_preview)
                 .map_err(|e| e.to_string());
             println!(
                 "pinora: capture done in {:.0}ms (cold path)",
@@ -1233,6 +1237,11 @@ where
         let input = HistoryLoadInput {
             export_dir,
             entry: request.entry.clone(),
+            preparation: match request.intent {
+                HistoryLoadIntent::Preview => HistoryLoadPreparation::Preview,
+                HistoryLoadIntent::Reopen => HistoryLoadPreparation::Pin,
+                HistoryLoadIntent::Edit => HistoryLoadPreparation::Editor,
+            },
         };
         match self.history_load_jobs.start(spec, input) {
             Ok(ticket) => {
@@ -1284,27 +1293,54 @@ where
 
         for completion in completions {
             match completion {
-                HistoryLoadCompletion::Completed { job, image } => {
+                HistoryLoadCompletion::Completed { job, payload } => {
                     let Some(request) = self.take_active_history_load(job.id) else {
                         continue;
                     };
-                    match request.intent {
-                        HistoryLoadIntent::Preview => {
+                    match (request.intent, payload) {
+                        (
+                            HistoryLoadIntent::Preview,
+                            HistoryLoadPayload::Preview { size, pixels_xrgb },
+                        ) => {
                             if let Some(history) = self.history.as_mut() {
-                                history.cache_preview(
-                                    request.entry.image_id,
-                                    &image.pixels.bytes,
-                                    image.pixels.size,
-                                );
+                                history.cache_preview(request.entry.image_id, pixels_xrgb, size);
                                 history.panel_mut().clear_error();
                                 history.request_redraw();
                             }
                         }
-                        HistoryLoadIntent::Reopen => {
-                            self.open_loaded_history_pin(event_loop, request.entry, image);
+                        (
+                            HistoryLoadIntent::Reopen,
+                            HistoryLoadPayload::Pin { image, pixels_xrgb },
+                        ) => {
+                            self.open_loaded_history_pin(
+                                event_loop,
+                                request.entry,
+                                image,
+                                pixels_xrgb,
+                            );
                         }
-                        HistoryLoadIntent::Edit => {
-                            self.open_loaded_history_editor(event_loop, request.entry, image);
+                        (
+                            HistoryLoadIntent::Edit,
+                            HistoryLoadPayload::Editor {
+                                image,
+                                base,
+                                dimmed,
+                            },
+                        ) => {
+                            self.open_loaded_history_editor(
+                                event_loop,
+                                request.entry,
+                                image,
+                                base,
+                                dimmed,
+                            );
+                        }
+                        (intent, payload) => {
+                            let preparation = payload.preparation();
+                            eprintln!(
+                                "pinora: history load payload mismatch intent={intent:?} preparation={preparation:?}"
+                            );
+                            self.mark_history_load_error("history_load_failed");
                         }
                     }
                 }
@@ -1490,8 +1526,15 @@ where
         event_loop: &ActiveEventLoop,
         entry: HistoryEntry,
         image: CaptureImage,
+        pixels_xrgb: Vec<u32>,
     ) {
-        match self.open_pin_from_image(event_loop, image, entry.source_rect.origin, false) {
+        match self.open_pin_from_prepared_image(
+            event_loop,
+            image,
+            pixels_xrgb,
+            entry.source_rect.origin,
+            false,
+        ) {
             Ok(()) => self.close_history(),
             Err(error) => {
                 eprintln!("pinora: history reopen failed ({})", error.code);
@@ -1512,10 +1555,16 @@ where
         event_loop: &ActiveEventLoop,
         _entry: HistoryEntry,
         image: CaptureImage,
+        base: Vec<u32>,
+        dimmed: Vec<u32>,
     ) {
         // 历史编辑使用已验证的图像，既不能触发屏幕捕获，也不能复用旧显示器的全屏语义。
         let target = history_edit_target(&image);
-        let preview = prepare_preview(image);
+        let preview = PreparedPreview {
+            image,
+            base,
+            dimmed,
+        };
         if let Some(cache) = &self.frame_cache {
             cache.pause();
         }
@@ -2589,6 +2638,34 @@ where
         position: PixelPoint,
         export_after_open: bool,
     ) -> Result<(), PinoraError> {
+        self.open_pin_from_image_with_pixels(event_loop, image, None, position, export_after_open)
+    }
+
+    fn open_pin_from_prepared_image(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        image: CaptureImage,
+        pixels_xrgb: Vec<u32>,
+        position: PixelPoint,
+        export_after_open: bool,
+    ) -> Result<(), PinoraError> {
+        self.open_pin_from_image_with_pixels(
+            event_loop,
+            image,
+            Some(pixels_xrgb),
+            position,
+            export_after_open,
+        )
+    }
+
+    fn open_pin_from_image_with_pixels(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        image: CaptureImage,
+        pixels_xrgb: Option<Vec<u32>>,
+        position: PixelPoint,
+        export_after_open: bool,
+    ) -> Result<(), PinoraError> {
         let rt = self
             .runtime
             .as_mut()
@@ -2621,9 +2698,12 @@ where
             event_loop,
             pin_id,
             image,
-            position,
-            1.0,
-            self.default_pin_opacity,
+            PinPresentation {
+                position,
+                scale: 1.0,
+                opacity: self.default_pin_opacity,
+                pixels_xrgb,
+            },
         )?;
         self.mode = Mode::Idle;
         self.resume_frame_cache();
@@ -2683,17 +2763,39 @@ where
         event_loop: &ActiveEventLoop,
         pin_id: PinId,
         image: CaptureImage,
-        position: PixelPoint,
-        scale: f64,
-        opacity: f64,
+        presentation: PinPresentation,
     ) -> Result<(), PinoraError> {
+        let PinPresentation {
+            position,
+            scale,
+            opacity,
+            pixels_xrgb: prepared_pixels_xrgb,
+        } = presentation;
         self.ensure_context(event_loop);
         let context = self.context.as_ref().ok_or_else(|| {
             PinoraError::new(ErrorCode::Internal, "softbuffer context unavailable")
         })?;
 
-        let (w, h) = scaled_window_size(image.size(), scale);
-        let pixels_xrgb = rgba_to_xrgb(&image.pixels.bytes);
+        let image_size = image.size();
+        let (w, h) = scaled_window_size(image_size, scale);
+        let expected_pixels = usize::try_from(image_size.width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(image_size.height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .ok_or_else(|| PinoraError::new(ErrorCode::InvalidState, "pin image is too large"))?;
+        let pixels_xrgb = match prepared_pixels_xrgb {
+            Some(pixels) if pixels.len() == expected_pixels => pixels,
+            Some(_) => {
+                return Err(PinoraError::new(
+                    ErrorCode::InvalidState,
+                    "prepared pin pixels do not match image dimensions",
+                ));
+            }
+            None => rgba_to_xrgb(&image.pixels.bytes),
+        };
 
         // 唯一标题，便于 KWin 脚本精确匹配
         let title = format!("Pinora-pin-{pin_id}");
@@ -3676,11 +3778,6 @@ fn window_rect_from_points(start: (f64, f64), end: (f64, f64)) -> PixelRect {
     let x1 = start.0.max(end.0).max(0.0).round() as i32;
     let y1 = start.1.max(end.1).max(0.0).round() as i32;
     PixelRect::new(x0, y0, (x1 - x0).max(0) as u32, (y1 - y0).max(0) as u32)
-}
-
-fn rgba_to_xrgb(bytes: &[u8]) -> Vec<u32> {
-    let (base, _) = rgba_to_xrgb_and_dim(bytes);
-    base
 }
 
 /// 无窗口透明时，用压暗模拟 opacity（1.0 = 原色，0.15 = 很暗）。

@@ -64,3 +64,4 @@
 - `desktop_shell` 已删除所有同步 `load_history_image` 调用；预览、Enter 贴图和 `E` 编辑只入队最新历史请求，读取完成后才在主线程更新预览、创建贴图或打开编辑 Overlay。
 - 选择、搜索、关闭、删除、清空、配额清理、截图切换与退出均取消历史读取；取消或陈旧结果不可更新 UI。面板以 `Loading` 表示正在读取，失败保留历史窗口并使用既有错误状态。
 - 已通过 `history_load_job::tests`、`history_browser::tests`、`history_export::tests`、`desktop_shell::overlay_scale_tests`、fmt、workspace check、严格 Clippy、全量 workspace 测试（app 131 通过、2 个真实桌面测试忽略；core 55 通过）、`git diff --check` 与 ctx validate。真实慢盘、GUI/HiDPI/无障碍与跨平台桌面探针未覆盖；预览色彩转换和历史编辑帧准备仍有主线程像素工作，未被描述为已消除。
+- GitHub Actions CI `30733684203` 已在 Linux、macOS、Windows 原生 runner 通过格式、workspace 编译、严格 Clippy 与单元测试；该结果不覆盖真实桌面窗口、慢盘、输入响应或渲染帧延迟。

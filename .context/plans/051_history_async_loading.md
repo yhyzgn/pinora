@@ -69,3 +69,4 @@
 - 历史预览、重新贴图和再次编辑均在主线程仅消费与当前选中条目、owner 和 job ID 匹配的完成结果；关闭窗口、选择/搜索切换、删除、清空、配额清理、截图切换和退出都会取消未交付请求。
 - 历史面板增加加载中状态；加载失败保留窗口和稳定错误，取消/陈旧结果不显示为失败。历史编辑继续只在 worker 成功后暂停帧缓存，Overlay 打开失败仍立即恢复。
 - 本地通过历史加载服务 7 项契约测试、历史面板/历史导出/Desktop shell 定向测试、fmt、workspace check、严格 Clippy、全量 workspace 测试（app 131 通过、2 个真实桌面测试忽略；core 55 通过）。真实慢盘、窗口绘制、HiDPI、可访问性和跨平台 GUI 探针尚未运行；预览 XRGB 转换和编辑 `PreparedPreview` 像素准备仍在主线程，留作独立渲染性能任务。
+- GitHub Actions CI `30733684203` 已在 Linux、macOS、Windows 原生 runner 通过格式、workspace 编译、严格 Clippy 与单元测试；该 CI 未创建 GUI 会话，不能作为慢盘、任务栏、窗口输入或实际渲染延迟的证据。

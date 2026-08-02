@@ -219,6 +219,19 @@ fn pick_display(displays: &[DisplayInfo]) -> Option<DisplayInfo> {
         .cloned()
 }
 
+/// 单遍：RGBA → XRGB。
+pub fn rgba_to_xrgb(bytes: &[u8]) -> Vec<u32> {
+    let n = bytes.len() / 4;
+    let mut base = Vec::with_capacity(n);
+    for c in bytes.chunks_exact(4) {
+        let r = u32::from(c[0]);
+        let g = u32::from(c[1]);
+        let b = u32::from(c[2]);
+        base.push((r << 16) | (g << 8) | b);
+    }
+    base
+}
+
 /// 单遍：RGBA → XRGB base + dimmed。
 pub fn rgba_to_xrgb_and_dim(bytes: &[u8]) -> (Vec<u32>, Vec<u32>) {
     let n = bytes.len() / 4;
@@ -228,8 +241,7 @@ pub fn rgba_to_xrgb_and_dim(bytes: &[u8]) -> (Vec<u32>, Vec<u32>) {
         let r = u32::from(c[0]);
         let g = u32::from(c[1]);
         let b = u32::from(c[2]);
-        let p = (r << 16) | (g << 8) | b;
-        base.push(p);
+        base.push((r << 16) | (g << 8) | b);
         // ≈55% 亮度
         let dr = r * 11 / 20;
         let dg = g * 11 / 20;
@@ -283,6 +295,13 @@ mod tests {
         assert_eq!(b.len(), 2);
         assert_eq!(d.len(), 2);
         assert_eq!(b[0], 0x00ff_0000);
+    }
+
+    #[test]
+    fn rgba_to_xrgb_preserves_each_pixel_without_allocating_dimmed_frame() {
+        let bytes = vec![1u8, 2, 3, 255, 4, 5, 6, 0];
+
+        assert_eq!(rgba_to_xrgb(&bytes), vec![0x0001_0203, 0x0004_0506]);
     }
 
     #[test]

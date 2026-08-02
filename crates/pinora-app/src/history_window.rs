@@ -12,7 +12,6 @@ use winit::dpi::PhysicalSize;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId, WindowLevel};
 
-use crate::frame_cache::rgba_to_xrgb_and_dim;
 use crate::history_browser::{self, HistoryPanel, HistoryPreview};
 use crate::window_policy::{self, AuxiliaryWindowKind};
 
@@ -126,10 +125,15 @@ impl HistoryWindow {
         self.preview = None;
     }
 
-    pub(crate) fn cache_preview(&mut self, image_id: ImageId, pixels_rgba: &[u8], size: PixelSize) {
+    pub(crate) fn cache_preview(
+        &mut self,
+        image_id: ImageId,
+        pixels_xrgb: Vec<u32>,
+        size: PixelSize,
+    ) {
         self.preview = Some(HistoryPreviewCache {
             entry_image_id: image_id,
-            pixels_xrgb: rgba_to_xrgb_and_dim(pixels_rgba).0,
+            pixels_xrgb,
             size,
         });
     }
