@@ -16,6 +16,7 @@ pub(crate) enum PinMenuAction {
     Copy,
     Ocr,
     Edit,
+    FitToImage,
     ToggleLock,
     OpacityDown,
     OpacityUp,
@@ -48,6 +49,7 @@ impl PinContextMenu {
             (PinMenuAction::Copy, true),
             (PinMenuAction::Ocr, true),
             (PinMenuAction::Edit, !locked),
+            (PinMenuAction::FitToImage, !locked),
             (PinMenuAction::ToggleLock, true),
             (PinMenuAction::OpacityDown, !locked),
             (PinMenuAction::OpacityUp, !locked),
@@ -148,6 +150,7 @@ fn label(action: PinMenuAction, locked: bool, always_on_top: bool) -> &'static s
         PinMenuAction::Copy => "COPY",
         PinMenuAction::Ocr => "OCR",
         PinMenuAction::Edit => "EDIT",
+        PinMenuAction::FitToImage => "100%",
         PinMenuAction::ToggleLock if locked => "UNLOCK",
         PinMenuAction::ToggleLock => "LOCK",
         PinMenuAction::OpacityDown => "DIM -",
@@ -205,7 +208,7 @@ mod tests {
         assert!(menu.bounds.origin.y >= 0);
         assert!(menu.bounds.right() <= 200);
         assert!(menu.bounds.bottom() <= 120);
-        assert_eq!(menu.items.len(), 9);
+        assert_eq!(menu.items.len(), 10);
     }
 
     #[test]
@@ -224,8 +227,20 @@ mod tests {
         assert!(enabled(PinMenuAction::ToggleLock));
         assert!(enabled(PinMenuAction::Close));
         assert!(!enabled(PinMenuAction::Edit));
+        assert!(!enabled(PinMenuAction::FitToImage));
         assert!(!enabled(PinMenuAction::OpacityDown));
         assert!(!enabled(PinMenuAction::OpacityUp));
+    }
+
+    #[test]
+    fn unlocked_menu_offers_fit_to_image() {
+        let menu = PinContextMenu::open(PixelPoint::new(0, 0), 320, 320, false);
+
+        assert!(
+            menu.items
+                .iter()
+                .any(|item| { item.action == PinMenuAction::FitToImage && item.enabled })
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # 任务 075：贴图关闭撤销
 
-- 状态：进行中
+- 状态：已完成
 - 计划：`.context/plans/075_restore_closed_pin.md`
 - 规模：中
 - 依赖：`.context/tasks/044_tray_management.md`、`.context/tasks/061_tray_only_window_boundary.md`、`.context/tasks/066_auxiliary_window_visibility_policy.md`

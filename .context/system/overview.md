@@ -16,7 +16,7 @@
 | --- | --- |
 | 截屏尝试 | KDE 优先 spectacle/KWin；否则 xcap；两者不可用时返回 `CapabilityUnavailable`，不生成 fake 图像 |
 | 区域与全屏 Overlay | F2/Ctrl+N 拖选；选区实时显示源图物理像素宽高与全局左上坐标；已确认且未标注的选区可拖四边/四角精确调整；F3/托盘默认全屏自动确认当前完整图像；多显示器 tray 可指定目标全屏；双击复制、中键/Enter 贴图；选区内标注/OCR |
-| 贴图窗口 | 无边框置顶、拖动、滚轮缩放、Esc 关闭；tray 可撤销最近关闭一次（恢复为新 PinId）；客户区右键菜单、锁定/压暗/置顶、原位编辑；多贴图 |
+| 贴图窗口 | 无边框置顶、拖动、滚轮及四边/四角等比缩放、双击或客户区 `100%` 恢复原图、Esc 关闭；tray 可撤销最近关闭一次（恢复为新 PinId）；客户区右键菜单、锁定/压暗/置顶、原位编辑；多贴图 |
 | 导出 | PNG 文件 + 内存剪贴板 + 系统剪贴板（wl-copy/xclip） |
 | 全局热键 | F2/Ctrl+N/Ctrl+Shift+S 区域、F3 单显示器全屏（注册成功时）+ `pinora capture` IPC |
 | 单实例 | flock + Unix socket Activate/CAPTURE/QUIT |
@@ -32,7 +32,7 @@
 - 生产入口仍是 `src/main.rs`，但使用 `std::os::unix::net::UnixStream`；没有平台条件编译，因此 Windows target 无法完成 workspace 检查。
 - `crates/pinora-app/src/desktop_shell.rs` 当前约 3679 行，仍集中承载 winit/softbuffer 窗口事件、截图编排、Overlay 绘制、标注输入、贴图生命周期、OCR 触发、托盘和 IPC 轮询；045/046 已将历史和设置窗口的资源、草稿/预览缓存、resize、存储调用和呈现迁至专属适配器，但 Overlay/贴图仍在 shell 中，单体化风险保持开放。
 - 当前依赖树把 `gtk`/`tray-icon`、`xcap`/PipeWire、`winit`/`softbuffer` 和 Linux CLI 后端直接放入 `pinora-app`；没有 Windows/macOS/Linux 适配器边界。
-- `cargo fmt --check`、`cargo check --workspace` 和 `cargo clippy --workspace --all-targets -- -D warnings` 已于 2026-08-02 通过；当前 `PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace` 通过 app 173 个、core 78 个单元测试，另有 2 个真实桌面测试被忽略；仍没有 GUI 端到端测试。
+- `cargo fmt --check`、`cargo check --workspace` 和 `cargo clippy --workspace --all-targets -- -D warnings` 已于 2026-08-02 通过；当前 `PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace` 通过 app 191 个、core 85 个单元测试，另有 2 个真实桌面测试被忽略；仍没有 GUI 端到端测试。
 - `cargo check --workspace --target x86_64-pc-windows-msvc` 失败于 GTK 的 `gdk-pixbuf-sys`/`glib-sys` pkg-config 交叉编译，尚未进入应用代码编译阶段。
 - OCR 通过 `tesseract` 子进程和临时 PNG 工作；适配器已持有自身 `Child`，支持协作式取消、30 秒截止时间、16 MiB 输出上限和 RAII 临时文件清理，不再调用外部 `kill`。贴图与 Overlay UI 已经通过 `OcrJobService` 提交到 `JobSupervisor`，结果交付受 owner、终态和 `AssetRef` generation 门禁保护；worker 不触碰窗口或剪贴板。
 - 截图后端自动选择 KDE `spectacle` → xcap → `Unavailable`；两者不可用时保留后端失败摘要并由 provider 返回 `CapabilityUnavailable`，`fake` 只能通过显式测试/开发注入使用。
@@ -58,6 +58,7 @@
 - 2026-08-02 的 073 为当前 Overlay 增加选区物理像素读数：`W… H… X… Y…` 中的尺寸来自源图，坐标为 `buf_rect_to_src` 后叠加当前捕获会话 `display_origin`，支持负全局 origin。独立读数模块优先将 panel 放在选区上方并避让下方工具栏；极小画布仍限制在既有帧内。读数的新旧 bounds 均参与脏区恢复，普通拖选、键盘移动和八方向调整复用原有节流；没有新增窗口、事件循环、系统菜单、截图或 worker，tray-only 与 `window_policy` 边界不变；真实可读性、HiDPI、帧时间与任务栏/Dock/分页器仍未验证。
 - 2026-08-02 的 074 为 Overlay 文本标注增加多行与明确提交边界：`Shift+Enter` 在草稿中插入换行、`Enter`/`Ctrl+Enter` 提交、`Esc` 显式取消。文本绘制、fallback、bounds 和命中均共享行距，空白行保留垂直空间；外部重选或工具切换前先提交非空草稿，空白草稿可安全清除。没有新增窗口、事件循环、系统菜单、截图或 worker，tray-only 与 `window_policy` 边界不变；真实输入法、字体、HiDPI、帧时间与任务栏/Dock/分页器仍未验证。
 - 2026-08-02 的 075 增加 tray 最近关闭贴图撤销：内存快照不包含窗口或任务句柄，关闭先使旧 owner/runtime Pin 失效；恢复通过新的 `PinId`、asset 和既有 `spawn_pin` 重新创建受策略保护的贴图窗口，创建失败保留快照重试。没有新增窗口类型、事件循环、截图或 worker；真实 tray、首帧、HiDPI、焦点与任务栏/Dock/分页器仍未验证。
+- 2026-08-02 的 076 为既有贴图增加四边/四角等比缩放与 100% 原图恢复：八方向几何、比例、边界和手动回退锚点在 `pin_layout` 纯逻辑中覆盖；当前 Pin 先用 `drag_resize_window`，平台不支持时才在同一窗口内请求尺寸。原生 resize 不再重复改左/上位置，客户区指针按热区变化且去重，OCR Ctrl+拖选优先于尺寸操作。双击或客户区菜单 `100%` 仅修改当前未锁定贴图；实际尺寸/缩放变化才失效缓存并同步领域 transform。没有新增窗口、事件循环、展示入口、截图或 worker，tray-only 与 `window_policy` 边界不变；真实原生 resize、HiDPI、焦点、任务栏/Dock/分页器和帧时间仍未验证。
 - GitHub Actions CI `30732620836`、`30732765136`、`30732906042`、`30733684203`、`30734154282`、`30734583848`、`30734867309` 与 `30735354166` 已于 2026-08-02 在 Linux、macOS、Windows 原生 runner 通过格式、workspace 编译、严格 Clippy 和单元测试；这些运行未创建 GUI 会话，不能作为任务栏、Dock、窗口交互、KWin 行为、真实多显示器或渲染延迟的证据。
 - `pinora-core::asset` 已于 2026-08-01 新增 `AssetGeneration` 和 `AssetRef` 领域契约；它只组合既有 `ImageId`，可判定陈旧结果，已用于桌面贴图及 Overlay OCR、复制、保存任务的结果门禁。
 - `pinora-core::job` 与 `pinora-app::JobSupervisor` 已于 2026-08-01 新增：任务元数据绑定 `JobId`、关联 ID、`AssetRef`、领域 owner、类型和截止时间；监督器可协作式取消、关闭 owner、标记超时并拒绝终态或陈旧版本结果。桌面 OCR、导出和剪贴板均已接入，但这不代表所有后台进程均已在真实桌面环境验证。

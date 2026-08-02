@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/075_restore_closed_pin.md`
-- 任务：`.context/tasks/075_restore_closed_pin.md`
+- 计划：`.context/plans/076_pin_resize_and_fit.md`
+- 任务：`.context/tasks/076_pin_resize_and_fit.md`
 
 ## 交付要求
 

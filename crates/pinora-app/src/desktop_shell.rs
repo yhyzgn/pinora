@@ -59,10 +59,14 @@ use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
-use winit::window::{CursorIcon, Fullscreen, Window, WindowId, WindowLevel};
+use winit::window::{CursorIcon, Fullscreen, ResizeDirection, Window, WindowId, WindowLevel};
 
 use crate::pin_context_menu::{self, PinContextMenu, PinMenuAction};
-use crate::pin_layout::scaled_window_size;
+use crate::pin_layout::{
+    PinResizeHandle, PinResizeTarget, fit_to_image_target, pin_resize_anchor_position,
+    pin_resize_handle_at, pin_resize_target_from_drag, proportional_resize_target,
+    scaled_window_size,
+};
 use crate::platform::CapabilityProbe;
 use crate::runtime::AppRuntime;
 use crate::single_instance::SingleInstance;
@@ -216,6 +220,7 @@ where
         pins: HashMap::new(),
         recent_closed_pin: None,
         drag_pin: None,
+        pin_resize: None,
         modifiers: ModifiersState::empty(),
         error: None,
         quit: false,
@@ -709,6 +714,8 @@ struct PinWin {
     pixels_xrgb: Vec<u32>,
     render_cache: Option<PinRenderCache>,
     scale: f64,
+    /// 最后一次由 winit 报告的实际客户区物理尺寸。
+    window_size: pinora_core::PixelSize,
     opacity: f64,
     locked: bool,
     always_on_top: bool,
@@ -727,6 +734,49 @@ struct PinWin {
     ocr_drag_start: Option<(f64, f64)>,
     /// 当前选中的 OCR 词。
     ocr_selection: OcrTextSelection,
+    /// 用于客户区双击恢复 100% 原图尺寸的上一主键按下状态。
+    last_primary_press: Option<(Instant, PixelPoint)>,
+    /// 最近一次设置给窗口的鼠标形状，避免高频移动重复请求平台资源。
+    cursor_icon: CursorIcon,
+}
+
+/// 一次贴图尺寸手势的稳定输入。原生协议可用时只用于保持比例；否则在当前窗口内
+/// 依据同一快照执行手动尺寸请求。
+#[derive(Debug, Clone, Copy)]
+struct PinResizeDrag {
+    window_id: WindowId,
+    handle: PinResizeHandle,
+    native: bool,
+    start_size: pinora_core::PixelSize,
+    start_cursor: (f64, f64),
+    start_position: Option<PixelPoint>,
+}
+
+fn resize_direction(handle: PinResizeHandle) -> ResizeDirection {
+    match handle {
+        PinResizeHandle::North => ResizeDirection::North,
+        PinResizeHandle::NorthEast => ResizeDirection::NorthEast,
+        PinResizeHandle::East => ResizeDirection::East,
+        PinResizeHandle::SouthEast => ResizeDirection::SouthEast,
+        PinResizeHandle::South => ResizeDirection::South,
+        PinResizeHandle::SouthWest => ResizeDirection::SouthWest,
+        PinResizeHandle::West => ResizeDirection::West,
+        PinResizeHandle::NorthWest => ResizeDirection::NorthWest,
+    }
+}
+
+fn cursor_for_pin_resize(handle: Option<PinResizeHandle>) -> CursorIcon {
+    match handle {
+        Some(PinResizeHandle::North) => CursorIcon::NResize,
+        Some(PinResizeHandle::NorthEast) => CursorIcon::NeResize,
+        Some(PinResizeHandle::East) => CursorIcon::EResize,
+        Some(PinResizeHandle::SouthEast) => CursorIcon::SeResize,
+        Some(PinResizeHandle::South) => CursorIcon::SResize,
+        Some(PinResizeHandle::SouthWest) => CursorIcon::SwResize,
+        Some(PinResizeHandle::West) => CursorIcon::WResize,
+        Some(PinResizeHandle::NorthWest) => CursorIcon::NwResize,
+        None => CursorIcon::Default,
+    }
 }
 
 /// 贴图基础帧缓存：不包含 OCR、拖选或锁定边框等每帧变化的叠加层。
@@ -777,6 +827,7 @@ struct DesktopApp<L, P, C, S> {
     pins: HashMap<WindowId, PinWin>,
     recent_closed_pin: Option<ClosedPinSnapshot>,
     drag_pin: Option<WindowId>,
+    pin_resize: Option<PinResizeDrag>,
     modifiers: ModifiersState,
     error: Option<PinoraError>,
     quit: bool,
@@ -3676,6 +3727,7 @@ where
                 pixels_xrgb,
                 render_cache: None,
                 scale,
+                window_size: pinora_core::PixelSize::new(w, h),
                 opacity: opacity.clamp(0.15, 1.0),
                 locked: false,
                 always_on_top: true,
@@ -3688,6 +3740,8 @@ where
                 cursor_position: (0.0, 0.0),
                 ocr_drag_start: None,
                 ocr_selection: OcrTextSelection::default(),
+                last_primary_press: None,
+                cursor_icon: CursorIcon::Default,
             },
         );
 
@@ -3835,14 +3889,18 @@ where
                     size.height,
                     pin.locked,
                 ));
+                pin.window.set_cursor(CursorIcon::Default);
+                pin.cursor_icon = CursorIcon::Default;
                 pin.window.request_redraw();
                 self.drag_pin = None;
+                self.pin_resize = None;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } => {
+                self.finish_pin_resize(window_id);
                 let (handled, selection) = self.finish_pin_text_selection(window_id);
                 if handled {
                     if let Some((owner, asset, text)) = selection
@@ -3871,6 +3929,11 @@ where
                     false
                 };
                 if selecting {
+                    self.update_pin_resize_cursor(window_id);
+                    return;
+                }
+                self.update_pin_resize_cursor(window_id);
+                if self.resize_pin_manually(window_id, (position.x, position.y)) {
                     return;
                 }
                 // 回退拖动（X11 / drag_window 失败时）
@@ -3923,7 +3986,18 @@ where
                 }
             }
             WindowEvent::Resized(size) => {
+                let transform_changed = self.reconcile_native_pin_resize(window_id, size);
                 if let Some(pin) = self.pins.get_mut(&window_id) {
+                    let actual_size =
+                        pinora_core::PixelSize::new(size.width.max(1), size.height.max(1));
+                    let size_changed = pin.window_size != actual_size;
+                    pin.window_size = actual_size;
+                    if !size_changed {
+                        if transform_changed {
+                            self.sync_pin_transform(window_id);
+                        }
+                        return;
+                    }
                     if let (Some(w), Some(h)) = (
                         NonZeroU32::new(size.width.max(1)),
                         NonZeroU32::new(size.height.max(1)),
@@ -3933,6 +4007,12 @@ where
                     pin.render_cache = None;
                     pin.window.request_redraw();
                 }
+                if transform_changed {
+                    self.sync_pin_transform(window_id);
+                }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.set_pin_cursor(window_id, CursorIcon::Default);
             }
             WindowEvent::Focused(true) => {
                 // 确保键盘可用
@@ -3965,6 +4045,7 @@ where
             PinMenuAction::Copy => self.copy_pin_image(window_id),
             PinMenuAction::Ocr => self.run_pin_ocr(window_id),
             PinMenuAction::Edit => self.begin_pin_edit(event_loop, window_id),
+            PinMenuAction::FitToImage => self.fit_pin_to_image(window_id),
             PinMenuAction::ToggleLock => self.toggle_pin_locked(window_id),
             PinMenuAction::OpacityDown => self.nudge_pin_opacity(window_id, -0.1),
             PinMenuAction::OpacityUp => self.nudge_pin_opacity(window_id, 0.1),
@@ -3975,28 +4056,250 @@ where
     }
 
     fn handle_pin_left_press(&mut self, window_id: WindowId) {
+        let Some(pin) = self.pins.get(&window_id) else {
+            return;
+        };
+        if self.modifiers.control_key() && pin.ocr_show_boxes && pin.ocr.is_some() {
+            let cursor = pin.cursor_position;
+            if let Some(pin) = self.pins.get_mut(&window_id) {
+                pin.ocr_drag_start = Some(cursor);
+                pin.ocr_selection = OcrTextSelection::default();
+                pin.window.request_redraw();
+            }
+            self.drag_pin = None;
+            self.pin_resize = None;
+            return;
+        }
+        if pin.locked {
+            println!("pinora: pin locked — press L to unlock");
+            return;
+        }
+        let cursor = pin.cursor_position;
+        let size = pin.window.inner_size();
+        let resize_handle = pin_resize_handle_at(
+            PixelPoint::new(cursor.0.round() as i32, cursor.1.round() as i32),
+            size.width,
+            size.height,
+        );
+        if let Some(handle) = resize_handle {
+            self.start_pin_resize(window_id, handle);
+            return;
+        }
+        if self.record_pin_double_click(window_id) {
+            self.fit_pin_to_image(window_id);
+            return;
+        }
+        // Wayland 下优先使用协议级拖动。
         if let Some(pin) = self.pins.get(&window_id) {
-            if self.modifiers.control_key() && pin.ocr_show_boxes && pin.ocr.is_some() {
-                let cursor = pin.cursor_position;
-                if let Some(pin) = self.pins.get_mut(&window_id) {
-                    pin.ocr_drag_start = Some(cursor);
-                    pin.ocr_selection = OcrTextSelection::default();
-                    pin.window.request_redraw();
-                }
-                self.drag_pin = None;
-                return;
-            }
-            if pin.locked {
-                println!("pinora: pin locked — press L to unlock");
-                return;
-            }
-            // Wayland 下用协议级拖动
             if let Err(error) = pin.window.drag_window() {
                 eprintln!("pinora: drag_window failed: {error:?}");
                 self.drag_pin = Some(window_id);
             } else {
                 self.drag_pin = None;
             }
+        }
+    }
+
+    fn start_pin_resize(&mut self, window_id: WindowId, handle: PinResizeHandle) {
+        let Some(pin) = self.pins.get(&window_id) else {
+            return;
+        };
+        if pin.locked {
+            return;
+        }
+        let size = pin.window.inner_size();
+        let cursor = pin.cursor_position;
+        let start_position = pin
+            .window
+            .outer_position()
+            .ok()
+            .map(|position| PixelPoint::new(position.x, position.y));
+        let native = match pin.window.drag_resize_window(resize_direction(handle)) {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!("pinora: native resize unavailable, using client fallback: {error:?}");
+                false
+            }
+        };
+        self.drag_pin = None;
+        self.pin_resize = Some(PinResizeDrag {
+            window_id,
+            handle,
+            native,
+            start_size: pinora_core::PixelSize::new(size.width.max(1), size.height.max(1)),
+            start_cursor: cursor,
+            start_position,
+        });
+    }
+
+    fn finish_pin_resize(&mut self, window_id: WindowId) {
+        if self
+            .pin_resize
+            .is_some_and(|resize| resize.window_id == window_id)
+        {
+            self.pin_resize = None;
+        }
+    }
+
+    fn update_pin_resize_cursor(&mut self, window_id: WindowId) {
+        let Some(pin) = self.pins.get(&window_id) else {
+            return;
+        };
+        let handle = if pin.locked || pin.context_menu.is_some() || pin.ocr_drag_start.is_some() {
+            None
+        } else {
+            let size = pin.window.inner_size();
+            pin_resize_handle_at(
+                PixelPoint::new(
+                    pin.cursor_position.0.round() as i32,
+                    pin.cursor_position.1.round() as i32,
+                ),
+                size.width,
+                size.height,
+            )
+        };
+        self.set_pin_cursor(window_id, cursor_for_pin_resize(handle));
+    }
+
+    fn set_pin_cursor(&mut self, window_id: WindowId, cursor: CursorIcon) {
+        let Some(pin) = self.pins.get_mut(&window_id) else {
+            return;
+        };
+        if pin.cursor_icon != cursor {
+            pin.window.set_cursor(cursor);
+            pin.cursor_icon = cursor;
+        }
+    }
+
+    fn resize_pin_manually(&mut self, window_id: WindowId, cursor: (f64, f64)) -> bool {
+        let Some(resize) = self.pin_resize else {
+            return false;
+        };
+        if resize.window_id != window_id || resize.native {
+            return false;
+        }
+        let Some(pin) = self.pins.get(&window_id) else {
+            self.pin_resize = None;
+            return false;
+        };
+        let target = pin_resize_target_from_drag(
+            pin.image.size(),
+            pin.scale,
+            resize.start_size,
+            resize.start_cursor,
+            cursor,
+            resize.handle,
+        );
+        if self.apply_pin_resize_target(window_id, target, resize.start_position, resize) {
+            self.sync_pin_transform(window_id);
+        }
+        true
+    }
+
+    fn reconcile_native_pin_resize(
+        &mut self,
+        window_id: WindowId,
+        size: PhysicalSize<u32>,
+    ) -> bool {
+        let Some(resize) = self.pin_resize else {
+            return false;
+        };
+        if resize.window_id != window_id || !resize.native {
+            return false;
+        }
+        let Some(pin) = self.pins.get(&window_id) else {
+            self.pin_resize = None;
+            return false;
+        };
+        let target = proportional_resize_target(
+            pin.image.size(),
+            pin.scale,
+            pinora_core::PixelSize::new(size.width.max(1), size.height.max(1)),
+            resize.handle,
+        );
+        self.apply_pin_resize_target(window_id, target, resize.start_position, resize)
+    }
+
+    fn apply_pin_resize_target(
+        &mut self,
+        window_id: WindowId,
+        target: PinResizeTarget,
+        start_position: Option<PixelPoint>,
+        resize: PinResizeDrag,
+    ) -> bool {
+        let Some(pin) = self.pins.get_mut(&window_id) else {
+            return false;
+        };
+        if pin.locked {
+            return false;
+        }
+        let current_size = pin.window.inner_size();
+        let scale_changed = (pin.scale - target.scale).abs() > f64::EPSILON;
+        let size_changed =
+            current_size.width != target.size.width || current_size.height != target.size.height;
+        if !scale_changed && !size_changed {
+            return false;
+        }
+        pin.scale = target.scale;
+        pin.render_cache = None;
+        if !resize.native
+            && let Some(position) = start_position
+        {
+            let anchored =
+                pin_resize_anchor_position(resize.handle, position, resize.start_size, target.size);
+            pin.window
+                .set_outer_position(PhysicalPosition::new(anchored.x, anchored.y));
+        }
+        if size_changed {
+            let _ = pin
+                .window
+                .request_inner_size(PhysicalSize::new(target.size.width, target.size.height));
+        }
+        pin.window.request_redraw();
+        scale_changed
+    }
+
+    fn record_pin_double_click(&mut self, window_id: WindowId) -> bool {
+        let Some(pin) = self.pins.get_mut(&window_id) else {
+            return false;
+        };
+        let point = PixelPoint::new(
+            pin.cursor_position.0.round() as i32,
+            pin.cursor_position.1.round() as i32,
+        );
+        let now = Instant::now();
+        let double_click = pin
+            .last_primary_press
+            .is_some_and(|(previous, previous_point)| {
+                now.duration_since(previous) <= Duration::from_millis(300)
+                    && previous_point.x.abs_diff(point.x) <= 4
+                    && previous_point.y.abs_diff(point.y) <= 4
+            });
+        pin.last_primary_press = (!double_click).then_some((now, point));
+        double_click
+    }
+
+    fn fit_pin_to_image(&mut self, window_id: WindowId) {
+        let Some(pin) = self.pins.get(&window_id) else {
+            return;
+        };
+        if pin.locked {
+            return;
+        }
+        let target = fit_to_image_target(pin.image.size());
+        let resize = PinResizeDrag {
+            window_id,
+            handle: PinResizeHandle::SouthEast,
+            native: false,
+            start_size: pinora_core::PixelSize::new(
+                pin.window.inner_size().width.max(1),
+                pin.window.inner_size().height.max(1),
+            ),
+            start_cursor: pin.cursor_position,
+            start_position: None,
+        };
+        if self.apply_pin_resize_target(window_id, target, None, resize) {
+            self.sync_pin_transform(window_id);
         }
     }
 
@@ -4254,6 +4557,7 @@ where
     }
 
     fn close_pin(&mut self, window_id: WindowId) {
+        self.finish_pin_resize(window_id);
         if let Some(pin) = self.pins.remove(&window_id) {
             let position = pin
                 .window
