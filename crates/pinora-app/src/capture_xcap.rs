@@ -52,6 +52,12 @@ impl CaptureProvider for XcapCaptureProvider {
     }
 
     fn capture(&self, request: CaptureRequest) -> Result<CaptureImage, PinoraError> {
+        if matches!(request, CaptureRequest::AllDisplays) {
+            return Err(PinoraError::new(
+                ErrorCode::CapabilityUnavailable,
+                "xcap does not provide a single atomic all-displays capture",
+            ));
+        }
         if let CaptureRequest::Window { target } = request {
             return self.capture_window(target);
         }
@@ -263,6 +269,7 @@ fn is_pinora_window(app_name: &str, title: &str) -> bool {
                 | "Pinora History"
                 | "Pinora History Edit"
                 | "Pinora Window Capture"
+                | "Pinora Virtual Desktop Capture"
         )
         || title.starts_with("Pinora-pin-")
         || title.starts_with("Pinora —")
@@ -350,5 +357,13 @@ mod tests {
             bounds,
             false
         ));
+    }
+
+    #[test]
+    fn all_displays_is_rejected_instead_of_stitching_multiple_frames() {
+        let error = XcapCaptureProvider::new()
+            .capture(CaptureRequest::AllDisplays)
+            .expect_err("xcap cannot promise one atomic workspace frame");
+        assert_eq!(error.code, ErrorCode::CapabilityUnavailable);
     }
 }

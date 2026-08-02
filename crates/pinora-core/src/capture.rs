@@ -78,6 +78,11 @@ pub enum CaptureRequest {
     Region { display: DisplayId, rect: PixelRect },
     /// 整屏捕获。
     FullDisplay { display: DisplayId },
+    /// 一次性全虚拟桌面捕获。
+    ///
+    /// 提供者必须返回与开始时显示器物理 bounds 外接矩形完全匹配的单次快照；不能
+    /// 保证一致性的后端必须受控拒绝，绝不能以逐显示器多时刻拼接替代成功结果。
+    AllDisplays,
     /// 按已验证的窗口快照捕获；后端必须在取得像素前重新验证该快照。
     Window { target: CaptureWindowInfo },
 }
@@ -90,10 +95,11 @@ pub trait CaptureProvider {
 }
 
 impl CaptureRequest {
-    pub fn display_id(&self) -> &DisplayId {
+    pub fn display_id(&self) -> Option<&DisplayId> {
         match self {
-            Self::Region { display, .. } | Self::FullDisplay { display } => display,
-            Self::Window { target } => &target.display,
+            Self::Region { display, .. } | Self::FullDisplay { display } => Some(display),
+            Self::AllDisplays => None,
+            Self::Window { target } => Some(&target.display),
         }
     }
 }
@@ -103,7 +109,12 @@ pub fn resolve_capture_rect(
     displays: &[DisplayInfo],
     request: &CaptureRequest,
 ) -> Result<(DisplayInfo, PixelRect), PinoraError> {
-    let display_id = request.display_id();
+    let display_id = request.display_id().ok_or_else(|| {
+        PinoraError::new(
+            ErrorCode::CommandRejected,
+            "all-displays capture must be resolved by its platform provider",
+        )
+    })?;
     let info = displays
         .iter()
         .find(|d| &d.id == display_id)
@@ -129,6 +140,12 @@ pub fn resolve_capture_rect(
                 "window capture must be resolved by its platform provider",
             ));
         }
+        CaptureRequest::AllDisplays => {
+            return Err(PinoraError::new(
+                ErrorCode::CommandRejected,
+                "all-displays capture must be resolved by its platform provider",
+            ));
+        }
     };
 
     if rect.size.is_empty() {
@@ -139,6 +156,79 @@ pub fn resolve_capture_rect(
     }
 
     Ok((info, rect))
+}
+
+/// 解析开始快照中所有显示器的物理像素外接矩形。
+///
+/// `PixelRect` 的常规消费方使用 i32 端点，因此异常的、无法在该坐标空间安全表达的
+/// 拓扑会被拒绝，而不是截断或饱和到另一个位置。
+pub fn resolve_all_displays_rect(displays: &[DisplayInfo]) -> Result<PixelRect, PinoraError> {
+    let Some(first) = displays.first() else {
+        return Err(PinoraError::new(
+            ErrorCode::NotFound,
+            "no displays for all-displays capture",
+        ));
+    };
+    if first.bounds.size.is_empty() {
+        return Err(PinoraError::new(
+            ErrorCode::RetryablePlatform,
+            "display topology contains an empty display",
+        ));
+    }
+
+    let mut min_x = i64::from(first.bounds.origin.x);
+    let mut min_y = i64::from(first.bounds.origin.y);
+    let mut max_x = min_x + i64::from(first.bounds.size.width);
+    let mut max_y = min_y + i64::from(first.bounds.size.height);
+
+    for display in &displays[1..] {
+        if display.bounds.size.is_empty() {
+            return Err(PinoraError::new(
+                ErrorCode::RetryablePlatform,
+                "display topology contains an empty display",
+            ));
+        }
+        let left = i64::from(display.bounds.origin.x);
+        let top = i64::from(display.bounds.origin.y);
+        let right = left + i64::from(display.bounds.size.width);
+        let bottom = top + i64::from(display.bounds.size.height);
+        min_x = min_x.min(left);
+        min_y = min_y.min(top);
+        max_x = max_x.max(right);
+        max_y = max_y.max(bottom);
+    }
+
+    let width = u64::try_from(max_x - min_x).map_err(|_| {
+        PinoraError::new(
+            ErrorCode::RetryablePlatform,
+            "display topology has an invalid horizontal extent",
+        )
+    })?;
+    let height = u64::try_from(max_y - min_y).map_err(|_| {
+        PinoraError::new(
+            ErrorCode::RetryablePlatform,
+            "display topology has an invalid vertical extent",
+        )
+    })?;
+    if min_x < i64::from(i32::MIN)
+        || min_y < i64::from(i32::MIN)
+        || max_x > i64::from(i32::MAX)
+        || max_y > i64::from(i32::MAX)
+        || width > u64::from(u32::MAX)
+        || height > u64::from(u32::MAX)
+    {
+        return Err(PinoraError::new(
+            ErrorCode::RetryablePlatform,
+            "display topology exceeds the supported physical coordinate space",
+        ));
+    }
+
+    Ok(PixelRect::new(
+        min_x as i32,
+        min_y as i32,
+        width as u32,
+        height as u32,
+    ))
 }
 
 #[cfg(test)]
@@ -202,6 +292,52 @@ mod tests {
         let debug = format!("{target:?}");
         assert!(!debug.contains("Sensitive title"));
         assert!(!debug.contains("Example"));
+    }
+
+    #[test]
+    fn all_displays_uses_the_physical_outer_bounds() {
+        let displays = [
+            DisplayInfo {
+                id: DisplayId::new("left"),
+                name: "Left".into(),
+                bounds: PixelRect::new(-1280, 120, 1280, 1024),
+                scale: 1.25,
+            },
+            sample_display(),
+            DisplayInfo {
+                id: DisplayId::new("top"),
+                name: "Top".into(),
+                bounds: PixelRect::new(400, -400, 1000, 400),
+                scale: 2.0,
+            },
+        ];
+
+        assert_eq!(
+            resolve_all_displays_rect(&displays).unwrap(),
+            PixelRect::new(-1280, -400, 3200, 1544)
+        );
+    }
+
+    #[test]
+    fn all_displays_rejects_an_extent_that_cannot_be_represented_safely() {
+        let display = DisplayInfo {
+            id: DisplayId::new("overflow"),
+            name: "Overflow".into(),
+            bounds: PixelRect::new(i32::MAX - 1, 0, 4, 4),
+            scale: 1.0,
+        };
+
+        assert_eq!(
+            resolve_all_displays_rect(&[display]).unwrap_err().code,
+            ErrorCode::RetryablePlatform
+        );
+    }
+
+    #[test]
+    fn all_displays_request_does_not_alias_a_single_display() {
+        let error = resolve_capture_rect(&[sample_display()], &CaptureRequest::AllDisplays)
+            .expect_err("the provider owns all-displays resolution");
+        assert_eq!(error.code, ErrorCode::CommandRejected);
     }
 
     #[test]

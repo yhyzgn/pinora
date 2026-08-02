@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use pinora_core::{
     CaptureImage, CaptureMetadata, CaptureProvider, CaptureRequest, CaptureWindowId,
     CaptureWindowInfo, DisplayId, DisplayInfo, ErrorCode, ImageId, PinoraError, PixelRect,
-    RgbaBuffer, resolve_capture_rect,
+    RgbaBuffer, resolve_all_displays_rect, resolve_capture_rect,
 };
 
 /// 提供单个 1920×1080 虚拟显示器，区域捕获返回纯色 RGBA。
@@ -66,6 +66,21 @@ impl CaptureProvider for FakeCaptureProvider {
     }
 
     fn capture(&self, request: CaptureRequest) -> Result<CaptureImage, PinoraError> {
+        if matches!(request, CaptureRequest::AllDisplays) {
+            let rect = resolve_all_displays_rect(&self.displays)?;
+            let pixels = RgbaBuffer::solid(rect.size, self.fill);
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_millis() as u64)
+                .unwrap_or(0);
+            return CaptureImage::new(
+                ImageId::new(),
+                pixels,
+                rect,
+                CaptureMetadata::new(DisplayId::virtual_desktop(), 1.0, now_ms),
+            )
+            .map_err(|message| PinoraError::new(ErrorCode::Internal, message));
+        }
         let (info, rect) = match request {
             CaptureRequest::Window { target } => {
                 let current = self
@@ -142,6 +157,17 @@ mod tests {
             })
             .unwrap();
         assert_eq!(image.size(), PixelSize::new(1920, 1080));
+    }
+
+    #[test]
+    fn all_displays_has_an_explicit_workspace_source() {
+        let image = FakeCaptureProvider::new()
+            .capture(CaptureRequest::AllDisplays)
+            .unwrap();
+
+        assert_eq!(image.size(), PixelSize::new(1920, 1080));
+        assert!(image.metadata.display.is_virtual_desktop());
+        assert_eq!(image.metadata.scale, 1.0);
     }
 
     #[test]

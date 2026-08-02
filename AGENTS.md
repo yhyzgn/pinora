@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/058_tray_residency_capture_failures.md`
-- 任务：`.context/tasks/058_tray_residency_capture_failures.md`
+- 计划：`.context/plans/059_virtual_desktop_capture.md`
+- 任务：`.context/tasks/059_virtual_desktop_capture.md`
 
 ## 交付要求
 

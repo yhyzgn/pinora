@@ -13,6 +13,18 @@ impl DisplayId {
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
+
+    /// 由一次全虚拟桌面捕获产生的合成工作区来源。
+    ///
+    /// 此值不是平台显示器标识。工作区图像的坐标始终是物理像素，不能继承任一
+    /// 显示器的逻辑缩放因子。
+    pub fn virtual_desktop() -> Self {
+        Self("pinora:virtual-desktop".into())
+    }
+
+    pub fn is_virtual_desktop(&self) -> bool {
+        self.0 == "pinora:virtual-desktop"
+    }
 }
 
 /// 捕获元数据（不含像素本体日志字段）。
@@ -181,5 +193,12 @@ mod tests {
         assert_eq!(cropped.size(), PixelSize::new(1, 1));
         assert_eq!(cropped.pixels.bytes[0], 2);
         assert_eq!(cropped.source_rect, PixelRect::new(101, 200, 1, 1));
+    }
+
+    #[test]
+    fn virtual_desktop_id_is_explicit_and_not_a_display_alias() {
+        let id = DisplayId::virtual_desktop();
+        assert!(id.is_virtual_desktop());
+        assert!(!DisplayId::new("display-0").is_virtual_desktop());
     }
 }

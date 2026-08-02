@@ -20,6 +20,7 @@ pub enum TrayAction {
     CaptureRegionAfter(Duration),
     CancelDelayedCapture,
     CaptureFullDisplay,
+    CaptureAllDisplays,
     CaptureDisplay(DisplayId),
     CaptureWindow(CaptureWindowInfo),
     Settings,
@@ -39,6 +40,7 @@ pub struct AppTray {
     delay_capture_items: [MenuItem; 3],
     cancel_delayed_capture_item: MenuItem,
     capture_full_display_id: tray_icon::menu::MenuId,
+    capture_all_displays_id: Option<MenuId>,
     capture_display_ids: Vec<(MenuId, DisplayId)>,
     capture_window_ids: Vec<(MenuId, CaptureWindowInfo)>,
     settings_id: tray_icon::menu::MenuId,
@@ -88,6 +90,11 @@ impl AppTray {
             }
             if ev.id == self.capture_full_display_id {
                 return Some(TrayAction::CaptureFullDisplay);
+            }
+            if let Some(action) =
+                all_displays_capture_action(&ev.id, self.capture_all_displays_id.as_ref())
+            {
+                return Some(action);
             }
             if let Some(action) = display_capture_action(&ev.id, &self.capture_display_ids) {
                 return Some(action);
@@ -147,6 +154,8 @@ fn try_new_inner(
     let delay_capture_five = MenuItem::new("延时截图 5 秒", true, None);
     let cancel_delayed_capture = MenuItem::new("取消延时截图", false, None);
     let capture_full_display = MenuItem::new("全屏截图 (F3)", true, None);
+    let capture_all_displays =
+        (displays.len() > 1).then(|| MenuItem::new("所有显示器截图", true, None));
     let mut capture_display_ids = Vec::new();
     let mut capture_window_ids = Vec::new();
     let settings = MenuItem::new("设置", true, None);
@@ -169,6 +178,10 @@ fn try_new_inner(
         .map_err(|e| format!("menu sep delayed capture: {e}"))?;
     menu.append(&capture_full_display)
         .map_err(|e| format!("menu append full-display capture: {e}"))?;
+    if let Some(capture_all_displays) = &capture_all_displays {
+        menu.append(capture_all_displays)
+            .map_err(|e| format!("menu append all-displays capture: {e}"))?;
+    }
     if displays.len() > 1 {
         menu.append(&PredefinedMenuItem::separator())
             .map_err(|e| format!("menu sep displays: {e}"))?;
@@ -215,6 +228,7 @@ fn try_new_inner(
     ];
     let cancel_delayed_capture_id = cancel_delayed_capture.id().clone();
     let capture_full_display_id = capture_full_display.id().clone();
+    let capture_all_displays_id = capture_all_displays.as_ref().map(|item| item.id().clone());
     let settings_id = settings.id().clone();
     let history_id = history.id().clone();
     let show_all_pins_id = show_all_pins.id().clone();
@@ -237,6 +251,7 @@ fn try_new_inner(
         delay_capture_items: [delay_capture_one, delay_capture_three, delay_capture_five],
         cancel_delayed_capture_item: cancel_delayed_capture,
         capture_full_display_id,
+        capture_all_displays_id,
         capture_display_ids,
         capture_window_ids,
         settings_id,
@@ -272,6 +287,15 @@ fn display_capture_action(
         .iter()
         .find(|(id, _)| id == menu_id)
         .map(|(_, display_id)| TrayAction::CaptureDisplay(display_id.clone()))
+}
+
+fn all_displays_capture_action(
+    menu_id: &MenuId,
+    all_displays_id: Option<&MenuId>,
+) -> Option<TrayAction> {
+    all_displays_id
+        .filter(|id| *id == menu_id)
+        .map(|_| TrayAction::CaptureAllDisplays)
 }
 
 fn window_capture_action(
@@ -398,6 +422,18 @@ mod tests {
             Some(TrayAction::CaptureDisplay(DisplayId::new("display-two")))
         );
         assert!(display_capture_action(&MenuId::new("other"), &displays).is_none());
+    }
+
+    #[test]
+    fn all_displays_action_is_distinct_from_full_display() {
+        let menu_id = MenuId::new("capture-all-displays");
+
+        assert_eq!(
+            all_displays_capture_action(&menu_id, Some(&menu_id)),
+            Some(TrayAction::CaptureAllDisplays)
+        );
+        assert!(all_displays_capture_action(&MenuId::new("other"), Some(&menu_id)).is_none());
+        assert!(all_displays_capture_action(&menu_id, None).is_none());
     }
 
     #[test]

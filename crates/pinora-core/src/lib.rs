@@ -30,7 +30,7 @@ pub use annotate::{
 pub use asset::{AssetGeneration, AssetRef};
 pub use capture::{
     CaptureProvider, CaptureRequest, CaptureWindowId, CaptureWindowInfo, DisplayInfo,
-    resolve_capture_rect,
+    resolve_all_displays_rect, resolve_capture_rect,
 };
 pub use command::Command;
 pub use error::{ErrorCode, PinoraError};

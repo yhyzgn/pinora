@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use pinora_core::{
     CaptureImage, CaptureMetadata, CaptureProvider, CaptureRequest, CaptureWindowInfo, DisplayId,
     DisplayInfo, ErrorCode, ImageId, PinoraError, PixelRect, PixelSize, RgbaBuffer,
-    resolve_capture_rect,
+    resolve_all_displays_rect, resolve_capture_rect,
 };
 
 /// 基于 KDE Spectacle CLI 的捕获提供者。
@@ -138,6 +138,23 @@ impl CaptureProvider for KdeSpectacleCaptureProvider {
             ));
         }
         let displays = self.displays()?;
+        if matches!(request, CaptureRequest::AllDisplays) {
+            let workspace = resolve_all_displays_rect(&displays)?;
+            let png_path = self.capture_workspace_png()?;
+            let load_result = load_png_rgba(&png_path);
+            let _ = std::fs::remove_file(&png_path);
+            let (image_size, bytes) = load_result?;
+            validate_workspace_image_size(image_size, workspace)?;
+            return CaptureImage::new(
+                ImageId::new(),
+                RgbaBuffer::new(image_size, bytes)
+                    .map_err(|message| PinoraError::new(ErrorCode::Internal, message))?,
+                workspace,
+                // 工作区只使用物理像素坐标，不能继承任一异构显示器的 UI 缩放因子。
+                CaptureMetadata::new(DisplayId::virtual_desktop(), 1.0, now_ms()),
+            )
+            .map_err(|message| PinoraError::new(ErrorCode::Internal, message));
+        }
         let (info, rect) = resolve_capture_rect(&displays, &request)?;
 
         // 单屏 FullDisplay：用 -m 快路径；区域或需全桌面坐标系时用 -f。
@@ -204,6 +221,19 @@ impl CaptureProvider for KdeSpectacleCaptureProvider {
             img
         })
     }
+}
+
+fn validate_workspace_image_size(
+    image_size: PixelSize,
+    workspace: PixelRect,
+) -> Result<(), PinoraError> {
+    if image_size == workspace.size {
+        return Ok(());
+    }
+    Err(PinoraError::new(
+        ErrorCode::RetryablePlatform,
+        "workspace capture dimensions do not match the display topology snapshot",
+    ))
 }
 
 fn is_kde_session() -> bool {
@@ -481,5 +511,17 @@ Scale: 1
     fn is_kde_detects_env() {
         // 仅检查函数可调用；环境由运行机决定
         let _ = is_kde_session();
+    }
+
+    #[test]
+    fn workspace_capture_size_must_match_the_topology_snapshot() {
+        let workspace = PixelRect::new(-1280, -200, 3200, 1640);
+        assert!(validate_workspace_image_size(PixelSize::new(3200, 1640), workspace).is_ok());
+        assert_eq!(
+            validate_workspace_image_size(PixelSize::new(3200, 1639), workspace)
+                .expect_err("cropped or stale workspace PNG must not become an asset")
+                .code,
+            ErrorCode::RetryablePlatform
+        );
     }
 }

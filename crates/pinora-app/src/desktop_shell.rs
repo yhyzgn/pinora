@@ -46,7 +46,7 @@ use pinora_core::{
     DisplayId, DisplayInfo, DomainEventKind, ErrorCode, HistoryEntry, HistoryIndex, ImageId,
     ImageSink, JobId, JobKind, JobOwner, JobSpec, OcrResult, OcrTextSelection, OcrWordRef, PinId,
     PinTransform, PinoraError, PixelPoint, PixelRect, SelectionSession, SessionId,
-    bake_annotations, render_preview_rgba,
+    bake_annotations, render_preview_rgba, resolve_all_displays_rect,
 };
 use softbuffer::{Context, Rect as DamageRect, Surface};
 use winit::application::ApplicationHandler;
@@ -290,6 +290,7 @@ enum Mode {
 enum CaptureMode {
     Region,
     FullDisplay,
+    AllDisplays,
     Window,
 }
 
@@ -298,6 +299,7 @@ enum CaptureMode {
 enum CaptureTarget {
     DefaultLargest,
     Display(DisplayId),
+    AllDisplays,
     Window(CaptureWindowInfo),
 }
 
@@ -325,6 +327,7 @@ impl CaptureMode {
         match self {
             Self::Region => "region",
             Self::FullDisplay => "full-display",
+            Self::AllDisplays => "all-displays",
             Self::Window => "window",
         }
     }
@@ -335,6 +338,7 @@ impl CaptureTarget {
         match self {
             Self::DefaultLargest => "default-display",
             Self::Display(_) => "selected-display",
+            Self::AllDisplays => "all-displays",
             Self::Window(_) => "selected-window",
         }
     }
@@ -350,7 +354,9 @@ enum OverlayInitialSelection {
 fn initial_selection_for_capture(capture_mode: CaptureMode) -> OverlayInitialSelection {
     match capture_mode {
         CaptureMode::Region => OverlayInitialSelection::Manual,
-        CaptureMode::FullDisplay | CaptureMode::Window => OverlayInitialSelection::FullImage,
+        CaptureMode::FullDisplay | CaptureMode::AllDisplays | CaptureMode::Window => {
+            OverlayInitialSelection::FullImage
+        }
     }
 }
 
@@ -374,9 +380,9 @@ fn resolve_capture_target(
                     format!("selected display is no longer available: {}", display_id.0),
                 )
             }),
-        CaptureTarget::Window(_) => Err(PinoraError::new(
+        CaptureTarget::AllDisplays | CaptureTarget::Window(_) => Err(PinoraError::new(
             ErrorCode::InvalidState,
-            "window capture target cannot be resolved as a display",
+            "non-display capture target cannot be resolved as a display",
         )),
     }
 }
@@ -418,6 +424,7 @@ fn preview_buffers_match_image(preview: &PreparedPreview) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OverlayPresentation {
     ScreenCapture,
+    VirtualDesktop,
     WindowCapture,
     HistoryEditor,
 }
@@ -760,6 +767,10 @@ where
                     println!("pinora: tray → full-display capture");
                     self.request_full_display_capture(event_loop);
                 }
+                TrayAction::CaptureAllDisplays => {
+                    println!("pinora: tray → all-displays capture");
+                    self.request_all_displays_capture(event_loop);
+                }
                 TrayAction::CaptureDisplay(display_id) => {
                     println!("pinora: tray → display capture ({})", display_id.0);
                     self.request_display_capture(event_loop, display_id);
@@ -1082,7 +1093,9 @@ where
             CaptureTarget::DefaultLargest => {
                 self.frame_cache.as_ref().is_some_and(FrameCache::is_ready)
             }
-            CaptureTarget::Display(_) | CaptureTarget::Window(_) => true,
+            CaptureTarget::Display(_) | CaptureTarget::AllDisplays | CaptureTarget::Window(_) => {
+                true
+            }
         };
         if !cache_ready {
             if let Some(cache) = &self.frame_cache {
@@ -1121,13 +1134,16 @@ where
                 let displays = runtime.capture_provider().displays()?;
                 Some(resolve_capture_target(&displays, &self.capture_target)?)
             }
-            CaptureTarget::Window(_) => None,
+            CaptureTarget::AllDisplays | CaptureTarget::Window(_) => None,
         };
         // 1) 缓存命中 → 立刻开 overlay（目标 < 16ms）
         // 允许最多 2s 龄的帧；后台约每 0.5s 刷新一轮
         let cached_frame = allow_cached_frame
             .then(|| {
-                if matches!(self.capture_target, CaptureTarget::Window(_)) {
+                if matches!(
+                    self.capture_target,
+                    CaptureTarget::AllDisplays | CaptureTarget::Window(_)
+                ) {
                     return None;
                 }
                 self.frame_cache.as_ref().and_then(|cache| {
@@ -1179,6 +1195,23 @@ where
         // 2) 缓存未就绪或窗口目标：后台冷捕获。窗口绝不消费显示器预截帧。
         let rt = self.runtime.as_ref().unwrap();
         let (request, target, log_target) = match &self.capture_target {
+            CaptureTarget::AllDisplays => {
+                let displays = rt.capture_provider().displays()?;
+                let workspace = resolve_all_displays_rect(&displays)?;
+                (
+                    CaptureRequest::AllDisplays,
+                    OverlayTarget {
+                        display_id: DisplayId::virtual_desktop(),
+                        display_origin: workspace.origin,
+                        image_width: workspace.size.width,
+                        image_height: workspace.size.height,
+                        initial_selection,
+                        presentation: OverlayPresentation::VirtualDesktop,
+                        min_selection_edge: 2,
+                    },
+                    "all displays".to_owned(),
+                )
+            }
             CaptureTarget::Window(window) => (
                 CaptureRequest::Window {
                     target: window.clone(),
@@ -1933,6 +1966,14 @@ where
         );
     }
 
+    fn request_all_displays_capture(&mut self, event_loop: &ActiveEventLoop) {
+        self.request_capture(
+            event_loop,
+            CaptureMode::AllDisplays,
+            CaptureTarget::AllDisplays,
+        );
+    }
+
     fn request_window_capture(&mut self, event_loop: &ActiveEventLoop, target: CaptureWindowInfo) {
         self.request_capture(
             event_loop,
@@ -2164,6 +2205,21 @@ where
                         .with_fullscreen(Some(Fullscreen::Borderless(None)))
                         .with_cursor(CursorIcon::Crosshair)
                         .with_decorations(false)
+                        .with_visible(true),
+                )
+            }
+            OverlayPresentation::VirtualDesktop => {
+                let title = "Pinora Virtual Desktop Capture";
+                (
+                    title,
+                    Window::default_attributes()
+                        .with_title(title)
+                        .with_inner_size(PhysicalSize::new(img_w, img_h))
+                        .with_position(PhysicalPosition::new(display_origin.x, display_origin.y))
+                        .with_cursor(CursorIcon::Crosshair)
+                        .with_decorations(false)
+                        .with_resizable(false)
+                        .with_window_level(WindowLevel::AlwaysOnTop)
                         .with_visible(true),
                 )
             }
@@ -4492,6 +4548,10 @@ mod overlay_scale_tests {
             )
             .unwrap(),
             Some(bounds)
+        );
+        assert_eq!(
+            initial_selection_for_capture(CaptureMode::AllDisplays),
+            OverlayInitialSelection::FullImage
         );
         assert_eq!(
             initial_selection_for_capture(CaptureMode::Window),
