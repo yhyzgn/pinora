@@ -982,6 +982,15 @@ impl AnnotateSession {
         }
     }
 
+    /// 在当前文本草稿中插入一个显式换行，不提交标注事务。
+    pub fn text_insert_line_break(&mut self) -> bool {
+        let Some(DraftShape::Text { content, .. }) = &mut self.draft else {
+            return false;
+        };
+        content.push('\n');
+        true
+    }
+
     pub fn commit(&mut self) {
         let Some(draft) = self.draft.take() else {
             return;
@@ -2137,32 +2146,38 @@ fn draw_text(
     size: f32,
 ) {
     let Some(cache) = load_font() else {
-        // 无字体：画占位横线
-        draw_line(
-            buf,
-            w,
-            h,
-            origin,
-            PixelPoint::new(
-                origin.x + (content.chars().count() as i32 * 8).max(8),
-                origin.y,
-            ),
-            color,
-            2,
-        );
+        // 无字体：每行画一条占位横线，仍保留换行的几何语义。
+        let line_height = text_line_height(size);
+        for (index, line) in content.split('\n').enumerate() {
+            let y = origin
+                .y
+                .saturating_add((index as i32).saturating_mul(line_height));
+            draw_line(
+                buf,
+                w,
+                h,
+                PixelPoint::new(origin.x, y),
+                PixelPoint::new(origin.x + (line.chars().count() as i32 * 8).max(8), y),
+                color,
+                2,
+            );
+        }
         return;
     };
     let size = size.clamp(8.0, 96.0);
     let mut pen_x = origin.x as f32;
-    let pen_y = origin.y as f32;
+    let mut pen_y = origin.y;
+    let line_height = text_line_height(size);
     for ch in content.chars() {
         if ch == '\n' {
+            pen_x = origin.x as f32;
+            pen_y = pen_y.saturating_add(line_height);
             continue;
         }
         let (metrics, bitmap) = cache.font.rasterize(ch, size);
         // fontdue：位图原点相对基线左下系；ymin 常为负（上移）
         let gx = (pen_x + metrics.xmin as f32).round() as i32;
-        let gy = (pen_y + metrics.ymin as f32).round() as i32;
+        let gy = pen_y.saturating_add(metrics.ymin);
         for row in 0..metrics.height {
             for col in 0..metrics.width {
                 let alpha = bitmap[row * metrics.width + col] as f64 / 255.0;
@@ -2175,13 +2190,27 @@ fn draw_text(
     }
 }
 
+fn text_line_height(size: f32) -> i32 {
+    (size.clamp(8.0, 96.0) * 1.25).ceil() as i32
+}
+
 fn text_bounds(origin: PixelPoint, content: &str, size: f32) -> PixelRect {
     let fallback = || {
+        let line_height = text_line_height(size);
+        let line_count = content.split('\n').count().max(1) as i32;
+        let widest_line = content
+            .split('\n')
+            .map(|line| line.chars().count() as u32)
+            .max()
+            .unwrap_or(0);
         PixelRect::new(
             origin.x,
             origin.y.saturating_sub(2),
-            (content.chars().count() as u32).saturating_mul(8).max(8),
-            5,
+            widest_line.saturating_mul(8).max(8),
+            line_height
+                .saturating_mul(line_count)
+                .saturating_add(2)
+                .max(1) as u32,
         )
     };
     let Some(cache) = load_font() else {
@@ -2189,15 +2218,28 @@ fn text_bounds(origin: PixelPoint, content: &str, size: f32) -> PixelRect {
     };
 
     let mut pen_x = origin.x as f32;
+    let mut pen_y = origin.y;
     let size = size.clamp(8.0, 96.0);
-    let mut bounds: Option<(i32, i32, i32, i32)> = None;
+    let line_height = text_line_height(size);
+    let line_count = content.split('\n').count().max(1) as i32;
+    // 空白行没有字形，但仍应占据可选择、可移动的垂直空间。
+    let mut bounds = Some((
+        origin.x,
+        origin.y.saturating_sub(2),
+        origin.x.saturating_add(1),
+        origin
+            .y
+            .saturating_add(line_height.saturating_mul(line_count)),
+    ));
     for character in content.chars() {
         if character == '\n' {
+            pen_x = origin.x as f32;
+            pen_y = pen_y.saturating_add(line_height);
             continue;
         }
         let (metrics, _) = cache.font.rasterize(character, size);
         let x0 = (pen_x + metrics.xmin as f32).round() as i32;
-        let y0 = origin.y.saturating_add(metrics.ymin);
+        let y0 = pen_y.saturating_add(metrics.ymin);
         let x1 = x0.saturating_add(metrics.width as i32);
         let y1 = y0.saturating_add(metrics.height as i32);
         if metrics.width > 0 && metrics.height > 0 {
@@ -2751,6 +2793,38 @@ mod tests {
         let out = bake_annotations(&src, &s.doc);
         // 有系统字体时应改变像素；无字体时也会画占位线
         assert_ne!(out.pixels.bytes, src.pixels.bytes);
+    }
+
+    #[test]
+    fn multiline_text_preserves_breaks_and_uses_taller_selection_bounds() {
+        let mut session = AnnotateSession::new(160, 120);
+        session.tool = AnnotateTool::Text;
+        session.begin(PixelPoint::new(24, 36));
+        session.text_push("first");
+        let revision = session.doc.revision();
+        assert!(session.text_insert_line_break());
+        assert_eq!(session.doc.revision(), revision);
+        session.text_insert_line_break();
+        session.text_push("third");
+        session.commit();
+
+        let multi = session.doc.items()[0].clone();
+        assert!(matches!(
+            &multi,
+            Annotation::Text { content, .. } if content == "first\n\nthird"
+        ));
+        let single = Annotation::Text {
+            origin: PixelPoint::new(24, 36),
+            content: "first".to_owned(),
+            color: DEFAULT_STROKE,
+            size: 24.0,
+        };
+        assert!(multi.selection_bounds().size.height > single.selection_bounds().size.height);
+        assert!(multi.contains_selection_point(PixelPoint::new(24, 36 + text_line_height(24.0))));
+
+        assert!(session.doc.undo().is_some());
+        assert!(session.doc.redo().is_some());
+        assert_eq!(session.doc.items(), std::slice::from_ref(&multi));
     }
 
     #[test]

@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/073_selection_metrics_readout.md`
-- 任务：`.context/tasks/073_selection_metrics_readout.md`
+- 计划：`.context/plans/074_multiline_text_composition.md`
+- 任务：`.context/tasks/074_multiline_text_composition.md`
 
 ## 交付要求
 

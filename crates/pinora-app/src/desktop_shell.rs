@@ -538,6 +538,12 @@ enum AnnotationHistoryAction {
     Redo,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextEnterAction {
+    InsertLineBreak,
+    Commit,
+}
+
 fn annotation_history_action(
     control_pressed: bool,
     shift_pressed: bool,
@@ -551,6 +557,17 @@ fn annotation_history_action(
         "z" | "Z" => Some(AnnotationHistoryAction::Undo),
         "y" | "Y" => Some(AnnotationHistoryAction::Redo),
         _ => None,
+    }
+}
+
+fn text_enter_action(modifiers: ModifiersState, text_editing: bool) -> Option<TextEnterAction> {
+    if !text_editing {
+        return None;
+    }
+    if modifiers.shift_key() && !modifiers.control_key() {
+        Some(TextEnterAction::InsertLineBreak)
+    } else {
+        Some(TextEnterAction::Commit)
     }
 }
 
@@ -2489,20 +2506,24 @@ where
                     return;
                 }
                 if matches!(key.logical_key, Key::Named(NamedKey::Enter)) {
-                    // 文本草稿：先提交文字；Ctrl+Enter 同样。裸 Enter 贴图。
-                    if let Some(ov) = self.overlay.as_mut()
-                        && ov.annotate.is_text_editing()
-                    {
-                        let revision = ov.annotate.doc.revision();
-                        ov.annotate.commit();
-                        if ov.annotate.doc.revision() != revision {
-                            ov.selected_annotation = None;
-                            ov.selected_drag = None;
-                            ov.annotate_dirty = true;
+                    // 文本草稿：Shift+Enter 换行；Enter/Ctrl+Enter 提交。裸 Enter 贴图。
+                    if let Some(action) = self.overlay.as_ref().and_then(|ov| {
+                        text_enter_action(self.modifiers, ov.annotate.is_text_editing())
+                    }) {
+                        let ov = self.overlay.as_mut().expect("overlay was just borrowed");
+                        match action {
+                            TextEnterAction::InsertLineBreak => {
+                                let _ = ov.annotate.text_insert_line_break();
+                                ov.annotate_dirty = true;
+                                ov.needs_redraw = true;
+                                return;
+                            }
+                            TextEnterAction::Commit => {
+                                commit_text_draft(ov);
+                                println!("pinora: text committed on overlay");
+                                return;
+                            }
                         }
-                        ov.needs_redraw = true;
-                        println!("pinora: text committed on overlay");
-                        return;
                     }
                     if let Err(e) = self.finish_overlay_action(event_loop, OverlayFinish::Pin) {
                         eprintln!("pinora: pin failed: {e}");
@@ -2770,6 +2791,12 @@ where
                 }
 
                 // 3) 选区外：准备拖新选区（Ready 下需移动阈值才真正重选）
+                if ov.phase == OverlayPhase::Ready
+                    && ov.annotate.is_text_editing()
+                    && commit_text_draft(ov)
+                {
+                    return;
+                }
                 ov.dragging = true;
                 ov.drag_anchor = p;
                 ov.annotate_dragging = false;
@@ -4556,6 +4583,10 @@ fn overlay_click_finishes_copy(tool: AnnotateTool, is_double_click: bool) -> boo
 }
 
 fn set_overlay_tool(ov: &mut OverlayState, tool: AnnotateTool) {
+    let had_text_draft = tool != ov.annotate.tool && ov.annotate.is_text_editing();
+    if had_text_draft {
+        commit_text_draft(ov);
+    }
     if !matches!(tool, AnnotateTool::ColorPicker | AnnotateTool::Select) {
         ov.last_drawing_tool = tool;
     }
@@ -4566,13 +4597,31 @@ fn set_overlay_tool(ov: &mut OverlayState, tool: AnnotateTool) {
         if had_selection_resize {
             ov.dragging = false;
         }
-        if had_selection || had_drag || had_selection_resize {
+        if had_selection || had_drag || had_selection_resize || had_text_draft {
             ov.annotate_dirty = true;
         }
     }
     ov.annotate.tool = tool;
     ov.toolbar_chrome_dirty = true;
     ov.needs_redraw = true;
+}
+
+/// 工具切换或外部重选前仅提交非空文本草稿，避免隐式丢失用户输入。
+fn commit_text_draft(ov: &mut OverlayState) -> bool {
+    if !ov.annotate.is_text_editing() {
+        return false;
+    }
+    let revision = ov.annotate.doc.revision();
+    ov.annotate.commit();
+    let committed = ov.annotate.doc.revision() != revision;
+    if committed {
+        ov.selected_annotation = None;
+        ov.selected_drag = None;
+    }
+    // 空白文本也消耗草稿，必须清除带光标的预览。
+    ov.annotate_dirty = true;
+    ov.needs_redraw = true;
+    committed
 }
 
 /// 优先移动当前选中对象；返回 false 时由调用方继续处理选区移动。
@@ -5475,6 +5524,23 @@ mod overlay_scale_tests {
     fn selected_annotation_nudge_uses_one_or_ten_pixel_steps() {
         assert_eq!(annotation_nudge_step(ModifiersState::empty()), 1);
         assert_eq!(annotation_nudge_step(ModifiersState::SHIFT), 10);
+    }
+
+    #[test]
+    fn text_enter_distinguishes_multiline_input_from_commit() {
+        assert_eq!(
+            text_enter_action(ModifiersState::SHIFT, true),
+            Some(TextEnterAction::InsertLineBreak)
+        );
+        assert_eq!(
+            text_enter_action(ModifiersState::CONTROL | ModifiersState::SHIFT, true),
+            Some(TextEnterAction::Commit)
+        );
+        assert_eq!(
+            text_enter_action(ModifiersState::empty(), true),
+            Some(TextEnterAction::Commit)
+        );
+        assert_eq!(text_enter_action(ModifiersState::SHIFT, false), None);
     }
 
     #[test]
