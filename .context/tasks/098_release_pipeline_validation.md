@@ -1,6 +1,6 @@
 # 任务 098：跨平台发布流水线验证
 
-- 状态：进行中
+- 状态：已完成
 - 计划：`.context/plans/098_release_pipeline_validation.md`
 - 规模：大
 - 依赖：现有 CI、package、runtime-verify workflow；GitHub 发布权限。
@@ -58,4 +58,8 @@
 
 ## 完成记录
 
-- 待完成。
+- 2026-08-03 完成。CI `30783363209`、tag package/release `30783568639` 和 `runtime-verify` `30783727003` 均成功。
+- 已发布 `v0.1.0-preview.8`：`https://github.com/yhyzgn/pinora/releases/tag/v0.1.0-preview.8`，`isPrerelease=true`，含 Linux/macOS/Windows 资产及总 `SHA256SUMS.txt`。
+- 已下载 Release 全部 11 个资产并按总清单逐项执行 SHA-256 校验，结果全部通过；runtime 报告已回写 Release body。
+- 实际验证范围止于 runner-safe 包结构、安装/卸载与 `--version`；未将其描述为真实桌面 GUI、tray-only、热键、权限、任务栏/Dock/分页器或流畅性验收。
+- 回滚点：本阶段无源码、工作流或打包脚本变更；若后续运行验证失败，保留现有 tag/run 证据并以新的 preview tag 修复发布。

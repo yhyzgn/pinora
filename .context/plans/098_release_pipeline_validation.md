@@ -1,6 +1,6 @@
 # 计划 098：跨平台发布流水线验证
 
-- 状态：进行中
+- 状态：已完成
 - 负责人：Codex
 - 当前任务：`.context/tasks/098_release_pipeline_validation.md`
 
@@ -68,4 +68,8 @@
 
 ## 完成记录
 
-- 待执行。
+- 2026-08-03 已完成：当前 `main` CI run `30783363209` 成功；tag `v0.1.0-preview.8` 触发的 package/release run `30783568639` 在 Linux、macOS、Windows 全部成功。
+- Release `v0.1.0-preview.8` 已确认为 pre-release，包含 11 个跨平台资产和合并 `SHA256SUMS.txt`；本机下载后逐项 SHA-256 校验通过。
+- `runtime-verify` workflow_run `30783727003` 成功，Linux/macOS/Windows 均完成 runner-safe `--version` 与包检查，报告已写入 Release body。
+- 未修改工作流或打包脚本；本阶段没有发现需要修复的发布缺陷。
+- 阶段退出：构建、打包、资产校验、pre-release 和运行 smoke 均有可追溯证据；真实 GUI/tray/窗口管理器/签名/公证/性能风险继续由 R-056 跟踪。

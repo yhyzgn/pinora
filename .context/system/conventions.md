@@ -36,7 +36,7 @@ sudo dnf install -y pipewire-devel mesa-libgbm-devel wayland-devel libxcb-devel
 
 097 历史最大磁盘占用增量使用同一组定向测试，并额外覆盖 v7 到 v8 设置迁移、非法容量修复、容量下调后的最旧优先 tombstone 与受管 PNG 清理；完整门禁仍使用上方 workspace、Clippy、测试、Windows target、差异和 `ctx validate` 命令。测试不连接真实共享基础设施；2 个真实桌面测试按既有约定忽略。
 
-098 发布链路预验证已执行：`cargo run --quiet -- --version` 输出 `pinora 0.1.0`；GitHub CI `30782856266`、手动 package `30783019714` 和手动 runtime-verify `30783253220` 均成功。已通过 `gh run download 30783019714` 下载全部平台 artifact，并在本机对每个逐平台 `SHA256SUMS.txt` 执行 `sha256sum -c`；Linux tarball 清单包含 `/usr/bin/pinora` 和 desktop entry。预验证不证明真实桌面 GUI、tray、热键、权限、签名/公证或性能。
+098 发布链路已完成：`cargo run --quiet -- --version` 输出 `pinora 0.1.0`；当前 `main` CI `30783363209`、tag package/release `30783568639` 和 `runtime-verify` `30783727003` 均成功。Release `v0.1.0-preview.8` 已确认 `isPrerelease=true`，下载全部 11 个资产后按合并 `SHA256SUMS.txt` 执行 `sha256sum -c` 全部通过；Linux tarball 清单包含 `/usr/bin/pinora` 和 desktop entry，runtime 报告已回写 Release body。该门禁不证明真实桌面 GUI、tray、热键、权限、签名/公证或性能。
 
 ## 跨平台构建与打包
 
