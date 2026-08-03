@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use pinora_core::{
-    AppSettings, DEFAULT_FULL_DISPLAY_HOTKEY, DEFAULT_JPEG_QUALITY,
+    AppSettings, DEFAULT_FULL_DISPLAY_HOTKEY, DEFAULT_HISTORY_RETENTION_DAYS, DEFAULT_JPEG_QUALITY,
     DEFAULT_OCR_CONFIDENCE_THRESHOLD, DEFAULT_PIN_ALWAYS_ON_TOP, DEFAULT_REGION_HOTKEY,
     ExportImageFormat, HotkeyBinding, HotkeyCode, HotkeyModifiers, OcrLanguage,
     SETTINGS_SCHEMA_VERSION, SettingsRepairs, ThemeMode,
@@ -18,7 +18,8 @@ const V2_RECORD_LEN: usize = 19;
 const V3_RECORD_LEN: usize = 23;
 const V4_RECORD_LEN: usize = 24;
 const V5_RECORD_LEN: usize = 25;
-const RECORD_LEN: usize = 27;
+const V6_RECORD_LEN: usize = 27;
+const RECORD_LEN: usize = 29;
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,6 +124,7 @@ fn encode(settings: AppSettings) -> Result<[u8; RECORD_LEN], String> {
     bytes[24] = repaired.ocr_confidence_threshold;
     bytes[25] = repaired.export_format.to_wire();
     bytes[26] = repaired.jpeg_quality;
+    bytes[27..29].copy_from_slice(&repaired.history_retention_days.to_le_bytes());
     Ok(bytes)
 }
 
@@ -133,7 +135,8 @@ fn decode(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         V3_RECORD_LEN => decode_v3(bytes),
         V4_RECORD_LEN => decode_v4(bytes),
         V5_RECORD_LEN => decode_v5(bytes),
-        RECORD_LEN => decode_v6(bytes),
+        V6_RECORD_LEN => decode_v6(bytes),
+        RECORD_LEN => decode_v7(bytes),
         _ => Err("settings record length is invalid".into()),
     }
 }
@@ -148,6 +151,7 @@ fn decode_v1(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
         history_limit,
+        history_retention_days: DEFAULT_HISTORY_RETENTION_DAYS,
         pin_limit,
         default_pin_opacity_percent: bytes[17],
         default_pin_always_on_top: DEFAULT_PIN_ALWAYS_ON_TOP,
@@ -175,6 +179,7 @@ fn decode_v2(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
         history_limit,
+        history_retention_days: DEFAULT_HISTORY_RETENTION_DAYS,
         pin_limit,
         default_pin_opacity_percent: bytes[17],
         default_pin_always_on_top: DEFAULT_PIN_ALWAYS_ON_TOP,
@@ -206,6 +211,7 @@ fn decode_v3(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
         history_limit,
+        history_retention_days: DEFAULT_HISTORY_RETENTION_DAYS,
         pin_limit,
         default_pin_opacity_percent: bytes[17],
         default_pin_always_on_top: DEFAULT_PIN_ALWAYS_ON_TOP,
@@ -240,6 +246,7 @@ fn decode_v4(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
         history_limit,
+        history_retention_days: DEFAULT_HISTORY_RETENTION_DAYS,
         pin_limit,
         default_pin_opacity_percent: bytes[17],
         default_pin_always_on_top,
@@ -274,6 +281,7 @@ fn decode_v5(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
         history_limit,
+        history_retention_days: DEFAULT_HISTORY_RETENTION_DAYS,
         pin_limit,
         default_pin_opacity_percent: bytes[17],
         default_pin_always_on_top,
@@ -292,7 +300,7 @@ fn decode_v5(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
 }
 
 fn decode_v6(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
-    validate_magic_and_schema(bytes, SETTINGS_SCHEMA_VERSION)?;
+    validate_magic_and_schema(bytes, 6)?;
     let theme =
         ThemeMode::from_wire(bytes[10]).ok_or_else(|| "settings theme is invalid".to_string())?;
     let ocr_language = OcrLanguage::from_wire(bytes[18])
@@ -310,6 +318,45 @@ fn decode_v6(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
         history_limit,
+        history_retention_days: DEFAULT_HISTORY_RETENTION_DAYS,
+        pin_limit,
+        default_pin_opacity_percent: bytes[17],
+        default_pin_always_on_top,
+        ocr_language,
+        ocr_confidence_threshold: bytes[24],
+        export_format,
+        jpeg_quality: bytes[26],
+        region_hotkey,
+        full_display_hotkey,
+    }
+    .with_repaired_values();
+    repairs.region_hotkey |= region_invalid;
+    repairs.full_display_hotkey |= full_invalid;
+    repairs.migrated_from_v6 = true;
+    Ok((settings, repairs))
+}
+
+fn decode_v7(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
+    validate_magic_and_schema(bytes, SETTINGS_SCHEMA_VERSION)?;
+    let theme =
+        ThemeMode::from_wire(bytes[10]).ok_or_else(|| "settings theme is invalid".to_string())?;
+    let ocr_language = OcrLanguage::from_wire(bytes[18])
+        .ok_or_else(|| "settings OCR language is invalid".to_string())?;
+    let default_pin_always_on_top = decode_bool(bytes[23])?;
+    let export_format = ExportImageFormat::from_wire(bytes[25])
+        .ok_or_else(|| "settings export format is invalid".to_string())?;
+    let history_limit = u32::from_le_bytes([bytes[11], bytes[12], bytes[13], bytes[14]]);
+    let pin_limit = u16::from_le_bytes([bytes[15], bytes[16]]);
+    let history_retention_days = u16::from_le_bytes([bytes[27], bytes[28]]);
+    let (region_hotkey, region_invalid) =
+        decode_hotkey(bytes[19], bytes[20], DEFAULT_REGION_HOTKEY);
+    let (full_display_hotkey, full_invalid) =
+        decode_hotkey(bytes[21], bytes[22], DEFAULT_FULL_DISPLAY_HOTKEY);
+    let (settings, mut repairs) = AppSettings {
+        schema_version: SETTINGS_SCHEMA_VERSION,
+        theme,
+        history_limit,
+        history_retention_days,
         pin_limit,
         default_pin_opacity_percent: bytes[17],
         default_pin_always_on_top,
@@ -452,7 +499,7 @@ mod tests {
     #[test]
     fn unknown_schema_is_rejected() {
         let mut bytes = encode(AppSettings::default()).expect("encode");
-        bytes[8] = 7;
+        bytes[8] = 8;
         assert_eq!(
             decode(&bytes),
             Err("settings schema version is unsupported".into())
@@ -485,8 +532,9 @@ mod tests {
     }
 
     #[test]
-    fn v6_round_trip_preserves_export_ocr_settings_hotkeys_and_default_pin_level() {
+    fn v7_round_trip_preserves_export_ocr_settings_hotkeys_and_retention() {
         let settings = AppSettings {
+            history_retention_days: 365,
             default_pin_always_on_top: false,
             ocr_language: OcrLanguage::SimplifiedChinese,
             ocr_confidence_threshold: 85,
@@ -497,14 +545,58 @@ mod tests {
             ..AppSettings::default()
         };
 
-        let (decoded, repairs) = decode(&encode(settings).expect("encode v6")).expect("decode v6");
+        let (decoded, repairs) = decode(&encode(settings).expect("encode v7")).expect("decode v7");
 
         assert_eq!(decoded, settings);
         assert!(repairs.is_empty());
     }
 
     #[test]
-    fn invalid_v6_ocr_language_is_rejected() {
+    fn v6_settings_migrate_with_default_retention_days() {
+        let settings = AppSettings {
+            history_limit: 88,
+            export_format: ExportImageFormat::WebP,
+            jpeg_quality: 75,
+            ..AppSettings::default()
+        };
+        let bytes = legacy_v6_bytes(settings);
+
+        let (decoded, repairs) = decode(&bytes).expect("migrate v6");
+
+        assert_eq!(decoded.history_limit, settings.history_limit);
+        assert_eq!(decoded.export_format, settings.export_format);
+        assert_eq!(decoded.jpeg_quality, settings.jpeg_quality);
+        assert_eq!(
+            decoded.history_retention_days,
+            DEFAULT_HISTORY_RETENTION_DAYS
+        );
+        assert!(repairs.migrated_from_v6);
+        assert!(!repairs.history_retention_days);
+    }
+
+    #[test]
+    fn invalid_v7_retention_repairs_without_losing_other_fields() {
+        let settings = AppSettings {
+            history_retention_days: 365,
+            history_limit: 321,
+            ..AppSettings::default()
+        };
+        let mut bytes = encode(settings).expect("encode v7");
+        bytes[27..29].copy_from_slice(&0u16.to_le_bytes());
+
+        let (decoded, repairs) = decode(&bytes).expect("repair retention");
+
+        assert_eq!(decoded.history_limit, settings.history_limit);
+        assert_eq!(
+            decoded.history_retention_days,
+            DEFAULT_HISTORY_RETENTION_DAYS
+        );
+        assert!(repairs.history_retention_days);
+        assert!(!repairs.history_limit);
+    }
+
+    #[test]
+    fn invalid_v7_ocr_language_is_rejected() {
         let mut bytes = encode(AppSettings::default()).expect("encode");
         bytes[18] = u8::MAX;
 
@@ -607,7 +699,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_v6_hotkey_field_repairs_without_losing_other_field() {
+    fn invalid_v7_hotkey_field_repairs_without_losing_other_field() {
         let settings = AppSettings {
             region_hotkey: HotkeyBinding::new(HotkeyModifiers::CONTROL, HotkeyCode::KeyR),
             full_display_hotkey: HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4),
@@ -625,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_v6_default_pin_level_is_rejected_without_replacing_the_source_file() {
+    fn invalid_v7_default_pin_level_is_rejected_without_replacing_the_source_file() {
         let path = path("invalid-v6-default-pin-level.bin");
         let store = SettingsStore::new(path.clone());
         let _ = std::fs::remove_file(&path);
@@ -642,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_v6_ocr_confidence_threshold_repairs_without_losing_other_fields() {
+    fn invalid_v7_ocr_confidence_threshold_repairs_without_losing_other_fields() {
         let settings = AppSettings {
             ocr_confidence_threshold: 85,
             region_hotkey: HotkeyBinding::new(HotkeyModifiers::CONTROL, HotkeyCode::KeyR),
@@ -691,7 +783,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_v6_export_format_is_rejected_without_replacing_the_source_file() {
+    fn invalid_v7_export_format_is_rejected_without_replacing_the_source_file() {
         let path = path("invalid-v6-export-format.bin");
         let store = SettingsStore::new(path.clone());
         let _ = std::fs::remove_file(&path);
@@ -707,7 +799,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_v6_jpeg_quality_repairs_without_losing_other_fields() {
+    fn invalid_v7_jpeg_quality_repairs_without_losing_other_fields() {
         let settings = AppSettings {
             export_format: ExportImageFormat::Jpeg,
             jpeg_quality: 75,
@@ -789,6 +881,14 @@ mod tests {
         bytes[20] = region_hotkey.code.to_wire();
         bytes[21] = full_display_hotkey.modifiers.to_wire();
         bytes[22] = full_display_hotkey.code.to_wire();
+        bytes
+    }
+
+    fn legacy_v6_bytes(settings: AppSettings) -> [u8; V6_RECORD_LEN] {
+        let current = encode(settings).expect("encode current settings");
+        let mut bytes = [0u8; V6_RECORD_LEN];
+        bytes.copy_from_slice(&current[..V6_RECORD_LEN]);
+        bytes[8..10].copy_from_slice(&6u16.to_le_bytes());
         bytes
     }
 }

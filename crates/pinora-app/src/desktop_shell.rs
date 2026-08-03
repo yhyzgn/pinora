@@ -22,8 +22,8 @@ use crate::export_name::ExportNameAllocator;
 use crate::frame_cache::{FrameCache, rgba_to_xrgb, rgba_to_xrgb_and_dim};
 use crate::history_browser::{HistoryPanelAction, HistoryPanelKey};
 use crate::history_export::{
-    HistoryExportCandidate, cleanup_history_tombstones, clear_history_entries,
-    delete_history_entry, history_candidate_for_export, load_history_index,
+    HistoryExportCandidate, clear_history_entries, delete_history_entry,
+    history_candidate_for_export, load_history_index, reconcile_history_policy,
     record_history_candidate,
 };
 use crate::history_load_job::{
@@ -84,6 +84,7 @@ const OCR_JOB_TIMEOUT_MS: u64 = 30_000;
 const EXPORT_JOB_TIMEOUT_MS: u64 = 30_000;
 const HISTORY_LOAD_TIMEOUT_MS: u64 = 30_000;
 const HISTORY_MAX_BYTES: u64 = u64::MAX;
+const MILLIS_PER_DAY: u64 = 86_400_000;
 
 fn monotonic_ms() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
@@ -92,6 +93,25 @@ fn monotonic_ms() -> u64 {
         .elapsed()
         .as_millis()
         .min(u128::from(u64::MAX)) as u64
+}
+
+fn unix_epoch_ms() -> Option<u64> {
+    SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| duration.as_millis().try_into().ok())
+}
+
+fn history_retention_cutoff_ms(retention_days: u16) -> Option<u64> {
+    unix_epoch_ms().and_then(|now| history_retention_cutoff_from_now(now, retention_days))
+}
+
+fn history_retention_cutoff_from_now(now_ms: u64, retention_days: u16) -> Option<u64> {
+    if retention_days == 0 {
+        return None;
+    }
+    let retention_ms = u64::from(retention_days).checked_mul(MILLIS_PER_DAY)?;
+    Some(now_ms.saturating_sub(retention_ms))
 }
 
 /// 只有原子设置存储明确成功后，历史和诊断窗口才能切换到草稿主题。
@@ -224,16 +244,38 @@ where
         usize::try_from(settings.history_limit).expect("history limit fits usize"),
         HISTORY_MAX_BYTES,
     );
-    let history_index = match load_history_index(&history_store) {
+    let mut history_index = match load_history_index(&history_store) {
         Ok(index) => index,
         Err(error) => {
             eprintln!("pinora: history index invalid ({error}); using empty in-memory index");
             history_store.empty_index()
         }
     };
+    match reconcile_history_policy(
+        &history_store,
+        runtime.export_dir(),
+        &mut history_index,
+        history_retention_cutoff_ms(settings.history_retention_days),
+    ) {
+        Ok(policy) if policy.active_entries_changed() || policy.cleanup.compacted_entries > 0 => {
+            println!(
+                "pinora: history policy quota-evicted={} expired={} removed={} missing={} protected={} failed={} compacted={}",
+                policy.quota_evicted_entries,
+                policy.expired_entries,
+                policy.cleanup.removed_files,
+                policy.cleanup.missing_files,
+                policy.cleanup.protected_files,
+                policy.cleanup.failed_files,
+                policy.cleanup.compacted_entries,
+            );
+        }
+        Ok(_) => {}
+        Err(_) => eprintln!("pinora: history policy reconciliation deferred"),
+    }
     println!(
-        "pinora: settings policy history-limit={} pin-limit={} default-opacity={}% default-always-on-top={} theme={:?}",
+        "pinora: settings policy history-limit={} history-retention-days={} pin-limit={} default-opacity={}% default-always-on-top={} theme={:?}",
         settings.history_limit,
+        settings.history_retention_days,
         settings.pin_limit,
         settings.default_pin_opacity_percent,
         settings.default_pin_always_on_top,
@@ -2054,30 +2096,28 @@ where
                 let max_bytes = self.history_store.max_bytes();
                 self.history_store
                     .set_limits(draft.history_limit as usize, max_bytes);
-                let evicted = self
-                    .history_index
-                    .set_limits(draft.history_limit as usize, max_bytes);
-                if !evicted.is_empty() {
-                    if self.history_store.save(&self.history_index).is_err() {
-                        eprintln!("pinora: history quota update deferred");
-                    } else if let Some(export_dir) = self.runtime.as_ref().map(|rt| rt.export_dir())
-                        && cleanup_history_tombstones(
-                            &self.history_store,
-                            export_dir,
-                            &mut self.history_index,
-                        )
-                        .is_err()
-                    {
-                        eprintln!("pinora: history quota cleanup deferred");
+                let policy_result = self.runtime.as_ref().map(|runtime| {
+                    reconcile_history_policy(
+                        &self.history_store,
+                        runtime.export_dir(),
+                        &mut self.history_index,
+                        history_retention_cutoff_ms(draft.history_retention_days),
+                    )
+                });
+                match policy_result {
+                    Some(Ok(policy)) if policy.active_entries_changed() => {
+                        self.cancel_history_loads();
+                        let active_entries = self.history_index.active_entries().cloned().collect();
+                        if let Some(history) = self.history.as_mut() {
+                            history.clear_preview();
+                            history.panel_mut().replace_entries(active_entries);
+                            history.request_redraw();
+                        }
+                        self.queue_history_load(HistoryLoadIntent::Preview);
                     }
-                    self.cancel_history_loads();
-                    let active_entries = self.history_index.active_entries().cloned().collect();
-                    if let Some(history) = self.history.as_mut() {
-                        history.clear_preview();
-                        history.panel_mut().replace_entries(active_entries);
-                        history.request_redraw();
-                    }
-                    self.queue_history_load(HistoryLoadIntent::Preview);
+                    Some(Ok(_)) => {}
+                    Some(Err(_)) => eprintln!("pinora: history policy update deferred"),
+                    None => {}
                 }
                 if let Some(settings) = self.settings.as_mut() {
                     settings.mark_saved();
@@ -3784,29 +3824,33 @@ where
                                             self.history_index.active_count(),
                                             inserted.evicted.len()
                                         );
-                                        if let Some(export_dir) = self
-                                            .runtime
-                                            .as_ref()
-                                            .map(|runtime| runtime.export_dir().clone())
-                                        {
-                                            match cleanup_history_tombstones(
+                                        if let Some(runtime) = self.runtime.as_ref() {
+                                            match reconcile_history_policy(
                                                 &self.history_store,
-                                                &export_dir,
+                                                runtime.export_dir(),
                                                 &mut self.history_index,
+                                                history_retention_cutoff_ms(
+                                                    runtime.settings().history_retention_days,
+                                                ),
                                             ) {
-                                                Ok(cleanup) if cleanup.compacted_entries > 0 => {
+                                                Ok(policy)
+                                                    if policy.active_entries_changed()
+                                                        || policy.cleanup.compacted_entries > 0 =>
+                                                {
                                                     println!(
-                                                        "pinora: history cleanup removed={} missing={} protected={} failed={} compacted={}",
-                                                        cleanup.removed_files,
-                                                        cleanup.missing_files,
-                                                        cleanup.protected_files,
-                                                        cleanup.failed_files,
-                                                        cleanup.compacted_entries
+                                                        "pinora: history policy quota-evicted={} expired={} removed={} missing={} protected={} failed={} compacted={}",
+                                                        policy.quota_evicted_entries,
+                                                        policy.expired_entries,
+                                                        policy.cleanup.removed_files,
+                                                        policy.cleanup.missing_files,
+                                                        policy.cleanup.protected_files,
+                                                        policy.cleanup.failed_files,
+                                                        policy.cleanup.compacted_entries,
                                                     );
                                                 }
                                                 Ok(_) => {}
                                                 Err(_) => eprintln!(
-                                                    "pinora: history cleanup index write failed"
+                                                    "pinora: history policy reconciliation deferred"
                                                 ),
                                             }
                                         }
@@ -6622,6 +6666,17 @@ mod overlay_scale_tests {
             ocr: HistoryOcrState::Unknown,
         })
         .expect("history entry")
+    }
+
+    #[test]
+    fn history_retention_cutoff_is_saturating_and_rejects_invalid_zero_days() {
+        let now = 40 * MILLIS_PER_DAY;
+        assert_eq!(
+            history_retention_cutoff_from_now(now, 30),
+            Some(10 * MILLIS_PER_DAY)
+        );
+        assert_eq!(history_retention_cutoff_from_now(1, 30), Some(0));
+        assert_eq!(history_retention_cutoff_from_now(now, 0), None);
     }
 
     #[test]

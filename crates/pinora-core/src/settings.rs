@@ -1,8 +1,11 @@
 //! 版本化本地设置的纯领域模型。
 
 /// 当前设置 schema 版本。
-pub const SETTINGS_SCHEMA_VERSION: u16 = 6;
+pub const SETTINGS_SCHEMA_VERSION: u16 = 7;
 pub const DEFAULT_HISTORY_LIMIT: u32 = 100;
+pub const DEFAULT_HISTORY_RETENTION_DAYS: u16 = 30;
+pub const HISTORY_RETENTION_DAYS_MIN: u16 = 1;
+pub const HISTORY_RETENTION_DAYS_MAX: u16 = 3650;
 pub const DEFAULT_PIN_LIMIT: u16 = 10;
 pub const DEFAULT_PIN_OPACITY_PERCENT: u8 = 100;
 pub const DEFAULT_PIN_ALWAYS_ON_TOP: bool = true;
@@ -360,6 +363,8 @@ pub struct AppSettings {
     pub schema_version: u16,
     pub theme: ThemeMode,
     pub history_limit: u32,
+    /// 受管历史 PNG 的最大保留时长；范围为 1..=3650 天。
+    pub history_retention_days: u16,
     pub pin_limit: u16,
     pub default_pin_opacity_percent: u8,
     pub default_pin_always_on_top: bool,
@@ -380,6 +385,7 @@ impl Default for AppSettings {
             schema_version: SETTINGS_SCHEMA_VERSION,
             theme: ThemeMode::System,
             history_limit: DEFAULT_HISTORY_LIMIT,
+            history_retention_days: DEFAULT_HISTORY_RETENTION_DAYS,
             pin_limit: DEFAULT_PIN_LIMIT,
             default_pin_opacity_percent: DEFAULT_PIN_OPACITY_PERCENT,
             default_pin_always_on_top: DEFAULT_PIN_ALWAYS_ON_TOP,
@@ -406,7 +412,10 @@ pub struct SettingsRepairs {
     pub migrated_from_v4: bool,
     /// v5 设置成功按默认新增导出格式和 JPEG 质量字段；下次保存会原子替换为当前记录。
     pub migrated_from_v5: bool,
+    /// v6 设置成功按默认新增历史保留天数字段；下次保存会原子替换为当前记录。
+    pub migrated_from_v6: bool,
     pub history_limit: bool,
+    pub history_retention_days: bool,
     pub pin_limit: bool,
     pub default_pin_opacity_percent: bool,
     pub ocr_confidence_threshold: bool,
@@ -422,7 +431,9 @@ impl SettingsRepairs {
             && !self.migrated_from_v3
             && !self.migrated_from_v4
             && !self.migrated_from_v5
+            && !self.migrated_from_v6
             && !self.history_limit
+            && !self.history_retention_days
             && !self.pin_limit
             && !self.default_pin_opacity_percent
             && !self.ocr_confidence_threshold
@@ -439,6 +450,12 @@ impl AppSettings {
         if !(1..=10_000).contains(&self.history_limit) {
             self.history_limit = DEFAULT_HISTORY_LIMIT;
             repairs.history_limit = true;
+        }
+        if !(HISTORY_RETENTION_DAYS_MIN..=HISTORY_RETENTION_DAYS_MAX)
+            .contains(&self.history_retention_days)
+        {
+            self.history_retention_days = DEFAULT_HISTORY_RETENTION_DAYS;
+            repairs.history_retention_days = true;
         }
         if !(1..=100).contains(&self.pin_limit) {
             self.pin_limit = DEFAULT_PIN_LIMIT;
@@ -494,6 +511,7 @@ mod tests {
             schema_version: SETTINGS_SCHEMA_VERSION,
             theme: ThemeMode::Dark,
             history_limit: 0,
+            history_retention_days: 0,
             pin_limit: 101,
             default_pin_opacity_percent: 14,
             default_pin_always_on_top: false,
@@ -507,12 +525,17 @@ mod tests {
         .with_repaired_values();
 
         assert_eq!(settings.history_limit, DEFAULT_HISTORY_LIMIT);
+        assert_eq!(
+            settings.history_retention_days,
+            DEFAULT_HISTORY_RETENTION_DAYS
+        );
         assert_eq!(settings.pin_limit, DEFAULT_PIN_LIMIT);
         assert_eq!(
             settings.default_pin_opacity_percent,
             DEFAULT_PIN_OPACITY_PERCENT
         );
         assert!(repairs.history_limit);
+        assert!(repairs.history_retention_days);
         assert!(repairs.pin_limit);
         assert!(repairs.default_pin_opacity_percent);
         assert_eq!(

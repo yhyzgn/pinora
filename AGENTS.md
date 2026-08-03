@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/095_pin_mouse_passthrough.md`
-- 任务：`.context/tasks/095_pin_mouse_passthrough.md`
+- 计划：`.context/plans/096_history_retention_days.md`
+- 任务：`.context/tasks/096_history_retention_days.md`
 
 ## 交付要求
 

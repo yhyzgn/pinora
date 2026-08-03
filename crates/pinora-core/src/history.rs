@@ -248,6 +248,21 @@ impl HistoryIndex {
         evicted
     }
 
+    /// 将创建时间早于截止 Unix 毫秒的活动条目标记为 tombstone。
+    ///
+    /// 截止时间由应用层根据已验证的系统时钟计算；领域层不读取系统时间，也不依赖
+    /// 设置格式。等于截止时间的条目仍在保留窗口内，方便调用方稳定处理边界。
+    pub fn expire_before(&mut self, cutoff_ms: u64) -> Vec<HistoryEntry> {
+        let mut expired = Vec::new();
+        for entry in &mut self.entries {
+            if entry.is_active() && entry.created_at_ms < cutoff_ms {
+                entry.mark_tombstone();
+                expired.push(entry.clone());
+            }
+        }
+        expired
+    }
+
     pub fn insert(&mut self, entry: HistoryEntry) -> Result<HistoryInsert, &'static str> {
         entry.validate()?;
         if !entry.is_active() {
@@ -457,6 +472,35 @@ mod tests {
         assert_eq!(evicted.len(), 1);
         assert_eq!(evicted[0].image_id, ImageId::from_raw(10));
         assert_eq!(index.active_count(), 1);
+    }
+
+    #[test]
+    fn expiration_marks_only_active_entries_strictly_before_cutoff() {
+        let mut index = HistoryIndex::new(4, 100);
+        index
+            .insert(entry(10, 100, 4, ContentDigest::of(b"expired")))
+            .expect("insert expired");
+        index
+            .insert(entry(11, 200, 4, ContentDigest::of(b"boundary")))
+            .expect("insert boundary");
+        index
+            .insert(entry(12, 300, 4, ContentDigest::of(b"future")))
+            .expect("insert future");
+        index
+            .mark_deleted(ImageId::from_raw(12))
+            .expect("mark existing tombstone");
+
+        let expired = index.expire_before(200);
+
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].image_id, ImageId::from_raw(10));
+        assert_eq!(index.active_count(), 1);
+        assert_eq!(index.entries()[0].image_id, ImageId::from_raw(12));
+        assert_eq!(index.entries()[0].state, HistoryEntryState::Tombstone);
+        assert_eq!(index.entries()[1].image_id, ImageId::from_raw(11));
+        assert!(index.entries()[1].is_active());
+        assert_eq!(index.entries()[2].image_id, ImageId::from_raw(10));
+        assert_eq!(index.entries()[2].state, HistoryEntryState::Tombstone);
     }
 
     #[test]

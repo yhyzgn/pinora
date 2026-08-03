@@ -33,6 +33,22 @@ pub(crate) struct HistoryCleanup {
     pub compacted_entries: usize,
 }
 
+/// 一次历史策略协调的非内容摘要。
+///
+/// 计数只用于受控运行日志和界面刷新决策，不携带路径、图像或 OCR 内容。
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct HistoryPolicyReconcile {
+    pub quota_evicted_entries: usize,
+    pub expired_entries: usize,
+    pub cleanup: HistoryCleanup,
+}
+
+impl HistoryPolicyReconcile {
+    pub const fn active_entries_changed(&self) -> bool {
+        self.quota_evicted_entries != 0 || self.expired_entries != 0
+    }
+}
+
 pub(crate) fn load_history_index(store: &HistoryStore) -> Result<HistoryIndex, String> {
     match store.load() {
         HistoryLoad::Missing(index) | HistoryLoad::Loaded(index) => Ok(index),
@@ -112,6 +128,40 @@ pub(crate) fn record_history_candidate(
         return Err(format!("save history index: {error}"));
     }
     Ok(inserted)
+}
+
+/// Apply the active history quotas and optional time cutoff, then finish any durable tombstones.
+///
+/// New tombstones are first persisted as an atomic index update. On that write failure the entire
+/// in-memory policy change is restored. File cleanup remains the second phase so failures retain
+/// durable tombstones for a later retry and cannot silently lose deletion intent.
+pub(crate) fn reconcile_history_policy(
+    store: &HistoryStore,
+    export_dir: &Path,
+    index: &mut HistoryIndex,
+    retention_cutoff_ms: Option<u64>,
+) -> Result<HistoryPolicyReconcile, String> {
+    let previous = index.clone();
+    let quota_evicted_entries = index
+        .set_limits(store.max_entries(), store.max_bytes())
+        .len();
+    let expired_entries = retention_cutoff_ms
+        .map(|cutoff_ms| index.expire_before(cutoff_ms).len())
+        .unwrap_or(0);
+
+    if (quota_evicted_entries != 0 || expired_entries != 0)
+        && let Err(error) = store.save(index)
+    {
+        *index = previous;
+        return Err(format!("save history policy tombstones: {error}"));
+    }
+
+    let cleanup = cleanup_history_tombstones(store, export_dir, index)?;
+    Ok(HistoryPolicyReconcile {
+        quota_evicted_entries,
+        expired_entries,
+        cleanup,
+    })
 }
 
 /// Remove only tombstoned files directly below the managed export directory, then persist their
@@ -544,6 +594,62 @@ mod tests {
         assert_eq!(index.entries().len(), 1);
         assert_eq!(index.entries()[0].file_name, "active.png");
         assert!(matches!(store.load(), HistoryLoad::Loaded(loaded) if loaded == index));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retention_policy_expires_old_managed_entry_and_preserves_boundary_and_external_files() {
+        let root = temp_root("retention");
+        let export_dir = root.join("exports");
+        fs::create_dir_all(&export_dir).expect("create exports");
+        fs::write(export_dir.join("old.png"), b"old").expect("write old export");
+        fs::write(export_dir.join("boundary.png"), b"boundary").expect("write boundary export");
+        fs::write(root.join("external.png"), b"external").expect("write external export");
+        let store = HistoryStore::new(root.join("history.bin"), 10, u64::MAX);
+        let mut index = store.empty_index();
+        index
+            .insert(history_entry(100, "old.png", b"old"))
+            .expect("insert old");
+        index
+            .insert(history_entry(200, "boundary.png", b"boundary"))
+            .expect("insert boundary");
+        store.save(&index).expect("save history");
+
+        let policy = reconcile_history_policy(&store, &export_dir, &mut index, Some(200))
+            .expect("reconcile retention");
+
+        assert_eq!(policy.expired_entries, 1);
+        assert_eq!(policy.cleanup.removed_files, 1);
+        assert_eq!(policy.cleanup.compacted_entries, 1);
+        assert!(!export_dir.join("old.png").exists());
+        assert!(export_dir.join("boundary.png").is_file());
+        assert!(root.join("external.png").is_file());
+        assert_eq!(index.active_count(), 1);
+        assert_eq!(index.entries()[0].file_name, "boundary.png");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retention_policy_index_save_failure_rolls_back_and_keeps_managed_file() {
+        let root = temp_root("retention-rollback");
+        let export_dir = root.join("exports");
+        fs::create_dir_all(&export_dir).expect("create exports");
+        fs::write(export_dir.join("old.png"), b"old").expect("write old export");
+        let blocked_parent = root.join("blocked-parent");
+        fs::write(&blocked_parent, b"not a directory").expect("block history parent");
+        let store = HistoryStore::new(blocked_parent.join("history.bin"), 10, u64::MAX);
+        let mut index = store.empty_index();
+        index
+            .insert(history_entry(100, "old.png", b"old"))
+            .expect("insert old");
+        let before = index.clone();
+
+        let error = reconcile_history_policy(&store, &export_dir, &mut index, Some(200))
+            .expect_err("policy save fails");
+
+        assert!(error.contains("save history policy tombstones"));
+        assert_eq!(index, before);
+        assert!(export_dir.join("old.png").is_file());
         let _ = fs::remove_dir_all(root);
     }
 

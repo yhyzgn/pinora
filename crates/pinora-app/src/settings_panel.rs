@@ -4,8 +4,9 @@
 //! [`SettingsPanelAction`]，并在确认保存后调用 `SettingsStore`。
 
 use pinora_core::{
-    AppSettings, ExportImageFormat, HotkeyBinding, OcrLanguage, PixelPoint, PixelRect,
-    REGION_ALTERNATE_HOTKEY, REGION_SECONDARY_HOTKEY, ThemeMode,
+    AppSettings, ExportImageFormat, HISTORY_RETENTION_DAYS_MAX, HISTORY_RETENTION_DAYS_MIN,
+    HotkeyBinding, OcrLanguage, PixelPoint, PixelRect, REGION_ALTERNATE_HOTKEY,
+    REGION_SECONDARY_HOTKEY, ThemeMode,
 };
 
 use crate::panel_theme::PanelTheme;
@@ -26,6 +27,7 @@ const BUTTON_Y: i32 = PANEL_HEIGHT as i32 - 64;
 pub enum SettingField {
     Theme,
     HistoryLimit,
+    HistoryRetentionDays,
     PinLimit,
     PinOpacity,
     DefaultPinAlwaysOnTop,
@@ -38,9 +40,10 @@ pub enum SettingField {
 }
 
 impl SettingField {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Theme,
         Self::HistoryLimit,
+        Self::HistoryRetentionDays,
         Self::PinLimit,
         Self::PinOpacity,
         Self::DefaultPinAlwaysOnTop,
@@ -56,15 +59,16 @@ impl SettingField {
         match self {
             Self::Theme => 0,
             Self::HistoryLimit => 1,
-            Self::PinLimit => 2,
-            Self::PinOpacity => 3,
-            Self::DefaultPinAlwaysOnTop => 4,
-            Self::OcrLanguage => 5,
-            Self::OcrConfidenceThreshold => 6,
-            Self::ExportFormat => 7,
-            Self::JpegQuality => 8,
-            Self::RegionHotkey => 9,
-            Self::FullDisplayHotkey => 10,
+            Self::HistoryRetentionDays => 2,
+            Self::PinLimit => 3,
+            Self::PinOpacity => 4,
+            Self::DefaultPinAlwaysOnTop => 5,
+            Self::OcrLanguage => 6,
+            Self::OcrConfidenceThreshold => 7,
+            Self::ExportFormat => 8,
+            Self::JpegQuality => 9,
+            Self::RegionHotkey => 10,
+            Self::FullDisplayHotkey => 11,
         }
     }
 
@@ -72,6 +76,7 @@ impl SettingField {
         match self {
             Self::Theme => "THEME",
             Self::HistoryLimit => "HISTORY LIMIT",
+            Self::HistoryRetentionDays => "HISTORY RETENTION",
             Self::PinLimit => "PIN LIMIT",
             Self::PinOpacity => "PIN OPACITY",
             Self::DefaultPinAlwaysOnTop => "PIN ALWAYS ON TOP",
@@ -252,6 +257,15 @@ impl SettingsPanel {
                 self.draft.history_limit =
                     step_u32(self.draft.history_limit, direction, 1, 10_000, 10);
             }
+            SettingField::HistoryRetentionDays => {
+                self.draft.history_retention_days = step_u16(
+                    self.draft.history_retention_days,
+                    direction,
+                    HISTORY_RETENTION_DAYS_MIN,
+                    HISTORY_RETENTION_DAYS_MAX,
+                    1,
+                );
+            }
             SettingField::PinLimit => {
                 self.draft.pin_limit = step_u16(self.draft.pin_limit, direction, 1, 100, 1);
             }
@@ -414,6 +428,9 @@ impl SettingsPanel {
                 ThemeMode::Dark => "DARK".into(),
             },
             SettingField::HistoryLimit => format!("{} ITEMS", self.draft.history_limit),
+            SettingField::HistoryRetentionDays => {
+                format!("{} DAYS", self.draft.history_retention_days)
+            }
             SettingField::PinLimit => format!("{} PINS", self.draft.pin_limit),
             SettingField::PinOpacity => format!("{}%", self.draft.default_pin_opacity_percent),
             SettingField::DefaultPinAlwaysOnTop => {
@@ -968,6 +985,34 @@ mod tests {
     }
 
     #[test]
+    fn history_retention_steps_within_configured_day_bounds() {
+        let mut panel = SettingsPanel::new(AppSettings::default());
+        panel.select(SettingField::HistoryRetentionDays);
+
+        panel.step(-1);
+        assert_eq!(panel.draft().history_retention_days, 29);
+        assert_eq!(
+            panel.value_label(SettingField::HistoryRetentionDays),
+            "29 DAYS"
+        );
+
+        for _ in 0..4_000 {
+            panel.step(1);
+        }
+        assert_eq!(
+            panel.draft().history_retention_days,
+            HISTORY_RETENTION_DAYS_MAX
+        );
+        for _ in 0..4_000 {
+            panel.step(-1);
+        }
+        assert_eq!(
+            panel.draft().history_retention_days,
+            HISTORY_RETENTION_DAYS_MIN
+        );
+    }
+
+    #[test]
     fn export_format_cycles_and_jpeg_quality_stays_within_valid_range() {
         let mut panel = SettingsPanel::new(AppSettings::default());
         panel.select(SettingField::ExportFormat);
@@ -1046,6 +1091,7 @@ mod tests {
     #[test]
     fn expanded_panel_keeps_default_pin_level_row_above_the_action_buttons() {
         assert!(SettingField::DefaultPinAlwaysOnTop.row_rect().bottom() <= save_rect().origin.y);
+        assert!(SettingField::HistoryRetentionDays.row_rect().bottom() <= save_rect().origin.y);
         assert!(SettingField::OcrConfidenceThreshold.row_rect().bottom() <= save_rect().origin.y);
         assert!(SettingField::ExportFormat.row_rect().bottom() <= save_rect().origin.y);
         assert!(SettingField::JpegQuality.row_rect().bottom() <= save_rect().origin.y);
