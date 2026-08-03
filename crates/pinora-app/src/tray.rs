@@ -22,6 +22,7 @@ const EMPTY_PIN_LIST_LABEL: &str = "没有打开的贴图";
 pub(crate) struct TrayPinListEntry {
     pub pin_id: PinId,
     pub visible: bool,
+    pub mouse_passthrough: bool,
     pub last_used: u64,
 }
 
@@ -212,7 +213,11 @@ impl AppTray {
         }
 
         for (index, entry) in entries.iter().enumerate() {
-            let item = MenuItem::new(pin_list_label(index, entry.visible), true, None);
+            let item = MenuItem::new(
+                pin_list_label(index, entry.visible, entry.mouse_passthrough),
+                true,
+                None,
+            );
             self.pin_list_menu
                 .append(&item)
                 .map_err(|error| format!("pin list append item: {error}"))?;
@@ -490,8 +495,13 @@ fn pin_list_action(menu_id: &MenuId, pin_list_ids: &[(MenuId, PinId)]) -> Option
         .map(|(_, pin_id)| TrayAction::ActivatePin(*pin_id))
 }
 
-fn pin_list_label(index: usize, visible: bool) -> String {
-    let state = if visible { "可见" } else { "已隐藏" };
+fn pin_list_label(index: usize, visible: bool, mouse_passthrough: bool) -> String {
+    let state = match (visible, mouse_passthrough) {
+        (true, false) => "可见",
+        (false, false) => "已隐藏",
+        (true, true) => "鼠标穿透",
+        (false, true) => "已隐藏，鼠标穿透",
+    };
     format!("贴图 {}（{state}）", index + 1)
 }
 
@@ -731,12 +741,16 @@ mod tests {
 
     #[test]
     fn pin_list_labels_are_generic_and_report_visibility_without_content() {
-        let visible = pin_list_label(0, true);
-        let hidden = pin_list_label(1, false);
+        let visible = pin_list_label(0, true, false);
+        let hidden = pin_list_label(1, false, false);
+        let passthrough = pin_list_label(2, true, true);
+        let hidden_passthrough = pin_list_label(3, false, true);
 
         assert_eq!(visible, "贴图 1（可见）");
         assert_eq!(hidden, "贴图 2（已隐藏）");
-        for label in [visible, hidden] {
+        assert_eq!(passthrough, "贴图 3（鼠标穿透）");
+        assert_eq!(hidden_passthrough, "贴图 4（已隐藏，鼠标穿透）");
+        for label in [visible, hidden, passthrough, hidden_passthrough] {
             assert!(!label.contains("pin-"));
             assert!(!label.contains("Pinora-pin-"));
             assert!(!label.contains("/home/"));
@@ -749,11 +763,13 @@ mod tests {
             TrayPinListEntry {
                 pin_id: PinId::from_raw(20),
                 visible: false,
+                mouse_passthrough: false,
                 last_used: 4,
             },
             TrayPinListEntry {
                 pin_id: PinId::from_raw(3),
                 visible: true,
+                mouse_passthrough: false,
                 last_used: 4,
             },
         ];
@@ -771,11 +787,13 @@ mod tests {
             TrayPinListEntry {
                 pin_id: PinId::from_raw(3),
                 visible: true,
+                mouse_passthrough: false,
                 last_used: 4,
             },
             TrayPinListEntry {
                 pin_id: PinId::from_raw(20),
                 visible: false,
+                mouse_passthrough: false,
                 last_used: 9,
             },
         ];

@@ -21,6 +21,7 @@ pub(crate) enum PinMenuAction {
     OpacityDown,
     OpacityUp,
     ToggleAlwaysOnTop,
+    ToggleMousePassthrough,
     Save,
     Close,
 }
@@ -54,6 +55,7 @@ impl PinContextMenu {
             (PinMenuAction::OpacityDown, !locked),
             (PinMenuAction::OpacityUp, !locked),
             (PinMenuAction::ToggleAlwaysOnTop, true),
+            (PinMenuAction::ToggleMousePassthrough, true),
             (PinMenuAction::Save, true),
             (PinMenuAction::Close, true),
         ];
@@ -157,6 +159,7 @@ fn label(action: PinMenuAction, locked: bool, always_on_top: bool) -> &'static s
         PinMenuAction::OpacityUp => "DIM +",
         PinMenuAction::ToggleAlwaysOnTop if always_on_top => "TOP",
         PinMenuAction::ToggleAlwaysOnTop => "BASE",
+        PinMenuAction::ToggleMousePassthrough => "PASS",
         PinMenuAction::Save => "SAVE",
         PinMenuAction::Close => "CLOSE",
     }
@@ -208,7 +211,7 @@ mod tests {
         assert!(menu.bounds.origin.y >= 0);
         assert!(menu.bounds.right() <= 200);
         assert!(menu.bounds.bottom() <= 120);
-        assert_eq!(menu.items.len(), 10);
+        assert_eq!(menu.items.len(), 11);
     }
 
     #[test]
@@ -225,6 +228,7 @@ mod tests {
         assert!(enabled(PinMenuAction::Copy));
         assert!(enabled(PinMenuAction::Ocr));
         assert!(enabled(PinMenuAction::ToggleLock));
+        assert!(enabled(PinMenuAction::ToggleMousePassthrough));
         assert!(enabled(PinMenuAction::Close));
         assert!(!enabled(PinMenuAction::Edit));
         assert!(!enabled(PinMenuAction::FitToImage));
@@ -240,6 +244,17 @@ mod tests {
             menu.items
                 .iter()
                 .any(|item| { item.action == PinMenuAction::FitToImage && item.enabled })
+        );
+    }
+
+    #[test]
+    fn unlocked_menu_offers_mouse_passthrough() {
+        let menu = PinContextMenu::open(PixelPoint::new(0, 0), 320, 320, false);
+
+        assert!(
+            menu.items.iter().any(|item| {
+                item.action == PinMenuAction::ToggleMousePassthrough && item.enabled
+            })
         );
     }
 

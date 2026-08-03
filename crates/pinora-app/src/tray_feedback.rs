@@ -32,6 +32,9 @@ pub(crate) enum TrayFeedback {
     ExportCancelled(TrayExportOperation),
     ExportCompleted(TrayExportOperation),
     ExportFailed(TrayExportOperation, ErrorCode),
+    PinMousePassthroughEnabled,
+    PinMouseInteractionRestored,
+    PinMousePassthroughUnavailable,
 }
 
 impl TrayFeedback {
@@ -54,6 +57,9 @@ impl TrayFeedback {
             Self::ExportCancelled(operation) => export_cancelled_label(operation),
             Self::ExportCompleted(operation) => export_completed_label(operation),
             Self::ExportFailed(operation, error) => export_failed_label(operation, error),
+            Self::PinMousePassthroughEnabled => "Pinora - 贴图已启用鼠标穿透",
+            Self::PinMouseInteractionRestored => "Pinora - 贴图鼠标交互已恢复",
+            Self::PinMousePassthroughUnavailable => "Pinora - 贴图鼠标穿透不可用",
         }
     }
 
@@ -77,6 +83,9 @@ impl TrayFeedback {
             Self::ExportCancelled(_) => "EXPORT CANCELLED",
             Self::ExportCompleted(_) => "EXPORT COMPLETED",
             Self::ExportFailed(_, _) => "EXPORT FAILED",
+            Self::PinMousePassthroughEnabled => "PIN MOUSE PASSTHROUGH ENABLED",
+            Self::PinMouseInteractionRestored => "PIN MOUSE INTERACTION RESTORED",
+            Self::PinMousePassthroughUnavailable => "PIN MOUSE PASSTHROUGH UNAVAILABLE",
         }
     }
 
@@ -87,6 +96,7 @@ impl TrayFeedback {
             | Self::DelayedCaptureFailed(error)
             | Self::OcrFailed(error)
             | Self::ExportFailed(_, error) => Some(error),
+            Self::PinMousePassthroughUnavailable => Some(ErrorCode::CapabilityUnavailable),
             Self::Ready
             | Self::CapturePreparing
             | Self::CaptureReady
@@ -98,7 +108,9 @@ impl TrayFeedback {
             | Self::ExportRunning(_)
             | Self::ExportCancelling(_)
             | Self::ExportCancelled(_)
-            | Self::ExportCompleted(_) => None,
+            | Self::ExportCompleted(_)
+            | Self::PinMousePassthroughEnabled
+            | Self::PinMouseInteractionRestored => None,
         }
     }
 }
@@ -208,6 +220,9 @@ mod tests {
             TrayFeedback::ExportCompleted(TrayExportOperation::CopyText),
             TrayFeedback::ExportFailed(TrayExportOperation::SaveFile, ErrorCode::Internal),
             TrayFeedback::ExportFailed(TrayExportOperation::CopyImage, ErrorCode::ClipboardFailed),
+            TrayFeedback::PinMousePassthroughEnabled,
+            TrayFeedback::PinMouseInteractionRestored,
+            TrayFeedback::PinMousePassthroughUnavailable,
         ];
 
         for status in feedback {
@@ -252,5 +267,21 @@ mod tests {
         assert_eq!(failure.diagnostic_label(), "EXPORT FAILED");
         assert_eq!(failure.error_code(), Some(ErrorCode::ClipboardFailed));
         assert_eq!(TrayFeedback::OcrRunning.error_code(), None);
+    }
+
+    #[test]
+    fn pin_mouse_feedback_is_fixed_and_capability_failure_is_explicit() {
+        assert_eq!(
+            TrayFeedback::PinMousePassthroughEnabled.label(),
+            "Pinora - 贴图已启用鼠标穿透"
+        );
+        assert_eq!(
+            TrayFeedback::PinMouseInteractionRestored.diagnostic_label(),
+            "PIN MOUSE INTERACTION RESTORED"
+        );
+        assert_eq!(
+            TrayFeedback::PinMousePassthroughUnavailable.error_code(),
+            Some(ErrorCode::CapabilityUnavailable)
+        );
     }
 }

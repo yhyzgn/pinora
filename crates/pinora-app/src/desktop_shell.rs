@@ -827,6 +827,8 @@ struct PinWin {
     opacity: f64,
     locked: bool,
     always_on_top: bool,
+    /// 仅当前贴图窗口生命周期内的鼠标命中状态，不进入领域或关闭恢复快照。
+    mouse_mode: PinMouseMode,
     context_menu: Option<PinContextMenu>,
     /// winit 没有跨平台的实际可见性查询；这是 Pinora 对自己贴图可见状态的事实记录。
     visible: bool,
@@ -848,6 +850,32 @@ struct PinWin {
     last_primary_press: Option<(Instant, PixelPoint)>,
     /// 最近一次设置给窗口的鼠标形状，避免高频移动重复请求平台资源。
     cursor_icon: CursorIcon,
+}
+
+/// 贴图窗口请求给平台的鼠标命中状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PinMouseMode {
+    Direct,
+    Passthrough,
+}
+
+impl PinMouseMode {
+    const fn hittest_enabled(self) -> bool {
+        matches!(self, Self::Direct)
+    }
+}
+
+/// 平台调用失败时，进程内状态必须保留原值，不能把请求当作已生效。
+const fn pin_mouse_mode_after_platform_request(
+    current: PinMouseMode,
+    requested: PinMouseMode,
+    platform_succeeded: bool,
+) -> PinMouseMode {
+    if platform_succeeded {
+        requested
+    } else {
+        current
+    }
 }
 
 /// 一次贴图尺寸手势的稳定输入。原生协议可用时只用于保持比例；否则在当前窗口内
@@ -1224,6 +1252,7 @@ where
             .map(|pin| TrayPinListEntry {
                 pin_id: pin.pin_id,
                 visible: pin.visible,
+                mouse_passthrough: pin.mouse_mode == PinMouseMode::Passthrough,
                 last_used: pin.last_used,
             })
             .collect();
@@ -1240,11 +1269,23 @@ where
             .iter()
             .find_map(|(window_id, pin)| (pin.pin_id == pin_id).then_some(*window_id));
         let Some(window_id) = window_id else { return };
+        let needs_mouse_interaction_restore = self
+            .pins
+            .get(&window_id)
+            .is_some_and(|pin| pin.mouse_mode == PinMouseMode::Passthrough);
+        if needs_mouse_interaction_restore
+            && !self.request_pin_mouse_mode(window_id, PinMouseMode::Direct)
+        {
+            return;
+        }
         if let Some(pin) = self.pins.get_mut(&window_id) {
             pin.visible = true;
             window_policy::show_auxiliary_window(AuxiliaryWindowKind::Pin, &pin.window, &pin.title);
             pin.window.focus_window();
             pin.window.request_redraw();
+        }
+        if needs_mouse_interaction_restore {
+            self.set_tray_feedback(TrayFeedback::PinMouseInteractionRestored);
         }
         self.mark_pin_recent(window_id);
     }
@@ -4291,6 +4332,7 @@ where
                 opacity: opacity.clamp(0.15, 1.0),
                 locked: false,
                 always_on_top,
+                mouse_mode: PinMouseMode::Direct,
                 context_menu: None,
                 visible: true,
                 last_used,
@@ -4602,6 +4644,10 @@ where
         window_id: WindowId,
         action: PinMenuAction,
     ) {
+        if action == PinMenuAction::ToggleMousePassthrough {
+            self.enable_pin_mouse_passthrough(window_id);
+            return;
+        }
         if let Some(pin) = self.pins.get_mut(&window_id) {
             pin.context_menu = None;
             pin.window.request_redraw();
@@ -4615,9 +4661,53 @@ where
             PinMenuAction::OpacityDown => self.nudge_pin_opacity(window_id, -0.1),
             PinMenuAction::OpacityUp => self.nudge_pin_opacity(window_id, 0.1),
             PinMenuAction::ToggleAlwaysOnTop => self.toggle_pin_always_on_top(window_id),
+            PinMenuAction::ToggleMousePassthrough => {}
             PinMenuAction::Save => self.save_pin_image(window_id),
             PinMenuAction::Close => self.close_pin(window_id),
         }
+    }
+
+    fn enable_pin_mouse_passthrough(&mut self, window_id: WindowId) {
+        if !self.request_pin_mouse_mode(window_id, PinMouseMode::Passthrough) {
+            return;
+        }
+        if let Some(pin) = self.pins.get_mut(&window_id) {
+            pin.context_menu = None;
+            pin.ocr_drag_start = None;
+            pin.ocr_selection = OcrTextSelection::default();
+            pin.last_primary_press = None;
+            pin.window.set_cursor(CursorIcon::Default);
+            pin.cursor_icon = CursorIcon::Default;
+            pin.window.request_redraw();
+        }
+        self.drag_pin = None;
+        self.pin_resize = None;
+        self.set_tray_feedback(TrayFeedback::PinMousePassthroughEnabled);
+        self.refresh_tray_pin_list();
+    }
+
+    /// 先等待平台接受请求，再更新 Pinora 的临时状态；失败不会改变任何贴图状态。
+    fn request_pin_mouse_mode(&mut self, window_id: WindowId, requested: PinMouseMode) -> bool {
+        let Some((current, platform_succeeded)) = self.pins.get(&window_id).map(|pin| {
+            let current = pin.mouse_mode;
+            let platform_succeeded = current == requested
+                || pin
+                    .window
+                    .set_cursor_hittest(requested.hittest_enabled())
+                    .is_ok();
+            (current, platform_succeeded)
+        }) else {
+            return false;
+        };
+        let next = pin_mouse_mode_after_platform_request(current, requested, platform_succeeded);
+        if !platform_succeeded {
+            self.set_tray_feedback(TrayFeedback::PinMousePassthroughUnavailable);
+            return false;
+        }
+        if let Some(pin) = self.pins.get_mut(&window_id) {
+            pin.mouse_mode = next;
+        }
+        true
     }
 
     fn handle_pin_left_press(&mut self, window_id: WindowId) {
@@ -7037,6 +7127,36 @@ mod overlay_scale_tests {
         assert_eq!(next_pin_recency(0), 1);
         assert_eq!(next_pin_recency(41), 42);
         assert_eq!(next_pin_recency(u64::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn pin_mouse_mode_changes_only_after_the_platform_accepts_the_request() {
+        assert!(PinMouseMode::Direct.hittest_enabled());
+        assert!(!PinMouseMode::Passthrough.hittest_enabled());
+        assert_eq!(
+            pin_mouse_mode_after_platform_request(
+                PinMouseMode::Direct,
+                PinMouseMode::Passthrough,
+                true,
+            ),
+            PinMouseMode::Passthrough
+        );
+        assert_eq!(
+            pin_mouse_mode_after_platform_request(
+                PinMouseMode::Direct,
+                PinMouseMode::Passthrough,
+                false,
+            ),
+            PinMouseMode::Direct
+        );
+        assert_eq!(
+            pin_mouse_mode_after_platform_request(
+                PinMouseMode::Passthrough,
+                PinMouseMode::Direct,
+                false,
+            ),
+            PinMouseMode::Passthrough
+        );
     }
 
     #[test]
