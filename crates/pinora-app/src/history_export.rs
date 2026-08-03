@@ -8,7 +8,7 @@ use pinora_core::{
     HistoryEntrySpec, HistoryIndex, HistoryInsert, HistoryOcrState, ImageId, JobOwner, RgbaBuffer,
 };
 
-use crate::export_job::ExportJobInput;
+use crate::ExportJobInput;
 use pinora_storage::{HistoryLoad, HistoryStore};
 
 const MAX_HISTORY_PNG_BYTES: u64 = 128 * 1024 * 1024;
@@ -790,7 +790,7 @@ mod tests {
         fs::create_dir_all(&export_dir).expect("create exports");
         let original = sample_image(ImageId::from_raw(70));
         let path = export_dir.join("saved.png");
-        crate::image_sink::save_png_file(&original, &path).expect("save png");
+        pinora_export::save_png_file(&original, &path).expect("save png");
         let bytes = fs::read(&path).expect("read png");
         let entry = HistoryEntry::new(HistoryEntrySpec {
             image_id: original.id,
@@ -847,7 +847,7 @@ mod tests {
         fs::create_dir_all(&export_dir).expect("create exports");
         let image = sample_image(ImageId::from_raw(72));
         let path = export_dir.join("saved.png");
-        crate::image_sink::save_png_file(&image, &path).expect("save png");
+        pinora_export::save_png_file(&image, &path).expect("save png");
         let bytes = fs::read(&path).expect("read png");
         let store = HistoryStore::new(root.join("history.bin"), 10, u64::MAX);
         let mut index = store.empty_index();

@@ -18,7 +18,6 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::diagnostics_export::{SanitizedDiagnosticReport, write_report};
 use crate::diagnostics_panel::DiagnosticsPanel;
 use crate::diagnostics_window::DiagnosticsWindow;
-use crate::export_job::{ExportJobCompletion, ExportJobInput, ExportJobService};
 use crate::history_browser::{HistoryPanelAction, HistoryPanelKey};
 use crate::history_export::{
     HistoryExportCandidate, clear_history_entries, delete_history_entry,
@@ -39,6 +38,7 @@ use crate::settings_window::SettingsWindow;
 use crate::tray::{AppTray, TrayAction, TrayPinListEntry};
 use crate::tray_capabilities::TrayCapabilitySummary;
 use crate::tray_feedback::{TrayExportOperation, TrayFeedback};
+use crate::{ExportJobCompletion, ExportJobInput, ExportJobService};
 use pinora_capture::{FrameCache, rgba_to_xrgb, rgba_to_xrgb_and_dim};
 use pinora_core::{
     ActionId, AnnotateSession, AnnotateTool, Annotation, AnnotationRevision, AssetGeneration,

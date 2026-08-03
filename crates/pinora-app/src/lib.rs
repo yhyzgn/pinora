@@ -3,11 +3,9 @@
 mod desktop_shell;
 mod diagnostics_export;
 mod diagnostics_window;
-mod export_job;
 mod history_export;
 mod history_load_job;
 mod history_window;
-mod image_sink;
 mod ocr_job;
 mod platform;
 mod runtime;
@@ -20,12 +18,6 @@ pub(crate) use pinora_desktop::{
 };
 
 pub use desktop_shell::run_desktop_shell;
-pub use export_job::{
-    ExportJobCompletion, ExportJobInput, ExportJobService, ExportRunner, LocalExportRunner,
-};
-pub use image_sink::{
-    LocalImageSink, copy_text_to_system_clipboard, detect_system_clipboard_backend,
-};
 pub use ocr_job::{LocalOcrRunner, OcrJobCompletion, OcrJobService, OcrJobStart, OcrRunner};
 pub use pinora_capture::{
     CachedFrame, CaptureBackendKind, FakeCaptureProvider, FrameCache, KdeSpectacleCaptureProvider,
@@ -37,6 +29,10 @@ pub use pinora_desktop::history_browser::{
 pub use pinora_desktop::scaled_window_size;
 pub use pinora_desktop::settings_panel::{
     SettingField, SettingsPanel, SettingsPanelAction, SettingsPanelKey, SettingsPanelStatus,
+};
+pub use pinora_export::{
+    ExportJobCompletion, ExportJobInput, ExportJobService, ExportRunner, LocalExportRunner,
+    LocalImageSink, copy_text_to_system_clipboard, detect_system_clipboard_backend,
 };
 pub use pinora_jobs::{
     AcceptedJobResult, JobCancellation, JobResultDisposition, JobState, JobSupervisor, JobTicket,

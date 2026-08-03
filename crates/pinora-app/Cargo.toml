@@ -14,7 +14,7 @@ pinora-jobs = { workspace = true }
 pinora-storage = { workspace = true }
 pinora-desktop = { workspace = true }
 pinora-ocr = { workspace = true }
-image = { version = "0.25.10", default-features = false, features = ["jpeg", "webp"] }
+pinora-export = { workspace = true }
 png = "0.17"
 winit = "0.30"
 softbuffer = "0.4"

@@ -1,0 +1,13 @@
+[package]
+name = "pinora-export"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pinora export, image sink, and clipboard job boundary"
+
+[dependencies]
+pinora-core = { workspace = true }
+pinora-jobs = { workspace = true }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "webp"] }
+png = "0.17"

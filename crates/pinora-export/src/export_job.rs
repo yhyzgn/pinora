@@ -271,7 +271,8 @@ where
         self.supervisor.cancel_all()
     }
 
-    pub(crate) fn cancel_all_and_wait(&mut self, timeout: Duration) -> WorkerWaitOutcome {
+    /// 取消所有仍在运行的导出任务，并在关闭前等待已启动 worker 收敛。
+    pub fn cancel_all_and_wait(&mut self, timeout: Duration) -> WorkerWaitOutcome {
         let cancelled = self.cancel_all();
         let mut outcome = wait_for_workers(&mut self.workers, timeout);
         outcome.cancelled = cancelled;

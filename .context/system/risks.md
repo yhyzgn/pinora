@@ -586,6 +586,15 @@
 - 回滚或隔离动作：恢复 app 内兼容 re-export 或回退纯 UI 模块引用，不触碰设置、历史、诊断或贴图数据格式。
 - 负责人和状态：Neo；离线 crate 边界和定向测试已验证，真实 GUI、HiDPI、输入法、焦点、tray/taskbar 和性能证据开放。
 
+## R-065：导出与剪贴板 crate 边界已收敛，但真实系统权限仍未验证（中）
+
+- 证据和影响范围：114 已将 `image_sink` 与 `export_job` 迁入 `pinora-export`，导出 worker 继续通过 `pinora-jobs` 监督，app 仅保留请求、结果和关闭编排；`cargo test -p pinora-export -- --nocapture` 25 项通过，1 项真实显示会话剪贴板测试忽略。
+- 触发条件：Windows/macOS/Linux 原生剪贴板权限、Wayland/X11 工具可用性、网络文件系统/权限错误、系统休眠或退出期间的子进程回收与原子 rename 时序。
+- 失败模式：离线编码和 fake runner 测试通过，但真实剪贴板发布失败、目标文件权限不足、进程退出时 worker 未及时收敛或 GUI 反馈延迟。
+- 缓解措施和必需验证：保持目标扩展名与质量校验、内存副本先行、系统剪贴板失败不报告成功、临时文件原子发布、取消/超时后 RAII 回收；在授权 Windows/macOS/X11/KDE Wayland 会话验证图像/文本复制、失败反馈、退出回收、HiDPI 连续导出和 tray-only 窗口隔离。
+- 回滚或隔离动作：恢复 app 内 `image_sink`/`export_job` 模块和导入，不改变导出文件格式、历史索引和任务状态字符串。
+- 负责人和状态：Neo；离线 crate 边界和 workspace 门禁已验证，真实系统剪贴板、权限、性能和原生窗口证据开放。
+
 ## 风险一：上下文漂移
 
 - 触发条件：代码、配置或工作流变化后，没有同步更新对应上下文文件。

@@ -176,7 +176,7 @@ fn rgba_over_white(rgba: &[u8]) -> Vec<u8> {
     rgb
 }
 
-pub(crate) fn save_png_file(image: &CaptureImage, path: &Path) -> Result<(), PinoraError> {
+pub fn save_png_file(image: &CaptureImage, path: &Path) -> Result<(), PinoraError> {
     save_image_file(image, path, ExportImageFormat::Png, 90)
 }
 

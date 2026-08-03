@@ -2512,10 +2512,10 @@ name = "pinora-app"
 version = "0.1.0"
 dependencies = [
  "gtk",
- "image",
  "pinora-capture",
  "pinora-core",
  "pinora-desktop",
+ "pinora-export",
  "pinora-jobs",
  "pinora-ocr",
  "pinora-platform",
@@ -2549,6 +2549,16 @@ version = "0.1.0"
 dependencies = [
  "pinora-core",
  "winit",
+]
+
+[[package]]
+name = "pinora-export"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "pinora-core",
+ "pinora-jobs",
+ "png 0.17.16",
 ]
 
 [[package]]

@@ -37,7 +37,7 @@ impl CapabilityProbe for RuntimeCapabilityProbe {
             "global hotkey: F2/Ctrl+N via global-hotkey when available; else `pinora capture` IPC"
                 .into(),
         );
-        match crate::image_sink::detect_system_clipboard_backend() {
+        match crate::detect_system_clipboard_backend() {
             Some(b) => notes.push(format!("system clipboard: {b} (image/png)")),
             None => {
                 #[cfg(unix)]
@@ -55,8 +55,7 @@ impl CapabilityProbe for RuntimeCapabilityProbe {
         CapabilitySnapshot {
             capture_available: !matches!(self.capture_backend, CaptureBackendKind::Unavailable),
             global_hotkey_available,
-            clipboard_image_available: crate::image_sink::detect_system_clipboard_backend()
-                .is_some(),
+            clipboard_image_available: crate::detect_system_clipboard_backend().is_some(),
             always_on_top_available: false,
             notes,
         }
