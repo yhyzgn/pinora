@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/097_history_max_bytes.md`
-- 任务：`.context/tasks/097_history_max_bytes.md`
+- 计划：`.context/plans/098_release_pipeline_validation.md`
+- 任务：`.context/tasks/098_release_pipeline_validation.md`
 
 ## 交付要求
 

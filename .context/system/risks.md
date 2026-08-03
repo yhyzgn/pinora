@@ -513,6 +513,15 @@
 - 回滚或隔离动作：隐藏容量设置并传入 `u64::MAX` 恢复无限制容量；保留 v8 decoder 读取但不执行容量淘汰，历史索引、tombstone、外部导出、设置原子写入和窗口策略不变。
 - 负责人和状态：Neo；离线 core/codec/面板/历史事务、workspace 门禁与 Windows target 已验证，真实文件系统和原生桌面证据开放。
 
+## R-056：GitHub runner 发布 smoke 不等价于真实桌面发行验收（高）
+
+- 证据和影响范围：098 的 CI run `30782856266` 已在 Linux/macOS/Windows runner 通过 fmt、workspace check、严格 Clippy 和测试；package run `30783019714` 生成并逐项校验三平台资产；runtime-verify run `30783253220` 对同一 package run 完成 `--version` 与适用安装/卸载 smoke。workflow 的 pre-release 资产没有新增业务逻辑。
+- 触发条件：hosted runner 无用户桌面会话、屏幕捕获授权、真实 tray/热键/窗口管理器，且当前资产未配置 Windows 代码签名或 macOS notarization。
+- 失败模式：可下载、可安装和 `--version` 成功的包仍可能在目标用户机器上被 SmartScreen/Gatekeeper 警告，或出现截图权限、tray-only、任务栏/Dock/分页器、Wayland/KWin、HiDPI、焦点和流畅性问题；不能把 package/runtime run 当作完整跨平台产品验收。
+- 缓解措施和必需验证：发布说明固定标注 pre-release、未签名/未公证和真实桌面风险；保留同一 package run 的逐平台清单、runtime 报告和 tag 关联。后续必须在授权的 Windows、macOS、Linux X11、KDE Wayland 会话分别验证启动、热键、截图、Overlay、贴图、tray-only、任务栏/Dock/分页器、关闭和帧时间。
+- 回滚或隔离动作：若运行时验证失败，保留失败 run 与资产证据，修复后创建新的 preview tag；不得删除或覆盖失败证据来伪造发布成功。
+- 负责人和状态：Neo；runner package/runtime smoke 已验证，真实桌面、签名/公证和性能证据开放。
+
 ## 风险一：上下文漂移
 
 - 触发条件：代码、配置或工作流变化后，没有同步更新对应上下文文件。
