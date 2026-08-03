@@ -53,7 +53,7 @@ graph LR
 ```
 
 - `pinora-platform` 唯一拥有 `start_on_login`、`single_instance`、`os_instance`、`hotkey` 和 Linux `wayland_portal`。
-- `pinora-capture` 现唯一拥有 `capture_request` 的截图模式、截图目标、Overlay 初始选区策略和显示器目标解析，以及既有真实后端、显式 fake、`FrameCache` 与 `CapturePreview`；`pinora-app` 只消费该契约并编排实际捕获、失败恢复和窗口生命周期。
+- `pinora-capture` 现唯一拥有 `capture_request` 的截图模式、截图目标、Overlay 初始选区策略和显示器目标解析，以及 `capture_session` 的 `CaptureSessionMode`、平台结果接收、延时清理、失败范围和 Overlay 目标映射，还有既有真实后端、显式 fake、`FrameCache` 与 `CapturePreview`；`pinora-app` 只消费该契约并编排实际捕获、失败恢复和窗口生命周期。
 - `pinora-desktop` 现唯一拥有 `settings_panel`、`history_browser`、`diagnostics_panel`、`overlay_selection_readout`、`overlay_geometry`、`overlay_annotation`、`pin_context_menu` 与 `xrgb` 的纯自绘状态、布局、物理像素坐标、标注投影、脏区裁剪、命中、XRGB 绘制和贴图基础帧缓存；`pinora-app` 通过 crate 导出复用这些模块，但仍持有 Window/Surface。
 - `pinora-desktop` 的 `overlay_input` 现唯一拥有 Overlay 的撤销/重做、文本 Enter、微调步长和双击复制意图判定；`pinora-app` 仍独占 winit 事件分发、标注文档写入、任务提交和窗口生命周期。
 - `pinora-export` 现唯一拥有 `capture_export`、`image_sink` 与 `export_job` 的导出来源、标注合成、图像编码、原子保存、系统剪贴板和受监督导出 worker；`pinora-app` 仅通过 crate re-export 与服务接口使用它们。
@@ -178,6 +178,16 @@ Window/Surface、Panel 状态、主题刷新、输入转发与绘制适配；三
 （6 项）、`cargo test -p pinora-app --lib -- --nocapture`（22 项）、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`、
 `cargo check --workspace`、严格 Clippy、Windows target、`--version`、fmt、diff 与 `ctx validate` 均通过。
 这些离线门禁不证明真实截图权限、窗口管理器、焦点、HiDPI、tray-only 或性能，风险由 R-080 跟踪。
+
+136 捕获会话 crate 已完成：`pinora-capture::capture_session` 唯一拥有 `CaptureSessionMode`、
+`LoadingState`、`DelayedCapture`、失败范围和全部 Overlay 目标映射；新模块只使用标准库、
+`pinora-core` 与既有 capture 契约，不依赖 app、desktop 或 winit。延时快照只保存领域 `PinId`，由
+`desktop_shell` 映射到当前窗口后再设置可见性。`desktop_shell` 继续独占 CaptureProvider 调用、线程、
+FrameCache、Window/Surface、EventLoop、tray 反馈与恢复副作用。`cargo test -p pinora-capture -- --nocapture`
+（39 项通过，1 项真实显示会话忽略）、`cargo test -p pinora-app --lib -- --nocapture`（15 项）、
+`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`、`cargo check --workspace`、严格 Clippy、Windows target、
+`--version`、fmt、diff 与 `ctx validate` 均通过。这些离线门禁不证明真实截图权限、窗口管理器、焦点、
+HiDPI、tray-only 或性能，风险由 R-080 跟踪。
 
 130 导出会话状态模块已完成：`pinora-app::export_session` 唯一拥有 `OverlayFinish`、
 `PendingExportAction`、`FrozenExportTarget`、`PendingExport`、导出来源、文件保存取消筛选、

@@ -724,10 +724,11 @@
 ## R-080：捕获会话状态已拆分，但真实捕获恢复与窗口时序仍未验证（高）
 
 - 证据和影响范围：129 将截图模式、`LoadingState`、延时截止、失败范围和屏幕/虚拟桌面/窗口/历史/贴图编辑 Overlay 目标映射迁入 `pinora-app::capture_session`。该模块不依赖 winit，延时可见性快照改为领域 `PinId`，由 `desktop_shell` 在恢复时映射到当前窗口；实际 CaptureProvider、线程、Window/Surface、EventLoop、tray 反馈和失败恢复仍在 shell。6 项状态测试、app 22 项回归和完整静态门禁通过。
+- 迁移补充：136 已将上述状态从 `pinora-app::capture_session` 迁入 `pinora-capture::capture_session`，并以 `CaptureSessionMode` 明确 crate 契约。模块只使用标准库、`pinora-core` 与 capture 内既有值对象，不依赖 app、desktop、winit 或窗口句柄；capture 39 项（1 项真实显示会话忽略）、app 15 项回归和完整静态门禁通过。
 - 触发条件：真实捕获权限拒绝、窗口目标在截图前失效、显示器热插拔、延时期间贴图被关闭、缓存/冷捕获切换、快速连续热键，或 Windows/macOS/X11/KDE Wayland 的窗口与 tray 调度和离线模型不同。
 - 失败模式：错误的目标 origin/尺寸/初始选区或失败范围可能使窗口/延时截图进入错误恢复路径；延时恢复可能漏显示仍存在的贴图，或在真实窗口映射、焦点、任务栏/Dock/分页器和高 DPI 下出现首帧延迟或可感知卡顿。
-- 缓解措施和必需验证：保持目标构造和失败优先级集中在 `capture_session`，只按开始时记录且当前仍存在的 `PinId` 恢复贴图；在 Windows、macOS、Linux X11、KDE Wayland 原生会话验证缓存/冷捕获、窗口/全部显示器、历史/贴图编辑、延时取消/失败/到期、快速连续触发、任务栏/Dock/分页器、tray、焦点、100%/200% 缩放和帧时间。
-- 回滚或隔离动作：恢复 `desktop_shell` 内会话状态和值对象，并移除 `capture_session`；不改变 CaptureProvider、图像/历史格式、PinId、窗口策略、tray、OCR、导出或设置。
+- 缓解措施和必需验证：保持目标构造和失败优先级集中在 `pinora-capture::capture_session`，只按开始时记录且当前仍存在的 `PinId` 恢复贴图；在 Windows、macOS、Linux X11、KDE Wayland 原生会话验证缓存/冷捕获、窗口/全部显示器、历史/贴图编辑、延时取消/失败/到期、快速连续触发、任务栏/Dock/分页器、tray、焦点、100%/200% 缩放和帧时间。
+- 回滚或隔离动作：移除 `pinora-capture::capture_session` 并恢复 `pinora-app::capture_session`；不改变 CaptureProvider、图像/历史格式、PinId、窗口策略、tray、OCR、导出或设置。
 - 负责人和状态：Neo；离线状态、app、workspace、Clippy、Windows target、版本、格式、差异和上下文门禁已验证，真实捕获、窗口管理器、tray-only 和性能证据开放。
 
 ## R-081：导出会话状态已拆分，但真实外部 IO 与 tray 时序仍未验证（高）

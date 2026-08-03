@@ -1,6 +1,5 @@
 //! Pinora 应用编排：生命周期、单实例与命令分发。
 
-mod capture_session;
 mod desktop_shell;
 mod export_session;
 mod history_session;

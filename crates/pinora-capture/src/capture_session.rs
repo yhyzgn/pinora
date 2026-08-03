@@ -1,17 +1,20 @@
 //! 捕获会话的纯状态和值对象。
 //!
 //! 本模块只描述捕获模式、延时恢复范围和 Overlay 目标。实际捕获、线程、窗口、
-//! EventLoop、托盘和恢复副作用继续由 `desktop_shell` 编排。
+//! EventLoop、托盘和恢复副作用继续由应用桌面壳编排。
 
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
-use pinora_capture::{CapturePreview, CaptureTarget, OverlayInitialSelection};
 use pinora_core::{
     CaptureImage, CaptureWindowInfo, DisplayId, ErrorCode, PinId, PixelPoint, PixelRect, PixelSize,
 };
 
-pub(crate) enum Mode {
+use crate::{CapturePreview, CaptureTarget, OverlayInitialSelection};
+
+/// 捕获会话的瞬态模式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureSessionMode {
     /// 下一帧启动：后台截屏（无全屏遮罩，避免截到自己）。
     StartCapture,
     /// 正在后台截屏，显示小加载窗。
@@ -25,16 +28,13 @@ pub(crate) enum Mode {
 /// `LoadingState` 失败时必须采用的恢复路径。延时会话优先，因为它拥有需要恢复的
 /// 贴图可见性快照；正常和窗口截图不应以失败退出 tray 主循环。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CaptureFailureScope {
+pub enum CaptureFailureScope {
     Standard,
     Window,
     Delayed,
 }
 
-pub(crate) fn capture_failure_scope(
-    target: &CaptureTarget,
-    delayed_active: bool,
-) -> CaptureFailureScope {
+pub fn capture_failure_scope(target: &CaptureTarget, delayed_active: bool) -> CaptureFailureScope {
     if delayed_active {
         CaptureFailureScope::Delayed
     } else if matches!(target, CaptureTarget::Window(_)) {
@@ -46,7 +46,7 @@ pub(crate) fn capture_failure_scope(
 
 /// Overlay 的窗口呈现方式。历史编辑不能假装当前桌面仍是原始全屏捕获。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OverlayPresentation {
+pub enum OverlayPresentation {
     ScreenCapture,
     VirtualDesktop,
     WindowCapture,
@@ -55,58 +55,58 @@ pub(crate) enum OverlayPresentation {
 }
 
 /// 截屏中：后台抓当前屏（无全屏遮罩，避免截到自己）；完成后立刻开真实 overlay。
-pub(crate) struct LoadingState {
+pub struct LoadingState {
     // 后台捕获错误只跨线程传递稳定错误码，避免平台后端文本泄露窗口身份或标题。
-    pub(crate) preview_rx: Receiver<Result<CapturePreview, ErrorCode>>,
-    pub(crate) target: OverlayTarget,
+    pub preview_rx: Receiver<Result<CapturePreview, ErrorCode>>,
+    pub target: OverlayTarget,
 }
 
 /// 延时区域截图的清理所有者。
 ///
 /// 快照只保存倒计时开始时由 Pinora 确认可见的贴图领域 ID；恢复时已经关闭的贴图
 /// 会被忽略，因此不会复活用户已经关闭的贴图。
-pub(crate) struct DelayedCapture {
+pub struct DelayedCapture {
     deadline: Instant,
     hidden_pin_ids: Vec<PinId>,
 }
 
 impl DelayedCapture {
-    pub(crate) fn new(delay: Duration, hidden_pin_ids: Vec<PinId>) -> Self {
+    pub fn new(delay: Duration, hidden_pin_ids: Vec<PinId>) -> Self {
         Self {
             deadline: Instant::now() + delay,
             hidden_pin_ids,
         }
     }
 
-    pub(crate) fn is_due(&self, now: Instant) -> bool {
+    pub fn is_due(&self, now: Instant) -> bool {
         now >= self.deadline
     }
 
-    pub(crate) fn hidden_pin_ids(&self) -> &[PinId] {
+    pub fn hidden_pin_ids(&self) -> &[PinId] {
         &self.hidden_pin_ids
     }
 }
 
 /// 打开 Overlay 所需的捕获来源与初始交互意图。
-pub(crate) struct OverlayTarget {
-    pub(crate) display_id: DisplayId,
-    pub(crate) display_origin: PixelPoint,
-    pub(crate) image_width: u32,
-    pub(crate) image_height: u32,
-    pub(crate) initial_selection: OverlayInitialSelection,
-    pub(crate) presentation: OverlayPresentation,
-    pub(crate) min_selection_edge: u32,
-    pub(crate) edit_pin_id: Option<PinId>,
+pub struct OverlayTarget {
+    pub display_id: DisplayId,
+    pub display_origin: PixelPoint,
+    pub image_width: u32,
+    pub image_height: u32,
+    pub initial_selection: OverlayInitialSelection,
+    pub presentation: OverlayPresentation,
+    pub min_selection_edge: u32,
+    pub edit_pin_id: Option<PinId>,
 }
 
 impl OverlayTarget {
-    pub(crate) fn update_image_dimensions(&mut self, width: u32, height: u32) {
+    pub fn update_image_dimensions(&mut self, width: u32, height: u32) {
         self.image_width = width;
         self.image_height = height;
     }
 }
 
-pub(crate) fn screen_capture_overlay_target(
+pub fn screen_capture_overlay_target(
     display_id: DisplayId,
     display_origin: PixelPoint,
     image_width: u32,
@@ -124,7 +124,7 @@ pub(crate) fn screen_capture_overlay_target(
     )
 }
 
-pub(crate) fn virtual_desktop_overlay_target(
+pub fn virtual_desktop_overlay_target(
     workspace: PixelRect,
     initial_selection: OverlayInitialSelection,
 ) -> OverlayTarget {
@@ -139,7 +139,7 @@ pub(crate) fn virtual_desktop_overlay_target(
     )
 }
 
-pub(crate) fn history_edit_target(image: &CaptureImage) -> OverlayTarget {
+pub fn history_edit_target(image: &CaptureImage) -> OverlayTarget {
     // 输出保持历史图像原始来源坐标；窗口位置不假定旧显示器仍存在。
     full_image_overlay_target(
         image.metadata.display.clone(),
@@ -152,7 +152,7 @@ pub(crate) fn history_edit_target(image: &CaptureImage) -> OverlayTarget {
     )
 }
 
-pub(crate) fn window_capture_overlay_target(window: &CaptureWindowInfo) -> OverlayTarget {
+pub fn window_capture_overlay_target(window: &CaptureWindowInfo) -> OverlayTarget {
     full_image_overlay_target(
         window.display.clone(),
         window.bounds.origin,
@@ -164,7 +164,7 @@ pub(crate) fn window_capture_overlay_target(window: &CaptureWindowInfo) -> Overl
     )
 }
 
-pub(crate) fn pin_edit_target(image: &CaptureImage, pin_id: PinId) -> OverlayTarget {
+pub fn pin_edit_target(image: &CaptureImage, pin_id: PinId) -> OverlayTarget {
     full_image_overlay_target(
         image.metadata.display.clone(),
         image.source_rect.origin,
@@ -176,7 +176,7 @@ pub(crate) fn pin_edit_target(image: &CaptureImage, pin_id: PinId) -> OverlayTar
     )
 }
 
-pub(crate) fn snapshot_visible_ids<T: Copy>(items: impl IntoIterator<Item = (T, bool)>) -> Vec<T> {
+pub fn snapshot_visible_ids<T: Copy>(items: impl IntoIterator<Item = (T, bool)>) -> Vec<T> {
     items
         .into_iter()
         .filter_map(|(id, visible)| visible.then_some(id))
@@ -207,7 +207,7 @@ fn full_image_overlay_target(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pinora_core::{CaptureMetadata, CaptureWindowId, ImageId, PixelSize, RgbaBuffer};
+    use pinora_core::{CaptureMetadata, CaptureWindowId, ImageId, RgbaBuffer};
 
     #[test]
     fn delayed_failure_recovery_precedes_window_and_standard_capture_scopes() {

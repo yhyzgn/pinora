@@ -14,11 +14,6 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::capture_session::{
-    CaptureFailureScope, DelayedCapture, LoadingState, Mode, OverlayPresentation, OverlayTarget,
-    capture_failure_scope, history_edit_target, pin_edit_target, screen_capture_overlay_target,
-    snapshot_visible_ids, virtual_desktop_overlay_target, window_capture_overlay_target,
-};
 use crate::diagnostics_panel::DiagnosticsPanel;
 use crate::export_session::{
     FrozenExportTarget, OverlayFinish, PendingExport, PendingExportAction,
@@ -41,8 +36,12 @@ use crate::{
     reconcile_history_policy, record_history_candidate,
 };
 use pinora_capture::{
-    CaptureMode, CapturePreview, CaptureTarget, FrameCache, apply_initial_selection,
-    initial_selection_for_capture, resolve_capture_target, rgba_to_xrgb,
+    CaptureFailureScope, CaptureMode, CapturePreview, CaptureSessionMode, CaptureTarget,
+    DelayedCapture, FrameCache, LoadingState, OverlayPresentation, OverlayTarget,
+    apply_initial_selection, capture_failure_scope, history_edit_target,
+    initial_selection_for_capture, pin_edit_target, resolve_capture_target, rgba_to_xrgb,
+    screen_capture_overlay_target, snapshot_visible_ids, virtual_desktop_overlay_target,
+    window_capture_overlay_target,
 };
 use pinora_core::{
     ActionId, AnnotateSession, AnnotateTool, Annotation, AssetRef, CaptureImage, CaptureProvider,
@@ -235,7 +234,7 @@ where
         runtime: Some(runtime),
         context: None,
         // 常驻时只保留托盘入口。FrameCache 仍在后台预热，但绝不因启动而弹出窗口。
-        mode: Mode::Idle,
+        mode: CaptureSessionMode::Idle,
         loading: None,
         delayed_capture: None,
         overlay: None,
@@ -477,7 +476,7 @@ fn cursor_for_pin_resize(handle: Option<PinResizeHandle>) -> CursorIcon {
 struct DesktopApp<L, P, C, S> {
     runtime: Option<AppRuntime<L, P, C, S>>,
     context: Option<Context<Rc<Window>>>,
-    mode: Mode,
+    mode: CaptureSessionMode,
     loading: Option<LoadingState>,
     delayed_capture: Option<DelayedCapture>,
     overlay: Option<OverlayState>,
@@ -649,7 +648,7 @@ where
             return;
         }
 
-        if matches!(self.mode, Mode::DelayedCapture) {
+        if matches!(self.mode, CaptureSessionMode::DelayedCapture) {
             self.poll_delayed_capture(event_loop);
             event_loop.set_control_flow(ControlFlow::WaitUntil(
                 Instant::now() + Duration::from_millis(30),
@@ -658,7 +657,7 @@ where
         }
 
         // 后台截屏完成 → 打开真实桌面遮罩
-        if matches!(self.mode, Mode::LoadingCapture) {
+        if matches!(self.mode, CaptureSessionMode::LoadingCapture) {
             self.poll_loading_to_overlay(event_loop);
             if self.loading.is_some() {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(
@@ -686,7 +685,7 @@ where
         }
 
         // 启动/再截：优先等 frame-cache 出帧再弹 overlay（瞬时）
-        if matches!(self.mode, Mode::StartCapture)
+        if matches!(self.mode, CaptureSessionMode::StartCapture)
             && self.overlay.is_none()
             && self.loading.is_none()
         {
@@ -935,7 +934,7 @@ where
             return false;
         }
         let _ = self.loading.take();
-        self.mode = Mode::Idle;
+        self.mode = CaptureSessionMode::Idle;
         self.start_capture_wait = None;
         let restored = self.restore_delayed_pins();
         self.resume_frame_cache();
@@ -1062,7 +1061,7 @@ where
 
     /// 若有缓存帧则开 overlay；若缓存还在暖机则跳过（由 about_to_wait 再试）。
     fn try_start_capture(&mut self, event_loop: &ActiveEventLoop) {
-        if !matches!(self.mode, Mode::StartCapture)
+        if !matches!(self.mode, CaptureSessionMode::StartCapture)
             || self.overlay.is_some()
             || self.loading.is_some()
         {
@@ -1233,7 +1232,7 @@ where
             preview_rx: rx,
             target,
         });
-        self.mode = Mode::LoadingCapture;
+        self.mode = CaptureSessionMode::LoadingCapture;
         Ok(())
     }
 
@@ -2248,7 +2247,7 @@ where
         }
         self.close_settings();
         self.close_history();
-        self.mode = Mode::Idle;
+        self.mode = CaptureSessionMode::Idle;
         self.start_capture_wait = None;
         self.capture_mode = CaptureMode::Region;
         self.capture_target = CaptureTarget::DefaultLargest;
@@ -2261,7 +2260,7 @@ where
         self.set_pins_visible_by_pin_ids(&hidden_pin_ids, false);
         self.delayed_capture = Some(DelayedCapture::new(delay, hidden_pin_ids));
         self.set_delayed_capture_tray_state(true);
-        self.mode = Mode::DelayedCapture;
+        self.mode = CaptureSessionMode::DelayedCapture;
         self.set_tray_feedback(TrayFeedback::DelayedCaptureScheduled);
         println!(
             "pinora: tray → delayed region capture in {}s (no countdown window)",
@@ -2315,7 +2314,7 @@ where
         let _ = self.loading.take();
         self.capture_mode = capture_mode;
         self.capture_target = capture_target;
-        self.mode = Mode::StartCapture;
+        self.mode = CaptureSessionMode::StartCapture;
         self.set_tray_feedback(TrayFeedback::CapturePreparing);
         println!(
             "pinora: new {} capture requested ({})",
@@ -2341,7 +2340,7 @@ where
             error.code
         );
         let _ = self.loading.take();
-        self.mode = Mode::Idle;
+        self.mode = CaptureSessionMode::Idle;
         self.start_capture_wait = None;
         self.resume_frame_cache();
         self.set_tray_feedback(TrayFeedback::CaptureFailed(error.code));
@@ -2353,7 +2352,7 @@ where
             error.code
         );
         let _ = self.loading.take();
-        self.mode = Mode::Idle;
+        self.mode = CaptureSessionMode::Idle;
         self.start_capture_wait = None;
         self.restore_delayed_pins();
         self.resume_frame_cache();
@@ -2362,7 +2361,7 @@ where
 
     fn cancel_loading(&mut self) {
         let _ = self.loading.take();
-        self.mode = Mode::Idle;
+        self.mode = CaptureSessionMode::Idle;
         self.restore_delayed_pins();
         self.resume_frame_cache();
         self.set_tray_feedback(TrayFeedback::CaptureCancelled);
@@ -2375,7 +2374,7 @@ where
     fn finish_standard_capture_failure(&mut self, error: PinoraError) {
         eprintln!("pinora: capture failed ({}); returning to tray", error.code);
         let _ = self.loading.take();
-        self.mode = Mode::Idle;
+        self.mode = CaptureSessionMode::Idle;
         self.start_capture_wait = None;
         self.resume_frame_cache();
         self.set_tray_feedback(TrayFeedback::CaptureFailed(error.code));
@@ -2637,7 +2636,7 @@ where
                 selection.size.width, selection.size.height
             );
         }
-        self.mode = Mode::Idle;
+        self.mode = CaptureSessionMode::Idle;
         window_policy::show_auxiliary_window(AuxiliaryWindowKind::Overlay, &window, title);
         window.focus_window();
         window.request_redraw();
@@ -3634,7 +3633,7 @@ where
             ov.window.set_visible(false);
             drop(ov);
         }
-        self.mode = Mode::Idle;
+        self.mode = CaptureSessionMode::Idle;
         self.resume_frame_cache();
         println!(
             "pinora: finish {action:?} {}x{} @ ({},{}) display={display_id:?}",
@@ -3789,7 +3788,7 @@ where
                 pixels_xrgb,
             },
         )?;
-        self.mode = Mode::Idle;
+        self.mode = CaptureSessionMode::Idle;
         self.resume_frame_cache();
 
         if !export_after_open {
@@ -3843,7 +3842,7 @@ where
             self.restore_pin_visibility(pin_id);
         }
         // Esc 只取消选区，绝不自动再截；再截仅 F2 / Ctrl+N
-        self.mode = Mode::Idle;
+        self.mode = CaptureSessionMode::Idle;
         self.resume_frame_cache();
         println!("pinora: selection cancelled (F2/Ctrl+N 再截，Ctrl+Q 退出)");
         if let Some(pin) = self.pins.values().next() {
@@ -4840,7 +4839,7 @@ where
         self.drag_pin = None;
         if self.pins.is_empty() && self.overlay.is_none() {
             // Esc 关闭贴图 ≠ 再截图
-            self.mode = Mode::Idle;
+            self.mode = CaptureSessionMode::Idle;
             println!("pinora: all pins closed (F2/Ctrl+N 再截，Ctrl+Q 退出)");
         }
     }

@@ -235,17 +235,14 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    Main["pinora\nsrc/main.rs"] --> App["pinora-app\n当前：runtime + 三个会话状态模块 + desktop_shell + UI/业务模块"]
+    Main["pinora\nsrc/main.rs"] --> App["pinora-app\n当前：runtime + 两个会话状态模块 + desktop_shell + UI/业务模块"]
     Main --> Platform["pinora-platform\n已实现：启动项、单实例/IPC、热键、Wayland Portal"]
     App --> Platform
     App --> Core["pinora-core\n纯领域模型"]
     Platform --> Core
 
-    App --> CaptureNow["pinora-capture\n已实现：请求契约 + KDE/xcap/fake + FrameCache + CapturePreview"]
+    App --> CaptureNow["pinora-capture\n已实现：请求/会话契约 + KDE/xcap/fake + FrameCache + CapturePreview"]
     CaptureNow --> Core
-    App --> CaptureSession["pinora-app::capture_session\n已实现：模式/失败范围/延时状态/Overlay 目标映射"]
-    CaptureSession --> CaptureNow
-    CaptureSession --> Core
     App --> ExportSession["pinora-app::export_session\n已实现：导出完成动作/待处理状态/取消筛选/tray 映射"]
     ExportSession --> Core
     ExportSession --> HistoryNow
@@ -297,7 +294,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | `pinora-core` | 几何、图像、标注、贴图、设置、历史、任务值对象 | 保持纯领域；仅在 crate 内继续按模型/事务拆目录 | 不引入窗口、平台 SDK、线程或外部进程 |
 | `pinora-platform` | 启动项、单实例/IPC、全局热键、Wayland Portal | 继续承载系统能力适配器 | 只向上提供稳定端口与真实失败语义 |
-| `pinora-capture` | 截图模式/目标、初始选区、显示器目标解析、KDE/xcap/fake 后端选择、显示器/窗口快照校验、预截帧缓存、`CapturePreview` 像素预处理与完整性校验 | 继续承载真实捕获适配器 | 不创建窗口，失败不得伪装为 fake 成功 |
+| `pinora-capture` | 截图模式/目标、初始选区、显示器目标解析、捕获会话模式/延时状态/失败范围/Overlay 目标映射、KDE/xcap/fake 后端选择、显示器/窗口快照校验、预截帧缓存、`CapturePreview` 像素预处理与完整性校验 | 继续承载真实捕获适配器 | 不创建窗口，失败不得伪装为 fake 成功 |
 | `pinora-jobs` | 通用任务监督、协作式取消、结果门禁、有界 worker 回收 | 继续承载通用生命周期底座 | 不运行具体 worker，不依赖 OCR/导出/存储/UI |
 | `pinora-storage` | 设置 schema、历史索引 codec、原子本地文件和受管文件名 | 继续承载纯本地持久化；后续接收文件编码端口 | 不拥有任务、剪贴板子进程或窗口 |
 | `pinora-desktop` | 贴图几何、XRGB 缩放/压暗/裁剪/边框/块拷贝与基础帧缓存、Overlay 物理像素坐标/标注投影/脏区裁剪/选区命中/输入意图、工具栏布局/命中、预览缓存、窗口策略/KWin、设置/历史/诊断面板、选区读数、贴图客户区菜单、面板主题、tray 能力摘要和固定反馈 | 继续迁移 Overlay/贴图窗口适配 | 不拥有应用 EventLoop、任务线程、文件、外部进程或图形表面 |
@@ -310,7 +307,7 @@ flowchart LR
 | `pinora-tray` | `tray-icon` 菜单构造、托盘句柄、事件轮询、动态贴图列表、热键/能力/固定反馈同步 | 后续抽象平台 tray backend 或引入原生探针 | 不拥有截图、贴图、设置、历史、诊断业务工作流或 EventLoop |
 | `pinora-ocr` | tesseract CLI、PNG 临时输入、TSV 解析、取消/超时/输出上限、受监督 OCR worker、结果缓存和词框视觉状态 | 继续承载本地 OCR 服务；app 只提供当前 UI owner/asset 并消费结果 | 不下载模型、不联网、不拥有窗口、剪贴板或应用 EventLoop |
 | `pinora-runtime` | AppRuntime、命令分发、领域状态变更、单实例 bootstrap/forward/shutdown、能力探测端口和事件发布 | 继续承载无 UI 的应用工作流 | 不创建窗口、EventLoop、线程、网络或具体平台探测；捕获/剪贴板通过泛型端口注入 |
-| `pinora-app` | desktop shell、捕获/导出/历史加载会话状态、OCR 触发/结果 UI 交付、历史选择编排、存储调用编排、托盘动作编排、设置/历史/诊断打开时机与业务副作用；导出/历史请求与结果消费 | 继续迁移 Overlay/贴图适配 | 保持唯一事件循环和现有用户行为，窗口资源适配已迁至 `pinora-panels` |
+| `pinora-app` | desktop shell、导出/历史加载会话状态、OCR 触发/结果 UI 交付、历史选择编排、存储调用编排、托盘动作编排、设置/历史/诊断打开时机与业务副作用；导出/历史请求与结果消费 | 继续迁移 Overlay/贴图适配 | 保持唯一事件循环和现有用户行为，窗口资源适配已迁至 `pinora-panels` |
 
 后续每个 crate 拆分都必须单独建立计划/任务、迁移原有测试、更新依赖图，并通过 workspace 与目标平台编译门禁；不得把一次性目录搬迁当作功能完成。
 
@@ -773,8 +770,8 @@ stateDiagram-v2
 ```mermaid
 flowchart LR
     Shell["desktop_shell\n真实捕获、线程、Window/Surface、EventLoop、tray 和恢复副作用"]
-    Session["capture_session\nMode、LoadingState、DelayedCapture、失败范围、Overlay 目标"]
-    Capture["pinora-capture\nCaptureTarget、CapturePreview、初始选区"]
+    Session["pinora-capture::capture_session\nCaptureSessionMode、LoadingState、DelayedCapture、失败范围、Overlay 目标"]
+    Capture["pinora-capture::capture_request + capture_preview\nCaptureTarget、CapturePreview、初始选区"]
     Core["pinora-core\nCaptureImage、DisplayId、PinId、ErrorCode"]
     Window["Window / Surface / EventLoop / tray / worker"]
 
@@ -1364,11 +1361,11 @@ pinora/
 ├── crates/
 │   ├── pinora-core/           # 已存在：纯领域模型、命令、事件、错误码
 │   ├── pinora-platform/       # 已存在：启动项、单实例/IPC、热键、Wayland Portal
-│   ├── pinora-capture/        # 已存在：请求契约、KDE/xcap/fake 选择、显示器快照、FrameCache、CapturePreview
+│   ├── pinora-capture/        # 已存在：请求/会话契约、KDE/xcap/fake 选择、显示器快照、FrameCache、CapturePreview
 │   ├── pinora-jobs/           # 已存在：任务监督、取消、结果门禁、worker 回收
 │   ├── pinora-overlay/        # 已存在：Overlay 阶段、资产身份、revision 映射与盖章
 │   ├── pinora-pin/            # 已存在：贴图鼠标状态、呈现参数、关闭快照与最近使用序号
-│   ├── pinora-app/            # 已存在：runtime、capture/export/history session、desktop_shell 与当前编排模块
+│   ├── pinora-app/            # 已存在：runtime、export/history session、desktop_shell 与当前编排模块
 │   ├── pinora-storage/        # 已存在：设置、历史 codec、原子文件和受管文件名
 │   ├── pinora-desktop/        # 已存在：交互/XRGB 渲染/Overlay 坐标/输入/窗口策略/呈现状态/面板/读数/菜单
 │   ├── pinora-ocr/            # 已存在：Tesseract/TSV/受监督 OCR 服务/词框视觉状态

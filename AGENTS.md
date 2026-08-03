@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/135_pin_crate.md`
-- 任务：`.context/tasks/135_pin_crate.md`
+- 计划：`.context/plans/136_capture_session_crate.md`
+- 任务：`.context/tasks/136_capture_session_crate.md`
 
 ## 交付要求
 
