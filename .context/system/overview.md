@@ -31,7 +31,7 @@
 ## 2026-08-01 接管审计事实
 
 - 接管初期 Unix 单实例路径直接依赖 Unix socket；后续实现已将 `OsSingleInstance` 与 `forward_ipc_frame` 按 Unix/非 Unix 条件编译，根 `src/main.rs` 只依赖其抽象入口。真实 Windows/macOS 的并发启动、权限和异常恢复仍待桌面探针。
-- `crates/pinora-app/src/desktop_shell.rs` 仍集中承载唯一 winit/softbuffer 事件循环、截图编排、Overlay 绘制、标注输入、贴图生命周期、OCR 触发、托盘和 IPC 轮询；任务 128 将设置、历史和诊断窗口的 Window/Surface 与 Panel 适配迁入 `pinora-panels`，任务 129/136 将无窗口捕获会话迁入 `pinora-capture`，任务 130 将导出会话保留为 app 内模块，任务 131/137 将历史加载会话迁入 `pinora-history`，任务 132/135 将贴图会话提升为 `pinora-pin`，任务 133/134 将 Overlay 会话提升为 `pinora-overlay` crate，但 Overlay/贴图和全部真实副作用仍在 shell 中，单体化风险保持开放。
+- `crates/pinora-app/src/desktop_shell.rs` 仍集中承载唯一 winit/softbuffer 事件循环、截图编排、Overlay 绘制、标注输入、贴图生命周期、OCR 触发、托盘和 IPC 轮询；任务 128 将设置、历史和诊断窗口的 Window/Surface 与 Panel 适配迁入 `pinora-panels`，任务 129/136 将无窗口捕获会话迁入 `pinora-capture`，任务 130 先隔离导出协调状态、任务 138 再将纯导出请求契约迁入 `pinora-export`，任务 131/137 将历史加载会话迁入 `pinora-history`，任务 132/135 将贴图会话提升为 `pinora-pin`，任务 133/134 将 Overlay 会话提升为 `pinora-overlay` crate，但 Overlay/贴图和全部真实副作用仍在 shell 中，单体化风险保持开放。
 - 任务 105 已将启动项、单实例/IPC、全局热键和 Linux Wayland Portal 迁入 `pinora-platform`；任务 106 又将 KDE/Spectacle、xcap、显式 fake、后端选择和 `FrameCache` 迁入 `pinora-capture`，任务 122 再将冷捕获/预截帧共用的 `CapturePreview` 构造、完整性校验与缓存帧所有权移交迁入该 crate；任务 107 将任务监督、协作式取消、结果门禁和有界 worker 回收迁入 `pinora-jobs`；任务 108 将设置 codec、历史索引 codec 和受管文件名分配迁入 `pinora-storage`；任务 109 将贴图几何、Overlay 工具栏布局/命中和已提交预览缓存迁入 `pinora-desktop`，任务 111 又将辅助窗口创建、映射和 KWin 隔离策略迁入该 crate，任务 112 再将面板主题、tray 能力摘要和固定反馈迁入该 crate，任务 113 进一步将设置/历史/诊断面板、Overlay 选区读数和贴图客户区菜单迁入该 crate，任务 119 再将 XRGB 缩放/压暗/边框/手柄/脏区恢复及贴图基础帧缓存迁入该 crate，任务 120 再将 Overlay 物理像素坐标映射和选区手柄命中迁入该 crate，任务 121 再将标注显示投影、脏区裁剪和 XRGB 块拷贝迁入同一 crate；任务 110 将 tesseract CLI、PNG 临时输入、TSV 解析和词框视觉状态迁入 `pinora-ocr`，任务 117 再将 OCR 任务服务、结果缓存、worker 回收和结果门禁迁入同一 crate；任务 114 将图像编码、原子文件、系统剪贴板和受监督导出 worker 迁入 `pinora-export`，任务 123 再将导出来源、标注图烧录与草稿预览回退迁入该 crate；任务 115 将历史索引策略、受管 PNG 校验、删除/清空和异步图像读取迁入 `pinora-history`，任务 126 再将当前 Unix 毫秒读取与保留期截止时间策略迁入该 crate，任务 127 又将固定白名单诊断报告与原子发布迁入 `pinora-diagnostics`；任务 116 将 `tray-icon` 菜单、句柄、事件映射和动态贴图列表迁入 `pinora-tray`；任务 118 将命令/状态/单实例工作流和能力探测端口迁入 `pinora-runtime`。`pinora-app` 不再直接声明 `fs2`、`global-hotkey`、`xcap`、`zbus`、`async-channel`、`futures-lite`、`tray-icon` 或 GTK，也不再拥有通用任务状态机、命令分发、纯本地 codec、预览帧像素转换/完整性校验、无窗口 XRGB 呈现、Overlay 物理像素映射/选区命中/标注投影/脏区裁剪、设置/历史/诊断面板、Overlay 选区读数、贴图客户区菜单、导出来源/标注合成、导出 IO、历史文件或历史时间策略、诊断报告/原子发布、托盘适配或具体 OCR worker 服务；OCR 触发/结果 UI 交付、冷捕获线程与错误编排、历史窗口/选择、Overlay/贴图窗口、Window/Surface 上传、托盘动作编排和唯一 EventLoop 仍在 app，后续按功能任务继续拆分。
 - `cargo fmt --check`、`cargo check --workspace` 和 `cargo clippy --workspace --all-targets -- -D warnings` 已于 2026-08-02 通过；当前 `PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace` 通过 app 240 个、core 88 个单元测试，另有 2 个真实桌面测试被忽略；仍没有 GUI 端到端测试。
 - 2026-08-03 的 098 发布链路已完成：当前 `main` CI run `30783363209` 成功；tag `v0.1.0-preview.8` 的 package/release run `30783568639` 在 Linux/macOS/Windows 原生 runner 全部成功；Release 已确认为 pre-release，含 11 个跨平台资产和合并 `SHA256SUMS.txt`，本机下载后逐项校验通过；`runtime-verify` workflow_run `30783727003` 三平台成功并将 runner-safe 报告写入 Release body。该证据只覆盖构建、资产、安装/卸载与 `--version`，不涵盖真实 GUI、tray、热键、权限、任务栏/Dock/分页器、签名/公证或性能。
@@ -71,12 +71,13 @@
   app 22 项、workspace 回归、严格 Clippy、Windows target、版本探针、格式、差异和上下文校验通过；
   离线证据不证明真实截图权限、窗口管理器、焦点、HiDPI、tray-only 或性能。
 - 2026-08-03 的 136 将捕获模式、平台结果接收、延时清理、失败范围和 Overlay 目标映射迁入 `pinora-capture::capture_session`；`CaptureSessionMode` 取代 app 私有的泛化 `Mode`。新模块不依赖 app、desktop 或 winit，延时快照仍只保存领域 `PinId`。`desktop_shell` 继续独占真实捕获、线程、FrameCache、Window/Surface、EventLoop、tray 反馈和失败恢复。capture 39 项（1 项真实显示会话忽略）、app 15 项、workspace 回归、严格 Clippy、Windows target、版本探针、格式、差异和上下文校验通过；离线证据不证明真实截图权限、窗口管理器、焦点、HiDPI、tray-only 或性能。
-- 2026-08-03 的 130 将 `OverlayFinish`、`PendingExportAction`、`FrozenExportTarget`、
-  `PendingExport`、导出来源、文件保存取消筛选、owner/资产匹配和 tray 导出操作映射迁入
-  `pinora-app::export_session`。该模块不依赖 winit，不读取 runtime、不分配文件名、不提交任务或调用
-  tray；`desktop_shell` 保留全部导出副作用和 EventLoop。状态模块 5 项、app 24 项、workspace 回归、
-  严格 Clippy、Windows target、版本探针、格式、差异和上下文校验通过；离线证据不证明真实文件系统、
-  系统剪贴板、tray、窗口管理器、焦点、HiDPI 或性能。
+- 2026-08-03 的 130 先将导出会话状态与 `desktop_shell` 分离；随后 138 将无历史/UI 依赖的
+  `OverlayExportAction`、来源选择、`ExportAction`、`ExportOperation` 和 `FrozenExportTarget` 迁入
+  `pinora-export::export_contract`。app 的 `export_coordination` 仅保留 `PendingExport`、历史候选、
+  文件保存取消筛选、结果资产门禁和 tray 映射，避免 `pinora-history -> pinora-export` 反向依赖。
+  `cargo tree -p pinora-export -e normal --depth 1` 仅显示既有 `image`、`pinora-core`、`pinora-jobs` 与 `png`；
+  定向与 workspace 回归、严格 Clippy、Windows target、版本探针、格式、差异和上下文校验通过。离线证据不证明
+  真实文件系统、系统剪贴板、tray、窗口管理器、焦点、HiDPI 或性能。
 - 2026-08-03 的 131 将 `HistoryLoadIntent`、`HistoryLoadRequest`、`ActiveHistoryLoad`、
   历史加载准备类型映射和当前结果资产门禁迁入 `pinora-app::history_session`。该模块不依赖 winit，
   不读取文件、不启动或轮询 worker、不创建窗口或调用 runtime/tray；`desktop_shell` 保留

@@ -15,10 +15,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::diagnostics_panel::DiagnosticsPanel;
-use crate::export_session::{
-    FrozenExportTarget, OverlayFinish, PendingExport, PendingExportAction,
-    export_source_for_overlay_finish, pending_asset_for_owner, running_file_export_ids,
-    tray_export_operation,
+use crate::export_coordination::{
+    PendingExport, pending_asset_for_owner, running_file_export_ids, tray_export_operation,
 };
 use crate::history_browser::{HistoryPanelAction, HistoryPanelKey};
 use crate::overlay_selection_readout::{
@@ -66,6 +64,9 @@ use pinora_desktop::{
     window_point_to_image, window_rect_from_points, window_selection_to_image, xrgb_pixel_count,
 };
 use pinora_diagnostics::{DiagnosticReportInput, SanitizedDiagnosticReport, write_report};
+use pinora_export::{
+    ExportAction, FrozenExportTarget, OverlayExportAction, capture_export_source_for_overlay_action,
+};
 use pinora_history::{ActiveHistoryLoad, HistoryLoadIntent, HistoryLoadRequest};
 use pinora_jobs::JobState;
 use pinora_ocr::{
@@ -2705,7 +2706,8 @@ where
                             }
                         }
                     }
-                    if let Err(e) = self.finish_overlay_action(event_loop, OverlayFinish::Pin) {
+                    if let Err(e) = self.finish_overlay_action(event_loop, OverlayExportAction::Pin)
+                    {
                         eprintln!("pinora: pin failed: {e}");
                     }
                     return;
@@ -2718,7 +2720,8 @@ where
                         ov.needs_redraw = true;
                         return;
                     }
-                    if let Err(e) = self.finish_overlay_action(event_loop, OverlayFinish::Pin) {
+                    if let Err(e) = self.finish_overlay_action(event_loop, OverlayExportAction::Pin)
+                    {
                         eprintln!("pinora: pin failed: {e}");
                     }
                     return;
@@ -2759,7 +2762,7 @@ where
                 button: MouseButton::Middle,
                 ..
             } => {
-                if let Err(e) = self.finish_overlay_action(event_loop, OverlayFinish::Pin) {
+                if let Err(e) = self.finish_overlay_action(event_loop, OverlayExportAction::Pin) {
                     eprintln!("pinora: middle-pin failed: {e}");
                 }
             }
@@ -2871,7 +2874,7 @@ where
                                 owner,
                                 asset,
                                 ExportJobInput::CopyText { text: hex },
-                                PendingExportAction::CopyText,
+                                ExportAction::CopyText,
                             ) {
                                 eprintln!("pinora: color clipboard submit failed: {error}");
                             }
@@ -2932,7 +2935,8 @@ where
                     ov.last_click_at = Some(now);
                     ov.last_click_pos = p;
                     if overlay_click_finishes_copy(ov.annotate.tool, is_double) {
-                        if let Err(e) = self.finish_overlay_action(event_loop, OverlayFinish::Copy)
+                        if let Err(e) =
+                            self.finish_overlay_action(event_loop, OverlayExportAction::Copy)
                         {
                             eprintln!("pinora: double-click copy failed: {e}");
                         }
@@ -3104,17 +3108,17 @@ where
     fn apply_toolbar_action(&mut self, event_loop: &ActiveEventLoop, action: ToolbarAction) {
         match action {
             ToolbarAction::Copy => {
-                if let Err(e) = self.finish_overlay_action(event_loop, OverlayFinish::Copy) {
+                if let Err(e) = self.finish_overlay_action(event_loop, OverlayExportAction::Copy) {
                     eprintln!("pinora: toolbar copy: {e}");
                 }
             }
             ToolbarAction::Pin => {
-                if let Err(e) = self.finish_overlay_action(event_loop, OverlayFinish::Pin) {
+                if let Err(e) = self.finish_overlay_action(event_loop, OverlayExportAction::Pin) {
                     eprintln!("pinora: toolbar pin: {e}");
                 }
             }
             ToolbarAction::Save => {
-                if let Err(e) = self.finish_overlay_action(event_loop, OverlayFinish::Save) {
+                if let Err(e) = self.finish_overlay_action(event_loop, OverlayExportAction::Save) {
                     eprintln!("pinora: toolbar save: {e}");
                 }
             }
@@ -3210,7 +3214,7 @@ where
                 owner,
                 asset,
                 ExportJobInput::CopyText { text },
-                PendingExportAction::CopyText,
+                ExportAction::CopyText,
             ) {
                 eprintln!("pinora: text clipboard submit failed code={}", error.code);
             }
@@ -3232,7 +3236,7 @@ where
         owner: JobOwner,
         asset: AssetRef,
         input: ExportJobInput,
-        action: PendingExportAction,
+        action: ExportAction,
     ) -> Result<JobId, PinoraError> {
         let history = self.runtime.as_ref().and_then(|runtime| {
             history_candidate_for_export(runtime.export_dir(), owner, asset, &input)
@@ -3342,7 +3346,7 @@ where
                         Some(PendingExport {
                             owner,
                             asset,
-                            action: PendingExportAction::SaveImage(path),
+                            action: ExportAction::SaveImage(path),
                             history,
                         }) => {
                             self.set_tray_feedback(TrayFeedback::ExportCompleted(
@@ -3404,7 +3408,7 @@ where
                             }
                         }
                         Some(PendingExport {
-                            action: PendingExportAction::CopyImage,
+                            action: ExportAction::CopyImage,
                             ..
                         }) => {
                             self.set_tray_feedback(TrayFeedback::ExportCompleted(
@@ -3413,7 +3417,7 @@ where
                             println!("pinora: copied image {}", job.asset.image_id);
                         }
                         Some(PendingExport {
-                            action: PendingExportAction::CopyText,
+                            action: ExportAction::CopyText,
                             ..
                         }) => {
                             self.set_tray_feedback(TrayFeedback::ExportCompleted(
@@ -3556,7 +3560,7 @@ where
     fn finish_overlay_action(
         &mut self,
         event_loop: &ActiveEventLoop,
-        action: OverlayFinish,
+        action: OverlayExportAction,
     ) -> Result<(), PinoraError> {
         if let Some(ov) = self.overlay.as_mut()
             && ov.selection_handle_drag.take().is_some()
@@ -3614,7 +3618,7 @@ where
                 global,
                 ov.full_image.source_rect,
                 ov.edit_pin_id,
-                export_source_for_overlay_finish(action, ov.export_source),
+                capture_export_source_for_overlay_action(action, ov.export_source),
             )
         };
         // 先裁切（仍持有 overlay），再立刻关窗
@@ -3649,15 +3653,15 @@ where
                 }
             };
             match action {
-                OverlayFinish::Copy => {
+                OverlayExportAction::Copy => {
                     self.submit_export_job(
                         JobOwner::Pin(pin_id),
                         pin_asset,
                         ExportJobInput::CopyImage { image },
-                        PendingExportAction::CopyImage,
+                        ExportAction::CopyImage,
                     )?;
                 }
-                OverlayFinish::Save => {
+                OverlayExportAction::Save => {
                     let target = self.allocate_export_target()?;
                     self.submit_export_job(
                         JobOwner::Pin(pin_id),
@@ -3668,23 +3672,23 @@ where
                             format: target.format,
                             jpeg_quality: target.jpeg_quality,
                         },
-                        PendingExportAction::SaveImage(target.path),
+                        ExportAction::SaveImage(target.path),
                     )?;
                 }
                 // 贴图编辑中的“贴图”就是应用改动，保留同一 PinId，不创建新窗口。
-                OverlayFinish::Pin => {}
+                OverlayExportAction::Pin => {}
             }
         } else {
             match action {
-                OverlayFinish::Copy => {
+                OverlayExportAction::Copy => {
                     self.submit_export_job(
                         session_owner,
                         asset,
                         ExportJobInput::CopyImage { image },
-                        PendingExportAction::CopyImage,
+                        ExportAction::CopyImage,
                     )?;
                 }
-                OverlayFinish::Save => {
+                OverlayExportAction::Save => {
                     let target = self.allocate_export_target()?;
                     self.submit_export_job(
                         session_owner,
@@ -3695,10 +3699,10 @@ where
                             format: target.format,
                             jpeg_quality: target.jpeg_quality,
                         },
-                        PendingExportAction::SaveImage(target.path),
+                        ExportAction::SaveImage(target.path),
                     )?;
                 }
-                OverlayFinish::Pin => {
+                OverlayExportAction::Pin => {
                     // 贴图：先出窗再异步保存/复制，避免主路径串行卡顿
                     let position = default_pin_position(global, placement_bounds, image.size());
                     self.open_pin_from_image(event_loop, image, position, true)?;
@@ -3807,7 +3811,7 @@ where
                         format: target.format,
                         jpeg_quality: target.jpeg_quality,
                     },
-                    PendingExportAction::SaveImage(target.path),
+                    ExportAction::SaveImage(target.path),
                 ) {
                     eprintln!("pinora: save submit failed: {error}");
                 }
@@ -3820,7 +3824,7 @@ where
             ExportJobInput::CopyImage {
                 image: export_image,
             },
-            PendingExportAction::CopyImage,
+            ExportAction::CopyImage,
         ) {
             eprintln!("pinora: image clipboard submit failed: {error}");
         }
@@ -4110,7 +4114,7 @@ where
                             owner,
                             asset,
                             ExportJobInput::CopyText { text },
-                            PendingExportAction::CopyText,
+                            ExportAction::CopyText,
                         )
                     {
                         eprintln!(
@@ -4567,7 +4571,7 @@ where
             owner,
             asset,
             ExportJobInput::CopyImage { image },
-            PendingExportAction::CopyImage,
+            ExportAction::CopyImage,
         ) {
             eprintln!("pinora: pin copy submit failed: {error}");
         }
@@ -4596,7 +4600,7 @@ where
                 format: target.format,
                 jpeg_quality: target.jpeg_quality,
             },
-            PendingExportAction::SaveImage(target.path),
+            ExportAction::SaveImage(target.path),
         ) {
             eprintln!("pinora: pin save submit failed: {error}");
         }

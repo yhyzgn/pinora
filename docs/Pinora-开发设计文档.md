@@ -235,7 +235,7 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    Main["pinora\nsrc/main.rs"] --> App["pinora-app\n当前：runtime + 两个会话状态模块 + desktop_shell + UI/业务模块"]
+    Main["pinora\nsrc/main.rs"] --> App["pinora-app\n当前：runtime + desktop_shell + UI/业务协调模块"]
     Main --> Platform["pinora-platform\n已实现：启动项、单实例/IPC、热键、Wayland Portal"]
     App --> Platform
     App --> Core["pinora-core\n纯领域模型"]
@@ -243,11 +243,13 @@ flowchart LR
 
     App --> CaptureNow["pinora-capture\n已实现：请求/会话契约 + KDE/xcap/fake + FrameCache + CapturePreview"]
     CaptureNow --> Core
-    App --> ExportSession["pinora-app::export_session\n已实现：导出完成动作/待处理状态/取消筛选/tray 映射"]
-    ExportSession --> Core
-    ExportSession --> HistoryNow
-    ExportSession --> Desktop
-    ExportSession --> JobsNow
+    App --> ExportCoordinator["pinora-app::export_coordination\n已实现：待处理状态/取消筛选/资产门禁/tray 映射"]
+    ExportCoordinator --> ExportContract["pinora-export::export_contract\n已实现：Overlay 完成意图/来源选择/动作分类/冻结目标"]
+    ExportContract --> Core
+    ExportCoordinator --> Core
+    ExportCoordinator --> HistoryNow
+    ExportCoordinator --> Desktop
+    ExportCoordinator --> JobsNow
     App --> HistorySession["pinora-history::history_session\n已实现：历史加载意图/请求/活动状态/结果资产门禁"]
     HistorySession --> Core
     HistorySession --> HistoryNow
@@ -786,19 +788,24 @@ flowchart LR
 ```mermaid
 flowchart LR
     Shell["desktop_shell\n运行时/文件名/任务提交/结果/tray/Window/Surface/EventLoop"]
-    Session["export_session\nOverlayFinish、PendingExport、冻结参数、取消筛选和映射"]
+    Coordinator["pinora-app::export_coordination\nPendingExport、历史候选、取消筛选、资产门禁、tray 映射"]
+    Contract["pinora-export::export_contract\nOverlayExportAction、来源选择、ExportAction、操作分类、冻结目标"]
     Core["pinora-core\nJobOwner、AssetRef、导出格式"]
     History["pinora-history\nHistoryExportCandidate"]
     Desktop["pinora-desktop\nTrayExportOperation"]
     Jobs["pinora-jobs\nJobState"]
     Effects["文件/剪贴板/worker/tray/Window"]
 
-    Shell --> Session
-    Session --> Core
-    Session --> History
-    Session --> Desktop
-    Session --> Jobs
-    Session -. 不执行 .-> Effects
+    Shell --> Coordinator
+    Shell --> Contract
+    Coordinator --> Contract
+    Contract --> Core
+    Coordinator --> Core
+    Coordinator --> History
+    Coordinator --> Desktop
+    Coordinator --> Jobs
+    Contract -. 不依赖 .-> Effects
+    Coordinator -. 不执行 .-> Effects
 ```
 
 #### 当前历史加载会话模块边界

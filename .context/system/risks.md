@@ -733,12 +733,12 @@
 
 ## R-081：导出会话状态已拆分，但真实外部 IO 与 tray 时序仍未验证（高）
 
-- 证据和影响范围：130 将 Overlay 完成动作、贴图强制标注图来源、待处理导出元数据、路径/格式/质量冻结、文件保存取消筛选、owner/资产匹配和 tray 操作映射迁入 `pinora-app::export_session`。该模块不依赖 winit，不读取 runtime、不分配文件名、不提交任务或调用文件、剪贴板和 tray；`desktop_shell` 保留 `ExportJobService`、文件名、历史登记、结果反馈、Window/Surface 和 EventLoop。5 项状态测试、app 24 项回归和完整静态门禁通过。
+- 证据和影响范围：130 先将导出会话状态从 `desktop_shell` 分离；138 随后将 Overlay 完成动作、贴图强制标注图来源、导出动作分类和路径/格式/质量冻结迁入 `pinora-export::export_contract`。`pinora-app::export_coordination` 仅保留待处理导出元数据、文件保存取消筛选、owner/资产匹配和 tray 操作映射，因 `HistoryExportCandidate` 继续属于 `pinora-history` 而不向 export 反向引入历史依赖。`desktop_shell` 继续保留 `ExportJobService`、文件名、历史登记、结果反馈、Window/Surface 和 EventLoop。export 33 项（1 项真实剪贴板会话忽略）、app 10 项、workspace 回归和完整静态门禁通过。
 - 触发条件：只读目录、磁盘空间不足、文件占用、系统剪贴板拒绝、worker 超时/取消、同一 owner 的快速连续导出、Overlay/贴图关闭与结果返回竞态，或 Windows/macOS/X11/KDE Wayland 的 tray/窗口调度差异。
 - 失败模式：错误的完成动作或映射可能让贴图导出原图、取消复制任务、向错误 owner 交付结果或以不正确的 tray 操作反馈；真实 IO 仍可能出现延迟、权限失败、窗口焦点/任务栏/Dock 异常或可感知卡顿。
 - 缓解措施和必需验证：保持 `FrozenExportTarget` 提交时冻结、仅取消 `JobState::Running` 的文件保存、结果继续以 owner/资产/历史候选匹配为门禁；在 Windows、macOS、Linux X11、KDE Wayland 验证 PNG/JPEG/WebP 保存、只读/空间不足/占用、图像和文本剪贴板、取消/超时/连续导出、Overlay/贴图关闭、tray、任务栏/Dock/分页器、焦点、100%/200% 缩放和帧时间。
-- 回滚或隔离动作：恢复 `desktop_shell` 内导出会话值对象和纯判定，并移除 `export_session`；不改变编码、原子发布、文件名、历史格式、任务协议、窗口策略、tray、OCR 或设置。
-- 负责人和状态：Neo；离线状态、app、workspace、Clippy、Windows target、版本、格式、差异和上下文门禁已验证，真实文件系统、剪贴板、tray、窗口管理器和性能证据开放。
+- 回滚或隔离动作：移除 `pinora-export::export_contract` 并恢复 app 私有纯值对象；不改变编码、原子发布、文件名、历史格式、任务协议、窗口策略、tray、OCR 或设置。
+- 负责人和状态：Neo；离线 export 契约、app 协调、workspace、Clippy、Windows target、版本、格式、差异、依赖图和上下文门禁已验证，真实文件系统、剪贴板、tray、窗口管理器和性能证据开放。
 
 ## R-082：历史加载会话状态已拆分，但真实读取、worker 与窗口时序仍未验证（高）
 
