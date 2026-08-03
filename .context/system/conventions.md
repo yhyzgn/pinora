@@ -41,7 +41,7 @@ graph LR
 ```
 
 - `pinora-platform` 唯一拥有 `start_on_login`、`single_instance`、`os_instance`、`hotkey` 和 Linux `wayland_portal`。
-- `pinora-desktop` 现唯一拥有 `settings_panel`、`history_browser`、`diagnostics_panel`、`overlay_selection_readout`、`pin_context_menu` 与 `xrgb` 的纯自绘状态、布局、命中、XRGB 绘制和贴图基础帧缓存；`pinora-app` 通过 crate 导出复用这些模块，但仍持有 Window/Surface。
+- `pinora-desktop` 现唯一拥有 `settings_panel`、`history_browser`、`diagnostics_panel`、`overlay_selection_readout`、`overlay_geometry`、`pin_context_menu` 与 `xrgb` 的纯自绘状态、布局、物理像素坐标、命中、XRGB 绘制和贴图基础帧缓存；`pinora-app` 通过 crate 导出复用这些模块，但仍持有 Window/Surface。
 - `pinora-export` 现唯一拥有 `image_sink` 与 `export_job` 的图像编码、原子保存、系统剪贴板和受监督导出 worker；`pinora-app` 仅通过 crate re-export 与服务接口使用它们。
 - `pinora-history` 现唯一拥有 `history_export` 与 `history_load_job` 的历史索引、tombstone 策略、受管 PNG 校验和异步读取 worker；`pinora-app` 仅通过 crate re-export 使用历史服务。
 - `pinora-tray` 现唯一拥有 `tray-icon` 的菜单、句柄、事件映射和动态贴图列表；`pinora-app` 仅消费 `TrayAction` 并编排业务操作。
@@ -106,6 +106,8 @@ sudo dnf install -y pipewire-devel mesa-libgbm-devel wayland-devel libxcb-devel
 118 应用运行时工作流 crate 边界已完成：`pinora-runtime` 现唯一拥有 `AppRuntime`、`BootstrapOutcome`、`DispatchResult`、`CapabilityProbe`、命令分发、单实例生命周期和领域事件发布；app 只实现真实能力探测并通过 re-export 兼容根入口和 desktop shell。`cargo test -p pinora-runtime -- --nocapture` 14 项通过、app 回归 43 项通过；完整 workspace、Clippy、Windows target、fmt、diff 和 `ctx validate` 作为任务 118 最终门禁。真实桌面单实例、权限、窗口隔离和性能仍未验证。
 
 119 桌面 XRGB 渲染原语边界已完成：`pinora-desktop` 现唯一拥有 `PinRenderCache`、最近邻缩放、压暗、脏区恢复、选区手柄、矩形/词框/贴图边框和受控像素计数；app 只保留 `Window`/`Surface` 上传、Overlay/贴图状态和输入编排。`cargo test -p pinora-desktop -- --nocapture` 83 项通过、app 回归 41 项通过；完整 workspace、Clippy、Windows target、fmt、diff 和 `ctx validate` 作为任务 119 最终门禁。真实 softbuffer、HiDPI、连续 resize、焦点和性能仍未验证。
+
+120 桌面 Overlay 坐标与选区命中边界已完成：`pinora-desktop::overlay_geometry` 现唯一拥有缓冲选区到源图、显示选区到标注局部坐标、窗口物理点/矩形到图像坐标的映射，以及选区调整资格和最近手柄命中；app 继续持有 `OverlayState`、`SelectionSession`、winit 输入和窗口生命周期。`cargo test -p pinora-desktop -- --nocapture` 87 项通过、app 回归 36 项通过；完整 workspace、Clippy、Windows target、fmt、diff 和 `ctx validate` 作为任务 120 最终门禁。真实 winit 缩放、HiDPI、连续输入、焦点和任务栏/Dock 行为仍未验证。
 
 096 历史保留期增量已执行并通过：`cargo test -p pinora-core settings -- --nocapture`、`cargo test -p pinora-core history -- --nocapture`、`cargo test -p pinora-app --lib settings_store::tests -- --nocapture`、`cargo test -p pinora-app --lib settings_panel::tests -- --nocapture`、`cargo test -p pinora-app --lib history_export::tests -- --nocapture`、`cargo test -p pinora-app --lib desktop_shell::overlay_scale_tests -- --nocapture`；完整门禁使用上方 workspace、Clippy、测试、Windows target、差异和 `ctx validate` 命令。完整测试未连接真实共享数据库、缓存、消息队列、对象存储或第三方服务；2 个真实桌面测试按既有约定忽略。
 

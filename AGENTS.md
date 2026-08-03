@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/119_desktop_xrgb_renderer.md`
-- 任务：`.context/tasks/119_desktop_xrgb_renderer.md`
+- 计划：`.context/plans/120_desktop_overlay_geometry.md`
+- 任务：`.context/tasks/120_desktop_overlay_geometry.md`
 
 ## 交付要求
 

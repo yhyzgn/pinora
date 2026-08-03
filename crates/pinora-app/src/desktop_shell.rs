@@ -49,11 +49,13 @@ use pinora_desktop::window_policy::{self, AuxiliaryWindowKind};
 use pinora_desktop::{
     OverlayPreviewCache, PinRenderCache, PinResizeHandle, PinResizeTarget, ToolbarAction,
     ToolbarButton, ToolbarPaintState, XRGB_SELECTION_HANDLE_RENDER_RADIUS, blit_xrgb_rect,
-    build_pin_render_cache, default_pin_position, draw_xrgb_border, draw_xrgb_outline,
-    draw_xrgb_rect_border, draw_xrgb_selection_handles, fit_to_image_target, layout_toolbar,
-    paint_toolbar, pin_resize_anchor_position, pin_resize_handle_at, pin_resize_target_from_drag,
-    proportional_resize_target, scale_xrgb_nearest, scaled_window_size, toolbar_bounds,
-    toolbar_hit, xrgb_pixel_count,
+    buffer_rect_to_source, build_pin_render_cache, default_pin_position, draw_xrgb_border,
+    draw_xrgb_outline, draw_xrgb_rect_border, draw_xrgb_selection_handles, fit_to_image_target,
+    layout_toolbar, paint_toolbar, pin_resize_anchor_position, pin_resize_handle_at,
+    pin_resize_target_from_drag, proportional_resize_target, scale_xrgb_nearest,
+    scaled_window_size, selection_handle_at, selection_resize_allowed,
+    selection_to_annotation_local, toolbar_bounds, toolbar_hit, window_point_to_image,
+    window_rect_from_points, window_selection_to_image, xrgb_pixel_count,
 };
 use pinora_jobs::JobState;
 use pinora_ocr::{
@@ -3277,8 +3279,10 @@ where
                 let Some(ov) = self.overlay.as_mut() else {
                     return;
                 };
-                ov.last_cursor = window_to_image(
-                    position.x, position.y, ov.win_w, ov.win_h, ov.buf_w, ov.buf_h,
+                ov.last_cursor = window_point_to_image(
+                    (position.x, position.y),
+                    PixelSize::new(ov.win_w, ov.win_h),
+                    PixelSize::new(ov.buf_w, ov.buf_h),
                 );
                 if ov.dragging {
                     let p = ov.last_cursor;
@@ -3553,7 +3557,11 @@ where
                     if let Ok(sel) = ov.session.try_confirm() {
                         ov.phase = OverlayPhase::Ready;
                         ov.toolbar = layout_toolbar(sel, ov.buf_w, ov.buf_h);
-                        let src_sel = buf_rect_to_src(sel, ov.buf_w, ov.buf_h, ov.src_w, ov.src_h);
+                        let src_sel = buffer_rect_to_source(
+                            sel,
+                            PixelSize::new(ov.buf_w, ov.buf_h),
+                            PixelSize::new(ov.src_w, ov.src_h),
+                        );
                         ov.active_src_rect = Some(src_sel);
                         ov.annotation_asset = Some(OverlayAssetIdentity::new());
                         let tool = ov.annotate.tool;
@@ -4046,7 +4054,11 @@ where
             r
         } else {
             let disp = ov.session.try_confirm()?;
-            buf_rect_to_src(disp, ov.buf_w, ov.buf_h, ov.src_w, ov.src_h)
+            buffer_rect_to_source(
+                disp,
+                PixelSize::new(ov.buf_w, ov.buf_h),
+                PixelSize::new(ov.src_w, ov.src_h),
+            )
         };
         let identity = ov.annotation_asset.ok_or_else(|| {
             PinoraError::new(
@@ -4090,7 +4102,11 @@ where
                 r
             } else {
                 match ov.session.try_confirm() {
-                    Ok(disp) => buf_rect_to_src(disp, ov.buf_w, ov.buf_h, ov.src_w, ov.src_h),
+                    Ok(disp) => buffer_rect_to_source(
+                        disp,
+                        PixelSize::new(ov.buf_w, ov.buf_h),
+                        PixelSize::new(ov.src_w, ov.src_h),
+                    ),
                     Err(_) => {
                         println!("pinora: 尚无有效选区");
                         return Ok(());
@@ -5255,13 +5271,11 @@ where
             return (true, None);
         };
         let size = pin.window.inner_size();
-        let region = selection_rect_from_window_points(
+        let region = window_selection_to_image(
             start,
             pin.cursor_position,
-            size.width,
-            size.height,
-            pin.image.size().width,
-            pin.image.size().height,
+            PixelSize::new(size.width, size.height),
+            pin.image.size(),
         );
         let selection = ocr.select_words(region);
         let text = ocr.text_for_selection(&selection);
@@ -5865,33 +5879,9 @@ fn nudge_selected_annotation(ov: &mut OverlayState, dx: i32, dy: i32) -> bool {
     true
 }
 
-const SELECTION_HANDLE_HIT_RADIUS: i32 = 7;
-
 fn overlay_can_resize_selection(ov: &OverlayState) -> bool {
     ov.phase == OverlayPhase::Ready
         && selection_resize_allowed(ov.annotate.doc.is_empty(), ov.annotate.draft.is_some())
-}
-
-fn selection_resize_allowed(document_is_empty: bool, has_draft: bool) -> bool {
-    document_is_empty && !has_draft
-}
-
-fn selection_handle_at(rect: PixelRect, point: PixelPoint) -> Option<SelectionHandle> {
-    SelectionHandle::ALL
-        .into_iter()
-        .filter_map(|handle| {
-            let center = handle.center(rect);
-            let dx = (i64::from(point.x) - i64::from(center.x)).abs();
-            let dy = (i64::from(point.y) - i64::from(center.y)).abs();
-            (dx <= i64::from(SELECTION_HANDLE_HIT_RADIUS)
-                && dy <= i64::from(SELECTION_HANDLE_HIT_RADIUS))
-            .then_some((
-                handle,
-                dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy)),
-            ))
-        })
-        .min_by_key(|(_, distance_squared)| *distance_squared)
-        .map(|(handle, _)| handle)
 }
 
 fn refresh_overlay_resize_preview(ov: &mut OverlayState) {
@@ -5908,7 +5898,11 @@ fn refresh_overlay_ready(ov: &mut OverlayState) {
         && ov.phase == OverlayPhase::Ready
     {
         ov.toolbar = layout_toolbar(sel, ov.buf_w, ov.buf_h);
-        let src_sel = buf_rect_to_src(sel, ov.buf_w, ov.buf_h, ov.src_w, ov.src_h);
+        let src_sel = buffer_rect_to_source(
+            sel,
+            PixelSize::new(ov.buf_w, ov.buf_h),
+            PixelSize::new(ov.src_w, ov.src_h),
+        );
         let source_changed = ov.active_src_rect != Some(src_sel);
         if source_changed {
             ov.selected_annotation = None;
@@ -5946,24 +5940,20 @@ fn refresh_overlay_ready(ov: &mut OverlayState) {
 fn overlay_selection_readout(ov: &OverlayState, selection: PixelRect) -> SelectionReadout {
     selection_readout_from_display(
         selection,
-        ov.buf_w,
-        ov.buf_h,
-        ov.src_w,
-        ov.src_h,
+        PixelSize::new(ov.buf_w, ov.buf_h),
+        PixelSize::new(ov.src_w, ov.src_h),
         ov.display_origin,
     )
 }
 
 fn selection_readout_from_display(
     selection: PixelRect,
-    buf_w: u32,
-    buf_h: u32,
-    src_w: u32,
-    src_h: u32,
+    buffer_size: PixelSize,
+    source_size: PixelSize,
     display_origin: PixelPoint,
 ) -> SelectionReadout {
     SelectionReadout::new(
-        buf_rect_to_src(selection, buf_w, buf_h, src_w, src_h),
+        buffer_rect_to_source(selection, buffer_size, source_size),
         display_origin,
     )
 }
@@ -6283,18 +6273,6 @@ fn ensure_annotate_cache(ov: &mut OverlayState, disp_rect: PixelRect) {
     ov.annotate_cache_wh = wh;
 }
 
-fn buf_rect_to_src(disp: PixelRect, buf_w: u32, buf_h: u32, src_w: u32, src_h: u32) -> PixelRect {
-    let buf_w = buf_w.max(1) as i64;
-    let buf_h = buf_h.max(1) as i64;
-    let src_w = src_w.max(1) as i64;
-    let src_h = src_h.max(1) as i64;
-    let x0 = (i64::from(disp.origin.x) * src_w / buf_w).clamp(0, src_w - 1);
-    let y0 = (i64::from(disp.origin.y) * src_h / buf_h).clamp(0, src_h - 1);
-    let x1 = ((i64::from(disp.right()) * src_w + buf_w - 1) / buf_w).clamp(x0 + 1, src_w);
-    let y1 = ((i64::from(disp.bottom()) * src_h + buf_h - 1) / buf_h).clamp(y0 + 1, src_h);
-    PixelRect::new(x0 as i32, y0 as i32, (x1 - x0) as u32, (y1 - y0) as u32)
-}
-
 /// 缓冲坐标光标 → 原图选区内标注坐标。
 fn overlay_annotate_local(ov: &OverlayState, buf_cursor: PixelPoint) -> Option<PixelPoint> {
     let disp_sel = ov.session.try_confirm().ok()?;
@@ -6313,27 +6291,6 @@ fn overlay_annotate_local_unclamped(
     let disp_sel = ov.session.try_confirm().ok()?;
     let src_sel = ov.active_src_rect?;
     selection_to_annotation_local(disp_sel, src_sel, buf_cursor, false)
-}
-
-fn selection_to_annotation_local(
-    display_selection: PixelRect,
-    source_selection: PixelRect,
-    buffer_cursor: PixelPoint,
-    require_inside_selection: bool,
-) -> Option<PixelPoint> {
-    if require_inside_selection && !display_selection.contains_point(buffer_cursor) {
-        return None;
-    }
-    let lx = buffer_cursor.x.saturating_sub(display_selection.origin.x);
-    let ly = buffer_cursor.y.saturating_sub(display_selection.origin.y);
-    let dw = display_selection.size.width.max(1) as i64;
-    let dh = display_selection.size.height.max(1) as i64;
-    let sw = source_selection.size.width.max(1) as i64;
-    let sh = source_selection.size.height.max(1) as i64;
-    Some(PixelPoint::new(
-        (i64::from(lx) * sw / dw) as i32,
-        (i64::from(ly) * sh / dh) as i32,
-    ))
 }
 
 /// 从选区局部坐标映射到不可变原始截图后采样。取色不读取已烘焙的标注预览，
@@ -6386,54 +6343,6 @@ fn blit_xrgb_block(
         let src_i = row * sw;
         frame[dst..dst + copy_w].copy_from_slice(&src[src_i..src_i + copy_w]);
     }
-}
-
-fn window_to_image(x: f64, y: f64, win_w: u32, win_h: u32, img_w: u32, img_h: u32) -> PixelPoint {
-    let ix = if win_w == 0 {
-        0
-    } else {
-        ((x * f64::from(img_w)) / f64::from(win_w)).round() as i32
-    };
-    let iy = if win_h == 0 {
-        0
-    } else {
-        ((y * f64::from(img_h)) / f64::from(win_h)).round() as i32
-    };
-    PixelPoint::new(
-        ix.clamp(0, img_w.saturating_sub(1) as i32),
-        iy.clamp(0, img_h.saturating_sub(1) as i32),
-    )
-}
-
-fn selection_rect_from_window_points(
-    start: (f64, f64),
-    end: (f64, f64),
-    window_w: u32,
-    window_h: u32,
-    image_w: u32,
-    image_h: u32,
-) -> PixelRect {
-    let x0 = window_edge_to_image(start.0, window_w, image_w);
-    let y0 = window_edge_to_image(start.1, window_h, image_h);
-    let x1 = window_edge_to_image(end.0, window_w, image_w);
-    let y1 = window_edge_to_image(end.1, window_h, image_h);
-    PixelRect::new(x0.min(x1), y0.min(y1), x0.abs_diff(x1), y0.abs_diff(y1))
-}
-
-fn window_edge_to_image(value: f64, window_extent: u32, image_extent: u32) -> i32 {
-    if window_extent == 0 || image_extent == 0 {
-        return 0;
-    }
-    let clamped = value.clamp(0.0, f64::from(window_extent));
-    ((clamped / f64::from(window_extent)) * f64::from(image_extent)).round() as i32
-}
-
-fn window_rect_from_points(start: (f64, f64), end: (f64, f64)) -> PixelRect {
-    let x0 = start.0.min(end.0).max(0.0).round() as i32;
-    let y0 = start.1.min(end.1).max(0.0).round() as i32;
-    let x1 = start.0.max(end.0).max(0.0).round() as i32;
-    let y1 = start.1.max(end.1).max(0.0).round() as i32;
-    PixelRect::new(x0, y0, (x1 - x0).max(0) as u32, (y1 - y0).max(0) as u32)
 }
 
 fn ensure_pin_render_cache(pin: &mut PinWin, width: u32, height: u32) -> Result<(), PinoraError> {
@@ -6508,40 +6417,6 @@ mod overlay_scale_tests {
     }
 
     #[test]
-    fn buf_to_src_identity_when_1to1() {
-        let r = buf_rect_to_src(PixelRect::new(10, 20, 100, 50), 3840, 2160, 3840, 2160);
-        assert_eq!(r.origin.x, 10);
-        assert_eq!(r.origin.y, 20);
-        assert_eq!(r.size.width, 100);
-        assert_eq!(r.size.height, 50);
-    }
-
-    #[test]
-    fn buf_to_src_maps_half_buffer() {
-        let r = buf_rect_to_src(PixelRect::new(0, 0, 1920, 1080), 1920, 1080, 3840, 2160);
-        assert_eq!(r.size.width, 3840);
-        assert_eq!(r.size.height, 2160);
-    }
-
-    #[test]
-    fn selected_drag_mapping_allows_objects_to_move_beyond_the_selection() {
-        let display = PixelRect::new(100, 50, 200, 100);
-        let source = PixelRect::new(0, 0, 400, 200);
-        assert_eq!(
-            selection_to_annotation_local(display, source, PixelPoint::new(150, 75), true),
-            Some(PixelPoint::new(100, 50))
-        );
-        assert_eq!(
-            selection_to_annotation_local(display, source, PixelPoint::new(90, 40), true),
-            None
-        );
-        assert_eq!(
-            selection_to_annotation_local(display, source, PixelPoint::new(90, 40), false),
-            Some(PixelPoint::new(-20, -20))
-        );
-    }
-
-    #[test]
     fn selected_annotation_nudge_uses_one_or_ten_pixel_steps() {
         assert_eq!(annotation_nudge_step(ModifiersState::empty()), 1);
         assert_eq!(annotation_nudge_step(ModifiersState::SHIFT), 10);
@@ -6565,38 +6440,11 @@ mod overlay_scale_tests {
     }
 
     #[test]
-    fn selection_resize_hotspots_prefer_corners_and_reject_document_edits() {
-        let rect = PixelRect::new(10, 20, 101, 101);
-        assert_eq!(
-            selection_handle_at(rect, PixelPoint::new(10, 20)),
-            Some(SelectionHandle::NorthWest)
-        );
-        assert_eq!(
-            selection_handle_at(rect, PixelPoint::new(60, 20)),
-            Some(SelectionHandle::North)
-        );
-        assert_eq!(
-            selection_handle_at(rect, PixelPoint::new(110, 120)),
-            Some(SelectionHandle::SouthEast)
-        );
-        assert_eq!(
-            selection_handle_at(PixelRect::new(0, 0, 3, 9), PixelPoint::new(2, 4)),
-            Some(SelectionHandle::East)
-        );
-        assert_eq!(selection_handle_at(rect, PixelPoint::new(60, 70)), None);
-        assert!(selection_resize_allowed(true, false));
-        assert!(!selection_resize_allowed(false, false));
-        assert!(!selection_resize_allowed(true, true));
-    }
-
-    #[test]
     fn selection_readout_maps_buffer_pixels_to_the_source_and_global_origin() {
         let readout = selection_readout_from_display(
             PixelRect::new(100, 50, 400, 200),
-            1_000,
-            500,
-            2_000,
-            1_000,
+            PixelSize::new(1_000, 500),
+            PixelSize::new(2_000, 1_000),
             PixelPoint::new(-2_560, -100),
         );
 
@@ -7051,18 +6899,6 @@ mod overlay_scale_tests {
         assert_eq!(
             persisted_auxiliary_panel_theme(&Err("write_failed".into()), ThemeMode::Light),
             None
-        );
-    }
-
-    #[test]
-    fn ocr_selection_rect_maps_scaled_window_to_image_pixels() {
-        assert_eq!(
-            selection_rect_from_window_points((20.0, 10.0), (120.0, 60.0), 200, 100, 100, 50),
-            PixelRect::new(10, 5, 50, 25)
-        );
-        assert_eq!(
-            selection_rect_from_window_points((120.0, 60.0), (20.0, 10.0), 200, 100, 100, 50),
-            PixelRect::new(10, 5, 50, 25)
         );
     }
 
