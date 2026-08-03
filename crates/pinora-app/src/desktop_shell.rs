@@ -20,7 +20,6 @@ use crate::diagnostics_panel::DiagnosticsPanel;
 use crate::diagnostics_window::DiagnosticsWindow;
 use crate::history_browser::{HistoryPanelAction, HistoryPanelKey};
 use crate::history_window::HistoryWindow;
-use crate::ocr_job::{OcrJobCompletion, OcrJobService, OcrJobStart};
 use crate::overlay_selection_readout::{
     SelectionReadout, layout_selection_readout, paint_selection_readout,
 };
@@ -54,7 +53,9 @@ use pinora_desktop::{
     proportional_resize_target, scaled_window_size, toolbar_bounds, toolbar_hit,
 };
 use pinora_jobs::JobState;
-use pinora_ocr::{tesseract_available, word_visual_state};
+use pinora_ocr::{
+    OcrJobCompletion, OcrJobService, OcrJobStart, tesseract_available, word_visual_state,
+};
 use pinora_storage::{ExportNameAllocator, HistoryStore, default_history_path};
 use softbuffer::{Context, Rect as DamageRect, Surface};
 use winit::application::ApplicationHandler;

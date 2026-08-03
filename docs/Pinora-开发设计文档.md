@@ -260,7 +260,7 @@ flowchart LR
     App --> TrayNow["pinora-tray\n已实现：tray-icon 菜单/句柄/事件"]
     TrayNow --> Core
     TrayNow --> Desktop
-    App --> Ocr["pinora-ocr\n已实现：tesseract/TSV/词框视觉状态；后续：任务编排适配"]
+    App --> Ocr["pinora-ocr\n已实现：tesseract/TSV/受监督任务服务/词框视觉状态"]
     Ocr --> Core
     Desktop --> Core
     Desktop --> Platform
@@ -277,12 +277,12 @@ flowchart LR
 | `pinora-capture` | KDE/xcap/fake 后端选择、显示器/窗口快照校验、预截帧缓存 | 继续承载真实捕获适配器 | 不创建窗口，失败不得伪装为 fake 成功 |
 | `pinora-jobs` | 通用任务监督、协作式取消、结果门禁、有界 worker 回收 | 继续承载通用生命周期底座 | 不运行具体 worker，不依赖 OCR/导出/存储/UI |
 | `pinora-storage` | 设置 schema、历史索引 codec、原子本地文件和受管文件名 | 继续承载纯本地持久化；后续接收文件编码端口 | 不拥有任务、剪贴板子进程或窗口 |
-| `pinora-desktop` | 贴图几何、Overlay 工具栏布局/命中、预览缓存、窗口策略/KWin、设置/历史/诊断面板、Overlay 选区读数、贴图客户区菜单、面板主题、tray 能力摘要和固定反馈 | 继续迁移托盘菜单句柄与剩余辅助 UI 适配 | 不拥有应用 EventLoop、任务线程、文件或外部进程 |
+| `pinora-desktop` | 贴图几何、Overlay 工具栏布局/命中、预览缓存、窗口策略/KWin、设置/历史/诊断面板、Overlay 选区读数、贴图客户区菜单、面板主题、tray 能力摘要和固定反馈 | 继续迁移 Overlay/贴图窗口适配 | 不拥有应用 EventLoop、任务线程、文件或外部进程 |
 | `pinora-export` | PNG/JPEG/WebP 编码、原子文件发布、内存与系统剪贴板、取消/超时受监督导出 worker | 后续接收更窄的导出端口并与历史记录编排解耦 | 不拥有窗口、历史索引、托盘或应用 EventLoop；外部子进程必须可回收 |
 | `pinora-history` | 受管历史索引加载、PNG 摘要/尺寸校验、插入、删除/清空、配额/保留期 tombstone 清理、异步历史图像读取 | 后续把历史策略与导出输入进一步抽象为端口 | 不拥有窗口、Panel、托盘或 EventLoop；所有路径限制在受管目录 |
 | `pinora-tray` | `tray-icon` 菜单构造、托盘句柄、事件轮询、动态贴图列表、热键/能力/固定反馈同步 | 后续抽象平台 tray backend 或引入原生探针 | 不拥有截图、贴图、设置、历史、诊断业务工作流或 EventLoop |
-| `pinora-ocr` | tesseract CLI、PNG 临时输入、TSV 解析、取消/超时/输出上限、词框视觉状态 | 继续承载本地 OCR 适配；任务 owner/generation 编排留在 app | 不下载模型、不联网、不拥有窗口或剪贴板 |
-| `pinora-app` | runtime、desktop shell、具体 OCR 编排、历史窗口/选择编排、存储调用编排、托盘动作编排和窗口编排；导出/历史请求与结果消费 | 继续迁移 OCR/Overlay/贴图适配 | 保持唯一事件循环和现有用户行为，迁移后才删除旧路径 |
+| `pinora-ocr` | tesseract CLI、PNG 临时输入、TSV 解析、取消/超时/输出上限、受监督 OCR worker、结果缓存和词框视觉状态 | 继续承载本地 OCR 服务；app 只提供当前 UI owner/asset 并消费结果 | 不下载模型、不联网、不拥有窗口、剪贴板或应用 EventLoop |
+| `pinora-app` | runtime、desktop shell、OCR 触发/结果 UI 交付、历史窗口/选择编排、存储调用编排、托盘动作编排和窗口编排；导出/历史请求与结果消费 | 继续迁移 Overlay/贴图适配 | 保持唯一事件循环和现有用户行为，迁移后才删除旧路径 |
 
 后续每个 crate 拆分都必须单独建立计划/任务、迁移原有测试、更新依赖图，并通过 workspace 与目标平台编译门禁；不得把一次性目录搬迁当作功能完成。
 
@@ -1200,7 +1200,7 @@ pinora/
 │   ├── pinora-app/            # 已存在：runtime、desktop_shell 与当前编排模块
 │   ├── pinora-storage/        # 已存在：设置、历史 codec、原子文件和受管文件名
 │   ├── pinora-desktop/        # 已存在：交互/窗口策略/呈现状态/面板/读数/菜单；后续托盘句柄适配
-│   ├── pinora-ocr/            # 已存在：Tesseract/TSV/词框视觉状态；任务门禁仍在 app
+│   ├── pinora-ocr/            # 已存在：Tesseract/TSV/受监督 OCR 服务/词框视觉状态
 │   ├── pinora-export/         # 已存在：图像编码、原子文件、系统剪贴板和导出任务
 │   ├── pinora-history/        # 已存在：历史策略、受管文件和异步图像读取
 │   └── pinora-tray/           # 已存在：tray-icon 菜单、句柄和事件适配

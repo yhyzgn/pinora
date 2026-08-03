@@ -4,7 +4,6 @@ mod desktop_shell;
 mod diagnostics_export;
 mod diagnostics_window;
 mod history_window;
-mod ocr_job;
 mod platform;
 mod runtime;
 mod settings_window;
@@ -22,7 +21,6 @@ pub(crate) use pinora_history::{
 pub(crate) use pinora_tray::{AppTray, TrayAction, TrayPinListEntry};
 
 pub use desktop_shell::run_desktop_shell;
-pub use ocr_job::{LocalOcrRunner, OcrJobCompletion, OcrJobService, OcrJobStart, OcrRunner};
 pub use pinora_capture::{
     CachedFrame, CaptureBackendKind, FakeCaptureProvider, FrameCache, KdeSpectacleCaptureProvider,
     SelectedCaptureProvider, XcapCaptureProvider, fake_only, rgba_to_xrgb, rgba_to_xrgb_and_dim,
@@ -41,6 +39,7 @@ pub use pinora_export::{
 pub use pinora_jobs::{
     AcceptedJobResult, JobCancellation, JobResultDisposition, JobState, JobSupervisor, JobTicket,
 };
+pub use pinora_ocr::{LocalOcrRunner, OcrJobCompletion, OcrJobService, OcrJobStart, OcrRunner};
 pub use pinora_ocr::{recognize_image, recognize_image_with_cancellation, tesseract_available};
 pub use pinora_storage::{
     ExportNameAllocator, HistoryLoad, HistoryStore, SettingsLoad, SettingsStore,

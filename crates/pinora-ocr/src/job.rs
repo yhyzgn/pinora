@@ -17,11 +17,11 @@ use pinora_core::{
     JobTerminalState, OcrLanguage, OcrResult, PinoraError,
 };
 
+use crate::{recognize_image_with_cancellation, recognize_image_with_language};
 use pinora_jobs::{
     AcceptedJobResult, JobCancellation, JobResultDisposition, JobState, JobSupervisor, JobTicket,
 };
 use pinora_jobs::{WorkerWaitOutcome, reap_finished_workers, wait_for_workers};
-use pinora_ocr::{recognize_image_with_cancellation, recognize_image_with_language};
 
 const OCR_CACHE_MAX_ENTRIES: usize = 8;
 const OCR_CACHE_MAX_ESTIMATED_BYTES: usize = 2 * 1024 * 1024;
@@ -312,7 +312,10 @@ where
         self.supervisor.cancel_all()
     }
 
-    pub(crate) fn cancel_all_and_wait(&mut self, timeout: Duration) -> WorkerWaitOutcome {
+    /// 进程退出时取消全部任务，并在给定上限内回收已收敛 worker。
+    ///
+    /// 调用方负责记录仍未完成的数量；此方法不会越过超时强制终止线程。
+    pub fn cancel_all_and_wait(&mut self, timeout: Duration) -> WorkerWaitOutcome {
         let cancelled = self.cancel_all();
         let mut outcome = wait_for_workers(&mut self.workers, timeout);
         outcome.cancelled = cancelled;

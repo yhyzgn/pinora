@@ -51,7 +51,7 @@
 
 ## R-006：桌面壳单体化导致架构不可控（高）
 
-- 证据和影响范围：任务 105 已将系统集成迁入 `crates/pinora-platform`，任务 106 已将捕获后端和 `FrameCache` 迁入 `crates/pinora-capture`，任务 107 已将通用任务监督迁入 `crates/pinora-jobs`，任务 108 已将纯本地设置/历史 codec 和文件名分配迁入 `crates/pinora-storage`，任务 109 已将贴图几何、Overlay 工具栏和预览缓存迁入 `crates/pinora-desktop`，任务 110 已将 OCR CLI/TSV/词框视觉状态迁入 `crates/pinora-ocr`，任务 111 又将窗口创建/显示/KWin 隔离迁入 `pinora-desktop`，任务 112 再将面板主题、tray 能力摘要和固定反馈迁入该 crate；`crates/pinora-app/src/desktop_shell.rs` 当前约 7480 行，仍统一处理窗口事件、截图线程、Overlay 帧缓冲、标注、贴图、OCR 任务、托盘和 IPC 编排；045 已抽出 `history_window`，046 已抽出 `settings_window` 的窗口资源、草稿/预览缓存、存储调用和呈现，但 Overlay/贴图窗口、托盘、OCR 任务和事件循环职责仍集中在 shell。
+- 证据和影响范围：任务 105 已将系统集成迁入 `crates/pinora-platform`，任务 106 已将捕获后端和 `FrameCache` 迁入 `crates/pinora-capture`，任务 107 已将通用任务监督迁入 `crates/pinora-jobs`，任务 108 已将纯本地设置/历史 codec 和文件名分配迁入 `crates/pinora-storage`，任务 109 已将贴图几何、Overlay 工具栏和预览缓存迁入 `crates/pinora-desktop`，任务 110 已将 OCR CLI/TSV/词框视觉状态迁入 `crates/pinora-ocr`，任务 117 再将 OCR worker 服务、结果缓存与结果门禁迁入同一 crate，任务 111 又将窗口创建/显示/KWin 隔离迁入 `pinora-desktop`，任务 112 再将面板主题、tray 能力摘要和固定反馈迁入该 crate；`crates/pinora-app/src/desktop_shell.rs` 当前约 7480 行，仍统一处理窗口事件、截图线程、Overlay 帧缓冲、标注、贴图、OCR UI 交付、托盘和 IPC 编排；045 已抽出 `history_window`，046 已抽出 `settings_window` 的窗口资源、草稿/预览缓存、存储调用和呈现，但 Overlay/贴图窗口、托盘、OCR UI 编排和事件循环职责仍集中在 shell。
 - 触发条件：继续向现有事件循环增加工具、平台分支或异步任务。
 - 失败模式：输入状态互相污染、窗口关闭/重截竞态、性能修复反复回归，无法对单个能力做隔离测试。
 - 缓解措施和必需验证：冻结现有 UI 行为作为回归场景；按 045 模式继续拆出设置、Overlay 和贴图窗口适配，建立应用状态机、窗口适配、Overlay 渲染、贴图控制器和异步任务边界；每层有 fake 契约测试和至少一条桌面探针。
@@ -612,6 +612,15 @@
 - 缓解措施和必需验证：保持托盘构建失败为受控启动失败、单实例单 tray、动态列表无内容泄露、动作仅由 app EventLoop 编排；在授权原生会话验证启动/退出、所有菜单项、能力/反馈刷新、托盘重连、Overlay/贴图/设置/历史的任务栏/Dock/分页器隔离与焦点。
 - 回滚或隔离动作：恢复 app 内 `tray.rs` 和依赖声明，移除 `pinora-tray` workspace 成员；不改变截图、贴图、历史、设置、窗口策略或数据格式。
 - 负责人和状态：Neo；离线 crate 边界和 workspace 门禁已验证，真实原生 tray、窗口管理器和性能证据开放。
+
+## R-068：OCR 服务已迁移，但真实本地引擎压力与 UI 交付仍未验证（中）
+
+- 证据和影响范围：117 将 `OcrJobService`、本地 runner、进程内缓存、worker 收敛和 owner/资产代际/截止时间门禁迁入 `pinora-ocr`；app 仍负责触发、提供当前 UI 资产和消费完成事件。26 项 OCR 服务/适配测试与 app 的 57 项回归通过。
+- 触发条件：高分辨率长文本、多贴图并发 OCR、Tesseract 子进程卡死或忽略取消、模型文件在运行中变更、窗口关闭/重选/退出与结果返回竞态。
+- 失败模式：服务虽能离线拒绝陈旧结果，真实子进程仍可能在有界等待后未收敛，或结果交付与重绘造成可见卡顿；迁移本身不证明词框坐标、焦点、任务栏/Dock/分页器或持续帧时间。
+- 缓解措施和必需验证：保留资产、owner 和 deadline 门禁，退出仅协作式取消并记录未完成数；在授权原生 Windows/macOS/X11/KDE Wayland 会话验证中英文长图、多贴图、取消、重选、关闭、退出、100%/200% HiDPI、词框绘制、首帧和连续操作帧时间。
+- 回滚或隔离动作：恢复 app 内 `ocr_job.rs` 与 re-export，移除 `pinora-ocr::job`；不改变 Tesseract 适配、设置 schema、资产格式、窗口策略或托盘。
+- 负责人和状态：Neo；离线服务边界已验证，真实引擎、GUI 和性能证据开放。
 
 ## 风险一：上下文漂移
 

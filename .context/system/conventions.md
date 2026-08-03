@@ -13,7 +13,7 @@
 - Pinora 空闲状态不创建控制窗口；托盘、已成功注册的全局热键与单实例 IPC 是后台入口。所有辅助 `WindowAttributes` 必须经 `window_policy::auxiliary_window_attributes`；新建事件循环必须使用 `window_policy::auxiliary_event_loop`，禁止绕开任务栏/Dock 策略。
 - KWin 特例仅允许在窗口映射后按 Pinora 自身标题调用 `kwin_place`；`busctl` 失败只能记录，不能阻塞事件循环或被当作其他 Wayland 合成器的支持证据。
 
-## 当前 crate 边界（任务 116 已验证）
+## 当前 crate 边界（任务 117 已验证）
 
 ```mermaid
 graph LR
@@ -42,7 +42,7 @@ graph LR
 - `pinora-export` 现唯一拥有 `image_sink` 与 `export_job` 的图像编码、原子保存、系统剪贴板和受监督导出 worker；`pinora-app` 仅通过 crate re-export 与服务接口使用它们。
 - `pinora-history` 现唯一拥有 `history_export` 与 `history_load_job` 的历史索引、tombstone 策略、受管 PNG 校验和异步读取 worker；`pinora-app` 仅通过 crate re-export 使用历史服务。
 - `pinora-tray` 现唯一拥有 `tray-icon` 的菜单、句柄、事件映射和动态贴图列表；`pinora-app` 仅消费 `TrayAction` 并编排业务操作。
-- `pinora-app` 当前仍拥有具体 OCR 编排、历史窗口/选择、Overlay/贴图窗口和唯一 EventLoop；这些边界按后续任务逐一拆分。
+- `pinora-app` 当前仍拥有 OCR 触发与 UI 结果交付、历史窗口/选择、Overlay/贴图窗口和唯一 EventLoop；这些边界按后续任务逐一拆分。
 
 ## 系统依赖（Linux + xcap）
 
@@ -96,6 +96,8 @@ sudo dnf install -y pipewire-devel mesa-libgbm-devel wayland-devel libxcb-devel
 115 历史工作流 crate 边界已完成：`pinora-history` 现唯一拥有历史索引加载、PNG 受管路径/摘要校验、删除/清空、配额与保留期 tombstone 清理以及异步历史图像读取；`pinora-app` 仅保留历史窗口和 EventLoop 编排。`cargo test -p pinora-history -- --nocapture` 26 通过；workspace 测试、Clippy、Windows target、fmt、diff 和 `ctx validate` 作为任务 115 最终门禁。真实文件权限、断电、网络文件系统、GUI 和性能仍未验证。
 
 116 托盘适配 crate 边界已完成：`pinora-tray` 现唯一拥有 `tray-icon` 的菜单、句柄、事件轮询、动态贴图列表与固定反馈；Linux GTK 依赖只保留在该 crate 的 target 条件依赖，app 不再直接声明 GTK 或 `tray-icon`。`cargo test -p pinora-tray -- --nocapture` 15 通过；workspace 测试、Clippy、Windows target、fmt、diff 和 `ctx validate` 作为任务 116 最终门禁。真实托盘、任务栏/Dock、菜单点击和重连仍未验证。
+
+117 OCR 任务服务 crate 边界已完成：`pinora-ocr` 现唯一拥有 `OcrJobService`、本地 runner、进程内结果缓存、worker 回收和基于 owner/资产版本/截止时间的结果门禁；app 只传入当前 UI 资产并处理验收结果。`cargo test -p pinora-ocr -- --nocapture` 26 通过，`cargo test -p pinora-app --lib -- --nocapture` 57 通过；workspace 测试、Clippy、Windows target、fmt、diff 和 `ctx validate` 作为任务 117 最终门禁。真实 OCR 模型、外部进程压力、GUI 交付和性能仍未验证。
 
 096 历史保留期增量已执行并通过：`cargo test -p pinora-core settings -- --nocapture`、`cargo test -p pinora-core history -- --nocapture`、`cargo test -p pinora-app --lib settings_store::tests -- --nocapture`、`cargo test -p pinora-app --lib settings_panel::tests -- --nocapture`、`cargo test -p pinora-app --lib history_export::tests -- --nocapture`、`cargo test -p pinora-app --lib desktop_shell::overlay_scale_tests -- --nocapture`；完整门禁使用上方 workspace、Clippy、测试、Windows target、差异和 `ctx validate` 命令。完整测试未连接真实共享数据库、缓存、消息队列、对象存储或第三方服务；2 个真实桌面测试按既有约定忽略。
 
