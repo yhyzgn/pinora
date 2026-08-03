@@ -17,5 +17,6 @@ pinora-ocr = { workspace = true }
 pinora-export = { workspace = true }
 pinora-history = { workspace = true }
 pinora-tray = { workspace = true }
+pinora-runtime = { workspace = true }
 winit = "0.30"
 softbuffer = "0.4"

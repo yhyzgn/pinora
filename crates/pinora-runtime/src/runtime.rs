@@ -6,8 +6,12 @@ use pinora_core::{
     PixelRect,
 };
 
-use crate::platform::CapabilityProbe;
 use pinora_platform::{InstanceAcquisition, SingleInstance};
+
+/// 运行时启动时读取的平台能力端口。
+pub trait CapabilityProbe {
+    fn probe(&self) -> pinora_core::CapabilitySnapshot;
+}
 
 /// 启动结果：主实例运行，或二次启动应退出。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -392,12 +396,26 @@ fn fail(code: ErrorCode, message: impl Into<String>) -> PinoraError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::LocalImageSink;
-    use crate::platform::FakeCapabilityProbe;
     use pinora_capture::FakeCaptureProvider;
     use pinora_core::{PinTransform, PixelSize};
+    use pinora_export::LocalImageSink;
     use pinora_platform::InMemorySingleInstance;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[derive(Debug, Default, Clone, Copy)]
+    struct FakeCapabilityProbe;
+
+    impl CapabilityProbe for FakeCapabilityProbe {
+        fn probe(&self) -> pinora_core::CapabilitySnapshot {
+            pinora_core::CapabilitySnapshot {
+                capture_available: true,
+                global_hotkey_available: true,
+                clipboard_image_available: true,
+                always_on_top_available: false,
+                notes: vec!["test probe: fake".into()],
+            }
+        }
+    }
 
     type TestRt = AppRuntime<
         InMemorySingleInstance,

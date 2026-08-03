@@ -8,7 +8,7 @@
 | 日期 | 2026-08-01 |
 | 状态 | 目标设计；不等同于当前实现或平台支持声明 |
 | 产品代号 | Pinora（Pin + Liora，可后续更名） |
-| 当前代码状态 | Rust 2024 workspace；当前实际 crate 为 `pinora-core`、`pinora-platform`、`pinora-capture`、`pinora-jobs`、`pinora-storage`、`pinora-desktop`、`pinora-ocr`、`pinora-export`、`pinora-history`、`pinora-tray`、`pinora-app`，桌面能力仍以 Linux/KDE 实验路径为主，尚未达到可发布架构 |
+| 当前代码状态 | Rust 2024 workspace；当前实际 crate 为 `pinora-core`、`pinora-platform`、`pinora-capture`、`pinora-jobs`、`pinora-storage`、`pinora-desktop`、`pinora-ocr`、`pinora-export`、`pinora-history`、`pinora-tray`、`pinora-runtime`、`pinora-app`，桌面能力仍以 Linux/KDE 实验路径为主，尚未达到可发布架构 |
 
 > **阅读说明**：本文是后续重构的目标设计，而非功能清单式承诺。任何模块、平台能力或性能目标，只有在对应任务完成代码、测试和授权的隔离探针后，才能写入已实现状态。UI 框架、平台 SDK 和 OCR 引擎均未在本文锁定；不得将草案直接复制为公共 API。
 
@@ -260,6 +260,9 @@ flowchart LR
     App --> TrayNow["pinora-tray\n已实现：tray-icon 菜单/句柄/事件"]
     TrayNow --> Core
     TrayNow --> Desktop
+    App --> RuntimeNow["pinora-runtime\n已实现：命令/状态/单实例工作流"]
+    RuntimeNow --> Core
+    RuntimeNow --> PlatformNow["pinora-platform\nSingleInstance 端口"]
     App --> Ocr["pinora-ocr\n已实现：tesseract/TSV/受监督任务服务/词框视觉状态"]
     Ocr --> Core
     Desktop --> Core
@@ -282,7 +285,8 @@ flowchart LR
 | `pinora-history` | 受管历史索引加载、PNG 摘要/尺寸校验、插入、删除/清空、配额/保留期 tombstone 清理、异步历史图像读取 | 后续把历史策略与导出输入进一步抽象为端口 | 不拥有窗口、Panel、托盘或 EventLoop；所有路径限制在受管目录 |
 | `pinora-tray` | `tray-icon` 菜单构造、托盘句柄、事件轮询、动态贴图列表、热键/能力/固定反馈同步 | 后续抽象平台 tray backend 或引入原生探针 | 不拥有截图、贴图、设置、历史、诊断业务工作流或 EventLoop |
 | `pinora-ocr` | tesseract CLI、PNG 临时输入、TSV 解析、取消/超时/输出上限、受监督 OCR worker、结果缓存和词框视觉状态 | 继续承载本地 OCR 服务；app 只提供当前 UI owner/asset 并消费结果 | 不下载模型、不联网、不拥有窗口、剪贴板或应用 EventLoop |
-| `pinora-app` | runtime、desktop shell、OCR 触发/结果 UI 交付、历史窗口/选择编排、存储调用编排、托盘动作编排和窗口编排；导出/历史请求与结果消费 | 继续迁移 Overlay/贴图适配 | 保持唯一事件循环和现有用户行为，迁移后才删除旧路径 |
+| `pinora-runtime` | AppRuntime、命令分发、领域状态变更、单实例 bootstrap/forward/shutdown、能力探测端口和事件发布 | 继续承载无 UI 的应用工作流 | 不创建窗口、EventLoop、线程、网络或具体平台探测；捕获/剪贴板通过泛型端口注入 |
+| `pinora-app` | desktop shell、OCR 触发/结果 UI 交付、历史窗口/选择编排、存储调用编排、托盘动作编排和窗口编排；导出/历史请求与结果消费 | 继续迁移 Overlay/贴图适配 | 保持唯一事件循环和现有用户行为，迁移后才删除旧路径 |
 
 后续每个 crate 拆分都必须单独建立计划/任务、迁移原有测试、更新依赖图，并通过 workspace 与目标平台编译门禁；不得把一次性目录搬迁当作功能完成。
 
@@ -1203,6 +1207,7 @@ pinora/
 │   ├── pinora-ocr/            # 已存在：Tesseract/TSV/受监督 OCR 服务/词框视觉状态
 │   ├── pinora-export/         # 已存在：图像编码、原子文件、系统剪贴板和导出任务
 │   ├── pinora-history/        # 已存在：历史策略、受管文件和异步图像读取
+│   ├── pinora-runtime/        # 已存在：命令/状态/单实例工作流与能力端口
 │   └── pinora-tray/           # 已存在：tray-icon 菜单、句柄和事件适配
 ├── assets/
 └── docs/

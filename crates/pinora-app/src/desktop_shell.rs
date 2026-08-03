@@ -66,11 +66,10 @@ use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::{CursorIcon, Fullscreen, ResizeDirection, Window, WindowId, WindowLevel};
 
 use crate::pin_context_menu::{self, PinContextMenu, PinMenuAction};
-use crate::platform::CapabilityProbe;
-use crate::runtime::AppRuntime;
 use pinora_platform::{
     GlobalHotkeyHub, SingleInstance, binding_from_winit, set_start_on_login_enabled,
 };
+use pinora_runtime::{AppRuntime, CapabilityProbe};
 
 const MIN_FRAME_INTERVAL: Duration = Duration::from_micros(16_666);
 const OCR_JOB_TIMEOUT_MS: u64 = 30_000;

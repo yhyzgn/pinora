@@ -622,6 +622,15 @@
 - 回滚或隔离动作：恢复 app 内 `ocr_job.rs` 与 re-export，移除 `pinora-ocr::job`；不改变 Tesseract 适配、设置 schema、资产格式、窗口策略或托盘。
 - 负责人和状态：Neo；离线服务边界已验证，真实引擎、GUI 和性能证据开放。
 
+## R-069：运行时工作流 crate 已收敛，但真实单实例与桌面生命周期仍未验证（高）
+
+- 证据和影响范围：118 将 `AppRuntime`、命令分发、领域事件、单实例 bootstrap/forward/shutdown 和 `CapabilityProbe` 端口迁入 `pinora-runtime`；app 仅实现真实能力探测并将 runtime 交给唯一 desktop shell。14 项 runtime 测试、43 项 app 回归及静态 workspace 门禁通过。
+- 触发条件：Windows/macOS/Linux 的锁文件/Unix socket/回环 TCP 权限、异常退出、第二实例转发、IPC 队列压力、休眠恢复和桌面后端启动时序。
+- 失败模式：离线 fake 能正确推进状态，但真实第二实例可能无法唤醒主实例、退出锁未释放或能力探测与实际权限不一致；runtime crate 迁移不证明 tray-only、任务栏/Dock/分页器、焦点和帧时间。
+- 缓解措施和必需验证：保持单一 `SingleInstance` 端口、固定状态转换和受控错误码；在 Windows、macOS、Linux X11、KDE Wayland 原生会话验证并发启动、Activate/CAPTURE/QUIT 转发、崩溃后重启、权限拒绝、重复命令、tray-only、窗口隔离和退出回收。
+- 回滚或隔离动作：恢复 app 内 `runtime.rs` 与 `mod runtime`，移除 `pinora-runtime` 依赖；不改变 core 命令/事件格式和平台适配器。
+- 负责人和状态：Neo；离线工作流边界已验证，真实单实例、权限和桌面生命周期证据开放。
+
 ## 风险一：上下文漂移
 
 - 触发条件：代码、配置或工作流变化后，没有同步更新对应上下文文件。

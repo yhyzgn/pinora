@@ -2519,6 +2519,7 @@ dependencies = [
  "pinora-jobs",
  "pinora-ocr",
  "pinora-platform",
+ "pinora-runtime",
  "pinora-storage",
  "pinora-tray",
  "softbuffer",
@@ -2599,6 +2600,16 @@ dependencies = [
  "pinora-core",
  "winit",
  "zbus",
+]
+
+[[package]]
+name = "pinora-runtime"
+version = "0.1.0"
+dependencies = [
+ "pinora-capture",
+ "pinora-core",
+ "pinora-export",
+ "pinora-platform",
 ]
 
 [[package]]

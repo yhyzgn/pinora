@@ -1,12 +1,8 @@
-use pinora_core::CapabilitySnapshot;
-
 use pinora_capture::CaptureBackendKind;
+use pinora_core::CapabilitySnapshot;
+use pinora_runtime::CapabilityProbe;
 
 /// 平台能力探测。
-pub trait CapabilityProbe {
-    fn probe(&self) -> CapabilitySnapshot;
-}
-
 /// 根据所选捕获后端生成能力快照。
 #[derive(Debug, Clone)]
 pub struct RuntimeCapabilityProbe {

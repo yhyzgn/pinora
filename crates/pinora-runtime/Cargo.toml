@@ -1,0 +1,15 @@
+[package]
+name = "pinora-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pinora application command, state, and single-instance workflow"
+
+[dependencies]
+pinora-core = { workspace = true }
+pinora-platform = { workspace = true }
+
+[dev-dependencies]
+pinora-capture = { workspace = true }
+pinora-export = { workspace = true }

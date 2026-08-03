@@ -5,7 +5,6 @@ mod diagnostics_export;
 mod diagnostics_window;
 mod history_window;
 mod platform;
-mod runtime;
 mod settings_window;
 
 pub(crate) use pinora_desktop::{
@@ -41,9 +40,9 @@ pub use pinora_jobs::{
 };
 pub use pinora_ocr::{LocalOcrRunner, OcrJobCompletion, OcrJobService, OcrJobStart, OcrRunner};
 pub use pinora_ocr::{recognize_image, recognize_image_with_cancellation, tesseract_available};
+pub use pinora_runtime::{AppRuntime, BootstrapOutcome, CapabilityProbe, DispatchResult};
 pub use pinora_storage::{
     ExportNameAllocator, HistoryLoad, HistoryStore, SettingsLoad, SettingsStore,
     default_history_path, default_settings_path,
 };
-pub use platform::{CapabilityProbe, FakeCapabilityProbe, RuntimeCapabilityProbe};
-pub use runtime::{AppRuntime, BootstrapOutcome, DispatchResult};
+pub use platform::{FakeCapabilityProbe, RuntimeCapabilityProbe};
