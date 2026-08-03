@@ -241,7 +241,7 @@ flowchart LR
     App --> Core["pinora-core\n纯领域模型"]
     Platform --> Core
 
-    App --> CaptureNow["pinora-capture\n已实现：KDE/xcap/fake 选择 + FrameCache"]
+    App --> CaptureNow["pinora-capture\n已实现：KDE/xcap/fake 选择 + FrameCache + CapturePreview"]
     CaptureNow --> Core
     App --> JobsNow["pinora-jobs\n已实现：监督、取消、worker 回收"]
     JobsNow --> Core
@@ -277,7 +277,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | `pinora-core` | 几何、图像、标注、贴图、设置、历史、任务值对象 | 保持纯领域；仅在 crate 内继续按模型/事务拆目录 | 不引入窗口、平台 SDK、线程或外部进程 |
 | `pinora-platform` | 启动项、单实例/IPC、全局热键、Wayland Portal | 继续承载系统能力适配器 | 只向上提供稳定端口与真实失败语义 |
-| `pinora-capture` | KDE/xcap/fake 后端选择、显示器/窗口快照校验、预截帧缓存 | 继续承载真实捕获适配器 | 不创建窗口，失败不得伪装为 fake 成功 |
+| `pinora-capture` | KDE/xcap/fake 后端选择、显示器/窗口快照校验、预截帧缓存、`CapturePreview` 像素预处理与完整性校验 | 继续承载真实捕获适配器 | 不创建窗口，失败不得伪装为 fake 成功 |
 | `pinora-jobs` | 通用任务监督、协作式取消、结果门禁、有界 worker 回收 | 继续承载通用生命周期底座 | 不运行具体 worker，不依赖 OCR/导出/存储/UI |
 | `pinora-storage` | 设置 schema、历史索引 codec、原子本地文件和受管文件名 | 继续承载纯本地持久化；后续接收文件编码端口 | 不拥有任务、剪贴板子进程或窗口 |
 | `pinora-desktop` | 贴图几何、XRGB 缩放/压暗/裁剪/边框/块拷贝与基础帧缓存、Overlay 物理像素坐标/标注投影/脏区裁剪/选区命中、工具栏布局/命中、预览缓存、窗口策略/KWin、设置/历史/诊断面板、选区读数、贴图客户区菜单、面板主题、tray 能力摘要和固定反馈 | 继续迁移 Overlay/贴图窗口适配 | 不拥有应用 EventLoop、任务线程、文件、外部进程或图形表面 |
@@ -1202,7 +1202,7 @@ pinora/
 ├── crates/
 │   ├── pinora-core/           # 已存在：纯领域模型、命令、事件、错误码
 │   ├── pinora-platform/       # 已存在：启动项、单实例/IPC、热键、Wayland Portal
-│   ├── pinora-capture/        # 已存在：KDE/xcap/fake 选择、显示器快照、FrameCache
+│   ├── pinora-capture/        # 已存在：KDE/xcap/fake 选择、显示器快照、FrameCache、CapturePreview
 │   ├── pinora-jobs/           # 已存在：任务监督、取消、结果门禁、worker 回收
 │   ├── pinora-app/            # 已存在：runtime、desktop_shell 与当前编排模块
 │   ├── pinora-storage/        # 已存在：设置、历史 codec、原子文件和受管文件名

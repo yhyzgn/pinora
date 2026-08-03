@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crate::capture_preview::CapturePreview;
 use pinora_core::{
     CaptureImage, CaptureProvider, CaptureRequest, DisplayId, DisplayInfo, PixelPoint,
 };
@@ -25,6 +26,23 @@ pub struct CachedFrame {
 impl CachedFrame {
     pub fn age(&self) -> Duration {
         self.captured_at.elapsed()
+    }
+
+    /// 移交预截帧的像素与显示器信息所有权，避免对整屏缓冲做复制。
+    pub fn into_preview_with_display(self) -> (CapturePreview, DisplayId, PixelPoint) {
+        let Self {
+            image,
+            base,
+            dimmed,
+            display_id,
+            display_origin,
+            captured_at: _,
+        } = self;
+        (
+            CapturePreview::from_parts(image, base, dimmed),
+            display_id,
+            display_origin,
+        )
     }
 }
 
@@ -235,11 +253,11 @@ fn grab_one(provider: &impl CaptureProvider) -> Result<CachedFrame, String> {
         })
         .map_err(|e| e.to_string())?;
 
-    let (base, dimmed) = rgba_to_xrgb_and_dim(&image.pixels.bytes);
+    let preview = CapturePreview::from_image(image);
     Ok(CachedFrame {
-        image,
-        base,
-        dimmed,
+        image: preview.image,
+        base: preview.base,
+        dimmed: preview.dimmed,
         display_id: display.id,
         display_origin: display.bounds.origin,
         captured_at: Instant::now(),
@@ -259,38 +277,6 @@ fn frame_matches_display(frame: &CachedFrame, display: &DisplayInfo) -> bool {
         && frame.image.source_rect == display.bounds
         && frame.image.metadata.display == display.id
         && frame.image.metadata.scale == display.scale
-}
-
-/// 单遍：RGBA → XRGB。
-pub fn rgba_to_xrgb(bytes: &[u8]) -> Vec<u32> {
-    let n = bytes.len() / 4;
-    let mut base = Vec::with_capacity(n);
-    for c in bytes.chunks_exact(4) {
-        let r = u32::from(c[0]);
-        let g = u32::from(c[1]);
-        let b = u32::from(c[2]);
-        base.push((r << 16) | (g << 8) | b);
-    }
-    base
-}
-
-/// 单遍：RGBA → XRGB base + dimmed。
-pub fn rgba_to_xrgb_and_dim(bytes: &[u8]) -> (Vec<u32>, Vec<u32>) {
-    let n = bytes.len() / 4;
-    let mut base = Vec::with_capacity(n);
-    let mut dimmed = Vec::with_capacity(n);
-    for c in bytes.chunks_exact(4) {
-        let r = u32::from(c[0]);
-        let g = u32::from(c[1]);
-        let b = u32::from(c[2]);
-        base.push((r << 16) | (g << 8) | b);
-        // ≈55% 亮度
-        let dr = r * 11 / 20;
-        let dg = g * 11 / 20;
-        let db = b * 11 / 20;
-        dimmed.push((dr << 16) | (dg << 8) | db);
-    }
-    (base, dimmed)
 }
 
 #[cfg(test)]
@@ -340,19 +326,17 @@ mod tests {
     }
 
     #[test]
-    fn rgba_dim_len() {
-        let bytes = vec![255u8, 0, 0, 255, 0, 255, 0, 255];
-        let (b, d) = rgba_to_xrgb_and_dim(&bytes);
-        assert_eq!(b.len(), 2);
-        assert_eq!(d.len(), 2);
-        assert_eq!(b[0], 0x00ff_0000);
-    }
+    fn cached_frame_transfers_preview_pixel_ownership() {
+        let frame = sample_frame();
+        let image_id = frame.image.id;
 
-    #[test]
-    fn rgba_to_xrgb_preserves_each_pixel_without_allocating_dimmed_frame() {
-        let bytes = vec![1u8, 2, 3, 255, 4, 5, 6, 0];
+        let (preview, display_id, display_origin) = frame.into_preview_with_display();
 
-        assert_eq!(rgba_to_xrgb(&bytes), vec![0x0001_0203, 0x0004_0506]);
+        assert_eq!(preview.image.id, image_id);
+        assert_eq!(preview.base, vec![0x0001_0203, 0x0004_0506]);
+        assert!(preview.matches_image());
+        assert_eq!(display_id, DisplayId::new("test-display"));
+        assert_eq!(display_origin, PixelPoint::new(0, 0));
     }
 
     #[test]

@@ -33,7 +33,7 @@ graph LR
     Export --> Jobs["pinora-jobs\n任务监督"]
     History --> Core
     History --> Storage["pinora-storage\n本地索引"]
-    History --> Capture["pinora-capture\n像素转换"]
+    History --> Capture["pinora-capture\n预览帧/像素转换"]
     History --> Jobs
     Tray --> Core
     Tray --> Desktop
@@ -110,6 +110,8 @@ sudo dnf install -y pipewire-devel mesa-libgbm-devel wayland-devel libxcb-devel
 120 桌面 Overlay 坐标与选区命中边界已完成：`pinora-desktop::overlay_geometry` 现唯一拥有缓冲选区到源图、显示选区到标注局部坐标、窗口物理点/矩形到图像坐标的映射，以及选区调整资格和最近手柄命中；app 继续持有 `OverlayState`、`SelectionSession`、winit 输入和窗口生命周期。`cargo test -p pinora-desktop -- --nocapture` 87 项通过、app 回归 36 项通过；完整 workspace、Clippy、Windows target、fmt、diff 和 `ctx validate` 作为任务 120 最终门禁。真实 winit 缩放、HiDPI、连续输入、焦点和任务栏/Dock 行为仍未验证。
 
 121 桌面 Overlay 标注投影与脏区原语已完成：`pinora-desktop::overlay_annotation` 现唯一拥有标注局部框的显示投影和脏区裁剪，`xrgb` 现唯一拥有受界块拷贝；app 只查询标注状态、管理缓存并上传 Surface。`cargo test -p pinora-desktop -- --nocapture` 91 项通过、app 回归 36 项通过；完整 workspace、Clippy、Windows target、fmt、diff 和 `ctx validate` 作为任务 121 最终门禁。真实 softbuffer、HiDPI、连续拖动、焦点和性能仍未验证。
+
+122 捕获预览帧数据契约已完成：`pinora-capture::CapturePreview` 现唯一拥有由 `CaptureImage` 构建 XRGB 基础/暗化帧、从 `CachedFrame` 移交像素所有权及按物理像素尺寸进行完整性校验；app 只保留冷捕获接收/错误编排、Overlay 目标以及 Window/Surface。capture 27 项、app 35 项定向测试通过，完整 workspace、Clippy、Windows target、fmt、diff 和上下文校验均通过。真实捕获、softbuffer、HiDPI、焦点、tray-only 和性能仍未验证。
 
 096 历史保留期增量已执行并通过：`cargo test -p pinora-core settings -- --nocapture`、`cargo test -p pinora-core history -- --nocapture`、`cargo test -p pinora-app --lib settings_store::tests -- --nocapture`、`cargo test -p pinora-app --lib settings_panel::tests -- --nocapture`、`cargo test -p pinora-app --lib history_export::tests -- --nocapture`、`cargo test -p pinora-app --lib desktop_shell::overlay_scale_tests -- --nocapture`；完整门禁使用上方 workspace、Clippy、测试、Windows target、差异和 `ctx validate` 命令。完整测试未连接真实共享数据库、缓存、消息队列、对象存储或第三方服务；2 个真实桌面测试按既有约定忽略。
 

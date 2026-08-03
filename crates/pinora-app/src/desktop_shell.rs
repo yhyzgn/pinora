@@ -34,7 +34,7 @@ use crate::{
     delete_history_entry, history_candidate_for_export, load_history_index,
     reconcile_history_policy, record_history_candidate,
 };
-use pinora_capture::{FrameCache, rgba_to_xrgb, rgba_to_xrgb_and_dim};
+use pinora_capture::{CapturePreview, FrameCache, rgba_to_xrgb};
 use pinora_core::{
     ActionId, AnnotateSession, AnnotateTool, Annotation, AnnotationRevision, AssetGeneration,
     AssetRef, CaptureImage, CaptureProvider, CaptureRequest, CaptureWindowInfo, Command,
@@ -487,29 +487,6 @@ fn apply_initial_selection(
     }
 }
 
-/// 后台线程准备好的全屏预览（原图像素 + 暗化底图）。
-struct PreparedPreview {
-    image: CaptureImage,
-    base: Vec<u32>,
-    dimmed: Vec<u32>,
-}
-
-fn prepare_preview(image: CaptureImage) -> PreparedPreview {
-    let (base, dimmed) = rgba_to_xrgb_and_dim(&image.pixels.bytes);
-    PreparedPreview {
-        image,
-        base,
-        dimmed,
-    }
-}
-
-fn preview_buffers_match_image(preview: &PreparedPreview) -> bool {
-    let Some(expected_len) = usize::try_from(preview.image.pixels.size.area()).ok() else {
-        return false;
-    };
-    preview.base.len() == expected_len && preview.dimmed.len() == expected_len
-}
-
 /// Overlay 的窗口呈现方式。历史编辑不能假装当前桌面仍是原始全屏捕获。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OverlayPresentation {
@@ -523,7 +500,7 @@ enum OverlayPresentation {
 /// 截屏中：后台抓当前屏（无全屏遮罩，避免截到自己）；完成后立刻开真实 overlay。
 struct LoadingState {
     // 后台捕获错误只跨线程传递稳定错误码，避免平台后端文本泄露窗口身份或标题。
-    preview_rx: Receiver<Result<PreparedPreview, ErrorCode>>,
+    preview_rx: Receiver<Result<CapturePreview, ErrorCode>>,
     target: OverlayTarget,
 }
 
@@ -1651,19 +1628,15 @@ where
                 "pinora: overlay INSTANT from cache (age {:.0}ms, {}x{})",
                 age_ms, frame.image.pixels.size.width, frame.image.pixels.size.height
             );
-            let prep = PreparedPreview {
-                image: frame.image,
-                base: frame.base,
-                dimmed: frame.dimmed,
-            };
+            let (prep, display_id, display_origin) = frame.into_preview_with_display();
             let img_w = prep.image.pixels.size.width.max(1);
             let img_h = prep.image.pixels.size.height.max(1);
             return self.open_overlay_with_preview(
                 event_loop,
                 prep,
                 OverlayTarget {
-                    display_id: frame.display_id,
-                    display_origin: frame.display_origin,
+                    display_id,
+                    display_origin,
                     image_width: img_w,
                     image_height: img_h,
                     initial_selection,
@@ -1738,7 +1711,7 @@ where
             let started = Instant::now();
             let result = provider
                 .capture(request)
-                .map(prepare_preview)
+                .map(CapturePreview::from_image)
                 .map_err(|error| error.code);
             println!(
                 "pinora: capture done in {:.0}ms (cold path)",
@@ -2636,11 +2609,7 @@ where
     ) {
         // 历史编辑使用已验证的图像，既不能触发屏幕捕获，也不能复用旧显示器的全屏语义。
         let target = history_edit_target(&image);
-        let preview = PreparedPreview {
-            image,
-            base,
-            dimmed,
-        };
+        let preview = CapturePreview::from_parts(image, base, dimmed);
         if let Some(cache) = &self.frame_cache {
             cache.pause();
         }
@@ -2927,13 +2896,6 @@ where
         };
 
         let loading = self.loading.take().unwrap();
-        if !preview_buffers_match_image(&prep) {
-            self.finish_loading_capture_failure(PinoraError::new(
-                ErrorCode::Internal,
-                "capture buffer size mismatch",
-            ));
-            return;
-        }
         let img_w = prep.image.pixels.size.width.max(1);
         let img_h = prep.image.pixels.size.height.max(1);
 
@@ -2954,9 +2916,15 @@ where
     fn open_overlay_with_preview(
         &mut self,
         event_loop: &ActiveEventLoop,
-        prep: PreparedPreview,
+        prep: CapturePreview,
         target: OverlayTarget,
     ) -> Result<(), PinoraError> {
+        if !prep.matches_image() {
+            return Err(PinoraError::new(
+                ErrorCode::Internal,
+                "capture preview buffer size mismatch",
+            ));
+        }
         let OverlayTarget {
             display_id,
             display_origin,
@@ -5189,7 +5157,7 @@ where
         self.refresh_tray_pin_list();
         let target = pin_edit_target(&image, pin_id);
         if let Err(error) =
-            self.open_overlay_with_preview(event_loop, prepare_preview(image), target)
+            self.open_overlay_with_preview(event_loop, CapturePreview::from_image(image), target)
         {
             self.restore_pin_visibility(pin_id);
             eprintln!("pinora: pin editor open failed: {error}");
@@ -6529,22 +6497,6 @@ mod overlay_scale_tests {
         assert_eq!(target.presentation, OverlayPresentation::PinEditor);
         assert_eq!(target.min_selection_edge, 1);
         assert_eq!(target.edit_pin_id, Some(pin_id));
-    }
-
-    #[test]
-    fn preview_buffer_validation_requires_both_render_buffers_to_match_the_image() {
-        let image = CaptureImage::new(
-            ImageId::from_raw(71),
-            RgbaBuffer::solid(PixelSize::new(2, 2), [1, 2, 3, 255]),
-            PixelRect::new(0, 0, 2, 2),
-            CaptureMetadata::new(DisplayId::new("preview"), 1.0, 1),
-        )
-        .unwrap();
-        let mut preview = prepare_preview(image);
-
-        assert!(preview_buffers_match_image(&preview));
-        preview.dimmed.pop();
-        assert!(!preview_buffers_match_image(&preview));
     }
 
     #[test]

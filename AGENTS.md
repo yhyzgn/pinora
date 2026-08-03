@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/121_desktop_overlay_damage.md`
-- 任务：`.context/tasks/121_desktop_overlay_damage.md`
+- 计划：`.context/plans/122_capture_preview_frame.md`
+- 任务：`.context/tasks/122_capture_preview_frame.md`
 
 ## 交付要求
 
