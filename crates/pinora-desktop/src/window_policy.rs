@@ -10,7 +10,7 @@ use winit::window::{Window, WindowAttributes};
 
 /// 需要跳过任务栏的 Pinora 临时窗口。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AuxiliaryWindowKind {
+pub enum AuxiliaryWindowKind {
     Overlay,
     Pin,
     Panel,
@@ -36,7 +36,7 @@ impl AuxiliaryWindowKind {
 ///
 /// 所有窗口必须由此入口创建，并通过 [`show_auxiliary_window`] 映射为可见；这样
 /// KWin 的映射后隔离不会依赖调用方记忆。
-pub(crate) fn create_auxiliary_window(
+pub fn create_auxiliary_window(
     event_loop: &ActiveEventLoop,
     kind: AuxiliaryWindowKind,
     attributes: WindowAttributes,
@@ -48,7 +48,7 @@ pub(crate) fn create_auxiliary_window(
 ///
 /// 标准 Wayland 没有等价协议，因此只有检测到 KWin 时才执行脚本；失败只记录，
 /// 不影响用户当前操作。隐藏 display handle 不允许经此入口映射。
-pub(crate) fn show_auxiliary_window(kind: AuxiliaryWindowKind, window: &Window, title: &str) {
+pub fn show_auxiliary_window(kind: AuxiliaryWindowKind, window: &Window, title: &str) {
     assert!(
         kind.requires_post_map_policy(),
         "display handle must remain hidden"
@@ -92,7 +92,7 @@ fn apply_platform_taskbar_policy(attributes: WindowAttributes) -> WindowAttribut
 }
 
 /// 创建不进入 macOS Dock 的事件循环。
-pub(crate) fn auxiliary_event_loop() -> Result<EventLoop<()>, EventLoopError> {
+pub fn auxiliary_event_loop() -> Result<EventLoop<()>, EventLoopError> {
     let mut builder = EventLoop::builder();
     #[cfg(target_os = "macos")]
     {

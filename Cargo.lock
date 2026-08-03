@@ -2548,6 +2548,7 @@ name = "pinora-desktop"
 version = "0.1.0"
 dependencies = [
  "pinora-core",
+ "winit",
 ]
 
 [[package]]

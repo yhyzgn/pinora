@@ -39,7 +39,6 @@ use crate::settings_window::SettingsWindow;
 use crate::tray::{AppTray, TrayAction, TrayPinListEntry};
 use crate::tray_capabilities::TrayCapabilitySummary;
 use crate::tray_feedback::{TrayExportOperation, TrayFeedback};
-use crate::window_policy::{self, AuxiliaryWindowKind};
 use pinora_capture::{FrameCache, rgba_to_xrgb, rgba_to_xrgb_and_dim};
 use pinora_core::{
     ActionId, AnnotateSession, AnnotateTool, Annotation, AnnotationRevision, AssetGeneration,
@@ -51,6 +50,7 @@ use pinora_core::{
     SessionId, ThemeMode, bake_annotations, color_to_hex, render_preview_rgba,
     resolve_all_displays_rect, sample_rgba_at,
 };
+use pinora_desktop::window_policy::{self, AuxiliaryWindowKind};
 use pinora_desktop::{
     OverlayPreviewCache, PinResizeHandle, PinResizeTarget, ToolbarAction, ToolbarButton,
     ToolbarPaintState, default_pin_position, fit_to_image_target, layout_toolbar, paint_toolbar,
@@ -4469,14 +4469,18 @@ where
 
         // map 进合成器以便 KWin 能找到（仍在 overlay 下面）
         window_policy::show_auxiliary_window(AuxiliaryWindowKind::Pin, &window, &title);
-        if crate::kwin_place::kwin_available() {
-            if let Err(e) =
-                crate::kwin_place::place_window_by_title_sync(&title, position.x, position.y, w, h)
-            {
+        if pinora_desktop::kwin_place::kwin_available() {
+            if let Err(e) = pinora_desktop::kwin_place::place_window_by_title_sync(
+                &title, position.x, position.y, w, h,
+            ) {
                 eprintln!("pinora: kwin sync place: {e}");
             }
-            crate::kwin_place::place_window_by_title(&title, position.x, position.y, w, h, 50);
-            crate::kwin_place::place_window_by_title(&title, position.x, position.y, w, h, 150);
+            pinora_desktop::kwin_place::place_window_by_title(
+                &title, position.x, position.y, w, h, 50,
+            );
+            pinora_desktop::kwin_place::place_window_by_title(
+                &title, position.x, position.y, w, h, 150,
+            );
         } else {
             window.set_outer_position(PhysicalPosition::new(position.x, position.y));
         }

@@ -16,7 +16,7 @@ use winit::window::{Window, WindowId, WindowLevel};
 
 use crate::history_browser::{self, HistoryPanel, HistoryPreview};
 use crate::panel_theme::{PanelThemeState, SystemAppearance};
-use crate::window_policy::{self, AuxiliaryWindowKind};
+use pinora_desktop::window_policy::{self, AuxiliaryWindowKind};
 
 struct HistoryPreviewCache {
     entry_image_id: ImageId,

@@ -15,7 +15,7 @@ use winit::window::{Window, WindowId, WindowLevel};
 use crate::diagnostics_panel::{self, DiagnosticsPanel};
 use crate::panel_theme::{PanelThemeState, SystemAppearance};
 use crate::tray_feedback::TrayFeedback;
-use crate::window_policy::{self, AuxiliaryWindowKind};
+use pinora_desktop::window_policy::{self, AuxiliaryWindowKind};
 
 /// 单个诊断窗口的资源与受控快照。
 pub(crate) struct DiagnosticsWindow {

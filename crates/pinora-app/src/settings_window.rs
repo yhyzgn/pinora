@@ -16,7 +16,7 @@ use crate::panel_theme::{PanelThemeState, SystemAppearance};
 use crate::settings_panel::{
     self, SettingField, SettingsPanel, SettingsPanelAction, SettingsPanelKey,
 };
-use crate::window_policy::{self, AuxiliaryWindowKind};
+use pinora_desktop::window_policy::{self, AuxiliaryWindowKind};
 use pinora_storage::{SettingsStore, default_settings_path};
 
 /// 单个设置窗口的资源、草稿和原子保存入口。

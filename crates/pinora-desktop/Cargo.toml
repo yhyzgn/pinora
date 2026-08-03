@@ -8,3 +8,4 @@ description = "Pinora pure desktop interaction primitives"
 
 [dependencies]
 pinora-core = { workspace = true }
+winit = "0.30"

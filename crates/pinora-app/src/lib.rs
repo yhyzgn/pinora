@@ -10,7 +10,6 @@ mod history_export;
 mod history_load_job;
 mod history_window;
 mod image_sink;
-mod kwin_place;
 mod ocr_job;
 mod overlay_selection_readout;
 mod panel_theme;
@@ -22,7 +21,6 @@ mod settings_window;
 mod tray;
 mod tray_capabilities;
 mod tray_feedback;
-mod window_policy;
 
 pub use desktop_shell::run_desktop_shell;
 pub use export_job::{

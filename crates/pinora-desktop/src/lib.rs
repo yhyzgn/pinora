@@ -3,9 +3,11 @@
 //! 本 crate 只处理确定性的几何、交互布局和像素缓冲；它不创建窗口、事件循环、
 //! 托盘、线程或平台资源。窗口和应用生命周期仍由上层编排。
 
+pub mod kwin_place;
 mod overlay_preview_cache;
 mod overlay_toolbar;
 mod pin_layout;
+pub mod window_policy;
 
 pub use overlay_preview_cache::OverlayPreviewCache;
 pub use overlay_toolbar::{
