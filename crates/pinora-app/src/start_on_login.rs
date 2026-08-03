@@ -173,8 +173,9 @@ fn linux_autostart_path() -> Result<PathBuf, StartOnLoginError> {
 #[cfg(target_os = "linux")]
 fn linux_desktop_entry(executable: &Path) -> Result<String, StartOnLoginError> {
     let exec = desktop_exec_arg(executable)?;
+    let try_exec = desktop_try_exec(executable)?;
     Ok(format!(
-        "[Desktop Entry]\nType=Application\nName=Pinora\nComment=Pinora tray-only screenshot tool\nExec={exec} {AUTOSTART_ARG}\nTryExec={exec}\nTerminal=false\nStartupNotify=false\nX-GNOME-Autostart-enabled=true\n{MANAGED_MARKER}\n"
+        "[Desktop Entry]\nType=Application\nName=Pinora\nComment=Pinora tray-only screenshot tool\nExec={exec} {AUTOSTART_ARG}\nTryExec={try_exec}\nTerminal=false\nStartupNotify=false\nX-GNOME-Autostart-enabled=true\n{MANAGED_MARKER}\n"
     ))
 }
 
@@ -200,6 +201,15 @@ fn desktop_exec_arg(path: &Path) -> Result<String, StartOnLoginError> {
     }
     escaped.push('"');
     Ok(escaped)
+}
+
+#[cfg(target_os = "linux")]
+fn desktop_try_exec(path: &Path) -> Result<String, StartOnLoginError> {
+    let value = path.to_str().ok_or(StartOnLoginError::InvalidExecutable)?;
+    if value.is_empty() || value.chars().any(|c| c.is_control()) {
+        return Err(StartOnLoginError::InvalidExecutable);
+    }
+    Ok(value.to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -368,7 +378,7 @@ mod tests {
         assert!(entry.contains("Terminal=false"));
         assert!(entry.contains(MANAGED_MARKER));
         assert!(entry.contains("Exec=\"/tmp/Pinora App/pinora\" --pinora-autostart"));
-        assert!(entry.contains("TryExec=\"/tmp/Pinora App/pinora\""));
+        assert!(entry.contains("TryExec=/tmp/Pinora App/pinora"));
         assert!(entry.contains(AUTOSTART_ARG));
         assert!(!entry.contains("--capture"));
     }
