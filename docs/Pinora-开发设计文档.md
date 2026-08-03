@@ -235,7 +235,7 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    Main["pinora\nsrc/main.rs"] --> App["pinora-app\n当前：runtime + 四个会话状态模块 + desktop_shell + UI/业务模块"]
+    Main["pinora\nsrc/main.rs"] --> App["pinora-app\n当前：runtime + 五个会话状态模块 + desktop_shell + UI/业务模块"]
     Main --> Platform["pinora-platform\n已实现：启动项、单实例/IPC、热键、Wayland Portal"]
     App --> Platform
     App --> Core["pinora-core\n纯领域模型"]
@@ -256,6 +256,8 @@ flowchart LR
     HistorySession --> HistoryNow
     App --> PinSession["pinora-app::pin_session\n已实现：鼠标状态/呈现参数/关闭快照/最近使用序号"]
     PinSession --> Core
+    App --> OverlaySession["pinora-app::overlay_session\n已实现：Overlay 阶段/派生资产身份/revision 映射与盖章"]
+    OverlaySession --> Core
     App --> JobsNow["pinora-jobs\n已实现：监督、取消、worker 回收"]
     JobsNow --> Core
     App --> StorageNow["pinora-storage\n已实现：设置/历史 codec + 原子文件 + 命名"]
@@ -306,7 +308,7 @@ flowchart LR
 | `pinora-tray` | `tray-icon` 菜单构造、托盘句柄、事件轮询、动态贴图列表、热键/能力/固定反馈同步 | 后续抽象平台 tray backend 或引入原生探针 | 不拥有截图、贴图、设置、历史、诊断业务工作流或 EventLoop |
 | `pinora-ocr` | tesseract CLI、PNG 临时输入、TSV 解析、取消/超时/输出上限、受监督 OCR worker、结果缓存和词框视觉状态 | 继续承载本地 OCR 服务；app 只提供当前 UI owner/asset 并消费结果 | 不下载模型、不联网、不拥有窗口、剪贴板或应用 EventLoop |
 | `pinora-runtime` | AppRuntime、命令分发、领域状态变更、单实例 bootstrap/forward/shutdown、能力探测端口和事件发布 | 继续承载无 UI 的应用工作流 | 不创建窗口、EventLoop、线程、网络或具体平台探测；捕获/剪贴板通过泛型端口注入 |
-| `pinora-app` | desktop shell、捕获/导出/历史加载/贴图会话状态、OCR 触发/结果 UI 交付、历史选择编排、存储调用编排、托盘动作编排、设置/历史/诊断打开时机与业务副作用；导出/历史请求与结果消费 | 继续迁移 Overlay/贴图适配 | 保持唯一事件循环和现有用户行为，窗口资源适配已迁至 `pinora-panels` |
+| `pinora-app` | desktop shell、捕获/导出/历史加载/贴图/Overlay 会话状态、OCR 触发/结果 UI 交付、历史选择编排、存储调用编排、托盘动作编排、设置/历史/诊断打开时机与业务副作用；导出/历史请求与结果消费 | 继续迁移 Overlay/贴图适配 | 保持唯一事件循环和现有用户行为，窗口资源适配已迁至 `pinora-panels` |
 
 后续每个 crate 拆分都必须单独建立计划/任务、迁移原有测试、更新依赖图，并通过 workspace 与目标平台编译门禁；不得把一次性目录搬迁当作功能完成。
 
@@ -381,6 +383,32 @@ crates/pinora-panels/
 - 面板窗口的创建和展示只能调用 `create_auxiliary_window` 与 `show_auxiliary_window`；源码守卫
   防止直接调用 `create_window`、`set_visible(true)`，确保 tray-only 和任务栏/Dock 约束不会因
   后续适配器演进而绕开。
+
+### 2.7 `pinora-app::overlay_session` Overlay 纯会话边界
+
+`overlay_session` 将已经确认选区的纯状态从桌面壳中剥离：它拥有 `OverlayPhase`、本次选区的
+`ImageId`、标注 revision 到 `AssetRef` generation 的确定性映射，以及派生图像的身份盖章。
+同一选区的标注、撤销和重做只改变 generation；确认重选时由桌面壳创建新的身份，因此迟到的 OCR
+或导出结果仍会被现有 owner/asset 门禁拒绝。该模块只依赖 `pinora-core`，没有窗口、图形表面、
+winit、worker、runtime 或 tray 依赖。
+
+```mermaid
+flowchart LR
+    Input["desktop_shell\n确认选区 / 重选 / 标注 revision"] --> Session["overlay_session\nOverlayPhase + OverlayAssetIdentity"]
+    Session --> Ref["AssetRef\nImageId + generation"]
+    Session --> Stamp["派生 CaptureImage\n写入本次 ImageId"]
+    Ref --> Guard["OCR / 导出结果门禁\n仅接受当前 owner + asset"]
+    Session --> Core["pinora-core\nImageId / AnnotationRevision / CaptureImage"]
+    Shell["desktop_shell\nWindow / Surface / 绘制 / 输入 / 标注文档 / 任务 / EventLoop"] -.保留副作用.-> Guard
+    Session -.不依赖.-> Effects["winit / Window / Surface / worker / runtime / tray"]
+```
+
+- 纯会话模块不决定选区几何，不写入标注文档，也不提交任务；这些操作需要真实输入和窗口时序，仍由
+  `desktop_shell` 维持。
+- `OverlayAssetIdentity` 不公开为跨 crate 协议；它是 app 内部状态，防止 UI 句柄或平台类型渗入资产版本
+  契约。
+- 离线测试覆盖 revision 推进导致的陈旧结果拒绝、撤销/重做的 generation 单调变化，以及重选产生新
+  `ImageId` 并盖章到派生图像；真实 GUI、任务栏/Dock、tray-only、焦点、HiDPI 和帧时间仍需原生探针。
 
 ---
 
@@ -1336,7 +1364,7 @@ pinora/
 │   ├── pinora-platform/       # 已存在：启动项、单实例/IPC、热键、Wayland Portal
 │   ├── pinora-capture/        # 已存在：请求契约、KDE/xcap/fake 选择、显示器快照、FrameCache、CapturePreview
 │   ├── pinora-jobs/           # 已存在：任务监督、取消、结果门禁、worker 回收
-│   ├── pinora-app/            # 已存在：runtime、capture_session、export_session、history_session、pin_session、desktop_shell 与当前编排模块
+│   ├── pinora-app/            # 已存在：runtime、capture/export/history/pin/overlay_session、desktop_shell 与当前编排模块
 │   ├── pinora-storage/        # 已存在：设置、历史 codec、原子文件和受管文件名
 │   ├── pinora-desktop/        # 已存在：交互/XRGB 渲染/Overlay 坐标/输入/窗口策略/呈现状态/面板/读数/菜单
 │   ├── pinora-ocr/            # 已存在：Tesseract/TSV/受监督 OCR 服务/词框视觉状态

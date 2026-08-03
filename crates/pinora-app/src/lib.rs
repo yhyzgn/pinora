@@ -4,6 +4,7 @@ mod capture_session;
 mod desktop_shell;
 mod export_session;
 mod history_session;
+mod overlay_session;
 mod pin_session;
 mod platform;
 
