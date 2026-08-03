@@ -26,15 +26,14 @@ use crate::overlay_selection_readout::{
 };
 use crate::settings_panel::{SettingsPanelAction, SettingsPanelKey};
 use crate::settings_window::SettingsWindow;
-use crate::tray::{AppTray, TrayAction, TrayPinListEntry};
 use crate::tray_capabilities::TrayCapabilitySummary;
 use crate::tray_feedback::{TrayExportOperation, TrayFeedback};
 use crate::{
-    ExportJobCompletion, ExportJobInput, ExportJobService, HistoryExportCandidate,
+    AppTray, ExportJobCompletion, ExportJobInput, ExportJobService, HistoryExportCandidate,
     HistoryLoadCompletion, HistoryLoadInput, HistoryLoadJobService, HistoryLoadPayload,
-    HistoryLoadPreparation, clear_history_entries, delete_history_entry,
-    history_candidate_for_export, load_history_index, reconcile_history_policy,
-    record_history_candidate,
+    HistoryLoadPreparation, TrayAction, TrayPinListEntry, clear_history_entries,
+    delete_history_entry, history_candidate_for_export, load_history_index,
+    reconcile_history_policy, record_history_candidate,
 };
 use pinora_capture::{FrameCache, rgba_to_xrgb, rgba_to_xrgb_and_dim};
 use pinora_core::{

@@ -16,11 +16,6 @@ pinora-desktop = { workspace = true }
 pinora-ocr = { workspace = true }
 pinora-export = { workspace = true }
 pinora-history = { workspace = true }
+pinora-tray = { workspace = true }
 winit = "0.30"
 softbuffer = "0.4"
-# 关闭 libxdo 默认特性，避免链接 -lxdo（Wayland/KDE 不需要）
-tray-icon = { version = "0.19", default-features = false }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-# tray-icon/muda 在 Linux 上依赖 GTK 菜单；其他平台不应拉入 GTK/GLib
-gtk = "0.18"

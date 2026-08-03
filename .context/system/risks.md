@@ -604,6 +604,15 @@
 - 回滚或隔离动作：恢复 app 内历史模块与导入，移除 `pinora-history` workspace 成员，不改变索引 schema、文件格式和窗口策略。
 - 负责人和状态：Neo；离线 crate 边界和 workspace 门禁已验证，真实文件系统、权限、GUI 和性能证据开放。
 
+## R-067：托盘适配 crate 边界已收敛，但真实原生 tray 仍未验证（高）
+
+- 证据和影响范围：116 已将 `tray.rs` 迁入 `pinora-tray`，该 crate 唯一声明 `tray-icon` 及 Linux GTK 依赖；app 仅消费 `TrayAction` 并保持唯一 EventLoop。`cargo test -p pinora-tray -- --nocapture` 15 项全部通过。
+- 触发条件：Windows/macOS/X11/KDE Wayland 的 tray 协议、GTK 初始化、StatusNotifier/AppIndicator 可用性、菜单回调、桌面重连、任务栏/Dock 与窗口列表时序。
+- 失败模式：代码与离线 MenuId 测试正确但托盘不可见、菜单失效、动态贴图列表未刷新、退出后残留图标，或辅助窗口仍进入任务栏/Dock。
+- 缓解措施和必需验证：保持托盘构建失败为受控启动失败、单实例单 tray、动态列表无内容泄露、动作仅由 app EventLoop 编排；在授权原生会话验证启动/退出、所有菜单项、能力/反馈刷新、托盘重连、Overlay/贴图/设置/历史的任务栏/Dock/分页器隔离与焦点。
+- 回滚或隔离动作：恢复 app 内 `tray.rs` 和依赖声明，移除 `pinora-tray` workspace 成员；不改变截图、贴图、历史、设置、窗口策略或数据格式。
+- 负责人和状态：Neo；离线 crate 边界和 workspace 门禁已验证，真实原生 tray、窗口管理器和性能证据开放。
+
 ## 风险一：上下文漂移
 
 - 触发条件：代码、配置或工作流变化后，没有同步更新对应上下文文件。

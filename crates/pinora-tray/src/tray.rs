@@ -10,8 +10,10 @@ use pinora_core::{CaptureWindowInfo, DisplayId, DisplayInfo, HotkeyBinding, PinI
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
-use crate::tray_capabilities::{CAPABILITY_MENU_TITLE, TrayCapabilitySummary, global_hotkey_label};
-use crate::tray_feedback::TrayFeedback;
+use pinora_desktop::tray_capabilities::{
+    CAPABILITY_MENU_TITLE, TrayCapabilitySummary, global_hotkey_label,
+};
+use pinora_desktop::tray_feedback::TrayFeedback;
 
 /// 避免窗口枚举把 tray 菜单膨胀为大量不可快速扫描的项目。
 const MAX_WINDOW_CAPTURE_CANDIDATES: usize = 20;
@@ -19,7 +21,7 @@ const EMPTY_PIN_LIST_LABEL: &str = "没有打开的贴图";
 
 /// 传入托盘的贴图可见性快照。排序键和标签都不含图像或窗口内容。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TrayPinListEntry {
+pub struct TrayPinListEntry {
     pub pin_id: PinId,
     pub visible: bool,
     pub mouse_passthrough: bool,
@@ -199,7 +201,7 @@ impl AppTray {
     }
 
     /// 用当前贴图快照替换动态子菜单。失败只影响 tray 的可发现性，不能改变贴图状态。
-    pub(crate) fn set_pin_list(&mut self, entries: &[TrayPinListEntry]) -> Result<(), String> {
+    pub fn set_pin_list(&mut self, entries: &[TrayPinListEntry]) -> Result<(), String> {
         for item in &self.pin_list_items {
             self.pin_list_menu
                 .remove(item)

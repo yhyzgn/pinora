@@ -8,7 +8,6 @@ mod ocr_job;
 mod platform;
 mod runtime;
 mod settings_window;
-mod tray;
 
 pub(crate) use pinora_desktop::{
     diagnostics_panel, history_browser, overlay_selection_readout, panel_theme, pin_context_menu,
@@ -20,6 +19,7 @@ pub(crate) use pinora_history::{
     history_candidate_for_export, load_history_index, reconcile_history_policy,
     record_history_candidate,
 };
+pub(crate) use pinora_tray::{AppTray, TrayAction, TrayPinListEntry};
 
 pub use desktop_shell::run_desktop_shell;
 pub use ocr_job::{LocalOcrRunner, OcrJobCompletion, OcrJobService, OcrJobStart, OcrRunner};

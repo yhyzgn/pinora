@@ -1,0 +1,15 @@
+[package]
+name = "pinora-tray"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pinora system tray menu, feedback, and event adapter"
+
+[dependencies]
+pinora-core = { workspace = true }
+pinora-desktop = { workspace = true }
+tray-icon = { version = "0.19", default-features = false }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
