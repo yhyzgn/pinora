@@ -694,6 +694,15 @@
 - 回滚或隔离动作：恢复 app 内输入意图枚举与判定，移除 `pinora-desktop::overlay_input` 导出；不改变事件循环、标注文档、窗口策略、截图、OCR、导出、历史、托盘或数据格式。
 - 负责人和状态：Neo；离线输入契约、crate 边界、完整 workspace 测试、严格 Clippy、Windows target、`--version` 探针、格式、差异和上下文校验已通过，真实输入、GUI、窗口管理器和性能证据开放。
 
+## R-077：保留期时间策略已迁移，但真实时钟与历史工作流仍未验证（中）
+
+- 证据和影响范围：126 将当前 Unix 毫秒读取、零天短路、天数到毫秒转换和饱和截止时间计算迁入 `pinora-history::retention`；app 仍在启动、设置原子保存成功和受管 PNG 新增后调用 `reconcile_history_policy`，并保留窗口刷新与错误反馈。离线测试覆盖零天、正常回推、早期时间、最大 `u16` 输入和注入的时钟不可用；完整 workspace、严格 Clippy、Windows target 和版本探针只能证明代码契约与编译边界。
+- 触发条件：NTP 前后跳变、手工调整时间、休眠恢复、时钟读取失败、断电/只读/网络文件系统、Windows 文件占用，或历史窗口加载与策略运行在真实 GUI 中交错。
+- 失败模式：条目可能比预期更早或更晚进入 tombstone，文件删除重试与面板刷新可能暴露真实环境时序；离线成功不能证明 tray-only、任务栏/Dock、HiDPI 或任何帧时间。
+- 缓解措施和必需验证：保持零天保守短路、`created_at_ms < cutoff` 严格边界、索引先持久化再清理、失败 tombstone 重试和 app 独占刷新；在 Windows、macOS、Linux X11、KDE Wayland 原生会话验证时钟跳变、休眠、权限/占用/断电恢复、历史加载竞态、tray 空闲、任务栏/Dock/分页器与性能。R-054 继续跟踪现有保留期数据和文件系统语义。
+- 回滚或隔离动作：恢复 app 内截止时间函数并移除 `pinora-history::retention` 导出；不改变设置 schema、历史索引、tombstone、文件格式、窗口策略或托盘生命周期。
+- 负责人和状态：Neo；离线时间契约、crate 边界、完整 workspace 门禁、Windows target、版本探针、格式、差异和上下文校验已通过，真实时钟、文件系统、GUI、窗口管理器与性能证据开放。
+
 ## 风险一：上下文漂移
 
 - 触发条件：代码、配置或工作流变化后，没有同步更新对应上下文文件。

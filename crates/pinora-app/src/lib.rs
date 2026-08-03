@@ -14,8 +14,8 @@ pub(crate) use pinora_desktop::{
 pub(crate) use pinora_history::{
     HistoryExportCandidate, HistoryLoadCompletion, HistoryLoadInput, HistoryLoadJobService,
     HistoryLoadPayload, HistoryLoadPreparation, clear_history_entries, delete_history_entry,
-    history_candidate_for_export, load_history_index, reconcile_history_policy,
-    record_history_candidate,
+    history_candidate_for_export, history_retention_cutoff_ms, load_history_index,
+    reconcile_history_policy, record_history_candidate,
 };
 pub(crate) use pinora_tray::{AppTray, TrayAction, TrayPinListEntry};
 

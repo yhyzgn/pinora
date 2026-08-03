@@ -32,8 +32,8 @@ use crate::{
     HistoryExportCandidate, HistoryLoadCompletion, HistoryLoadInput, HistoryLoadJobService,
     HistoryLoadPayload, HistoryLoadPreparation, TrayAction, TrayPinListEntry,
     clear_history_entries, compose_capture_export_image, delete_history_entry,
-    history_candidate_for_export, load_history_index, reconcile_history_policy,
-    record_history_candidate,
+    history_candidate_for_export, history_retention_cutoff_ms, load_history_index,
+    reconcile_history_policy, record_history_candidate,
 };
 use pinora_capture::{
     CaptureMode, CapturePreview, CaptureTarget, FrameCache, OverlayInitialSelection,
@@ -85,7 +85,6 @@ const MIN_FRAME_INTERVAL: Duration = Duration::from_micros(16_666);
 const OCR_JOB_TIMEOUT_MS: u64 = 30_000;
 const EXPORT_JOB_TIMEOUT_MS: u64 = 30_000;
 const HISTORY_LOAD_TIMEOUT_MS: u64 = 30_000;
-const MILLIS_PER_DAY: u64 = 86_400_000;
 
 fn monotonic_ms() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
@@ -94,25 +93,6 @@ fn monotonic_ms() -> u64 {
         .elapsed()
         .as_millis()
         .min(u128::from(u64::MAX)) as u64
-}
-
-fn unix_epoch_ms() -> Option<u64> {
-    SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| duration.as_millis().try_into().ok())
-}
-
-fn history_retention_cutoff_ms(retention_days: u16) -> Option<u64> {
-    unix_epoch_ms().and_then(|now| history_retention_cutoff_from_now(now, retention_days))
-}
-
-fn history_retention_cutoff_from_now(now_ms: u64, retention_days: u16) -> Option<u64> {
-    if retention_days == 0 {
-        return None;
-    }
-    let retention_ms = u64::from(retention_days).checked_mul(MILLIS_PER_DAY)?;
-    Some(now_ms.saturating_sub(retention_ms))
 }
 
 /// 只有原子设置存储明确成功后，历史和诊断窗口才能切换到草稿主题。
@@ -6122,17 +6102,6 @@ mod overlay_scale_tests {
             ocr: HistoryOcrState::Unknown,
         })
         .expect("history entry")
-    }
-
-    #[test]
-    fn history_retention_cutoff_is_saturating_and_rejects_invalid_zero_days() {
-        let now = 40 * MILLIS_PER_DAY;
-        assert_eq!(
-            history_retention_cutoff_from_now(now, 30),
-            Some(10 * MILLIS_PER_DAY)
-        );
-        assert_eq!(history_retention_cutoff_from_now(1, 30), Some(0));
-        assert_eq!(history_retention_cutoff_from_now(now, 0), None);
     }
 
     #[test]

@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/125_overlay_input_intents.md`
-- 任务：`.context/tasks/125_overlay_input_intents.md`
+- 计划：`.context/plans/126_history_retention_time_policy.md`
+- 任务：`.context/tasks/126_history_retention_time_policy.md`
 
 ## 交付要求
 

@@ -5,6 +5,7 @@
 
 mod history_export;
 mod history_load_job;
+mod retention;
 
 pub use history_export::{
     HistoryCleanup, HistoryExportCandidate, HistoryPolicyReconcile, clear_history_entries,
@@ -15,3 +16,4 @@ pub use history_load_job::{
     HistoryLoadCompletion, HistoryLoadInput, HistoryLoadJobService, HistoryLoadPayload,
     HistoryLoadPreparation, HistoryLoadRunner, LocalHistoryLoadRunner,
 };
+pub use retention::history_retention_cutoff_ms;

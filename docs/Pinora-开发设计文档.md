@@ -251,7 +251,7 @@ flowchart LR
     App --> ExportNow["pinora-export\n已实现：图像编码/原子文件/系统剪贴板/导出任务"]
     ExportNow --> Core
     ExportNow --> JobsNow
-    App --> HistoryNow["pinora-history\n已实现：历史策略/受管文件/异步读取"]
+    App --> HistoryNow["pinora-history\n已实现：历史策略/保留期截止时间/受管文件/异步读取"]
     HistoryNow --> Core
     HistoryNow --> StorageNow
     HistoryNow --> CaptureNow
@@ -282,13 +282,18 @@ flowchart LR
 | `pinora-storage` | 设置 schema、历史索引 codec、原子本地文件和受管文件名 | 继续承载纯本地持久化；后续接收文件编码端口 | 不拥有任务、剪贴板子进程或窗口 |
 | `pinora-desktop` | 贴图几何、XRGB 缩放/压暗/裁剪/边框/块拷贝与基础帧缓存、Overlay 物理像素坐标/标注投影/脏区裁剪/选区命中/输入意图、工具栏布局/命中、预览缓存、窗口策略/KWin、设置/历史/诊断面板、选区读数、贴图客户区菜单、面板主题、tray 能力摘要和固定反馈 | 继续迁移 Overlay/贴图窗口适配 | 不拥有应用 EventLoop、任务线程、文件、外部进程或图形表面 |
 | `pinora-export` | 原图/标注图来源、已提交标注烧录/草稿预览回退、PNG/JPEG/WebP 编码、原子文件发布、内存与系统剪贴板、取消/超时受监督导出 worker | 后续接收更窄的导出端口并与历史记录编排解耦 | 不拥有窗口、历史索引、托盘或应用 EventLoop；外部子进程必须可回收 |
-| `pinora-history` | 受管历史索引加载、PNG 摘要/尺寸校验、插入、删除/清空、配额/保留期 tombstone 清理、异步历史图像读取 | 后续把历史策略与导出输入进一步抽象为端口 | 不拥有窗口、Panel、托盘或 EventLoop；所有路径限制在受管目录 |
+| `pinora-history` | 受管历史索引加载、PNG 摘要/尺寸校验、插入、删除/清空、配额/保留期 tombstone 清理、当前 Unix 毫秒到截止时间策略、异步历史图像读取 | 后续把历史策略与导出输入进一步抽象为端口 | 不拥有窗口、Panel、托盘或 EventLoop；所有路径限制在受管目录 |
 | `pinora-tray` | `tray-icon` 菜单构造、托盘句柄、事件轮询、动态贴图列表、热键/能力/固定反馈同步 | 后续抽象平台 tray backend 或引入原生探针 | 不拥有截图、贴图、设置、历史、诊断业务工作流或 EventLoop |
 | `pinora-ocr` | tesseract CLI、PNG 临时输入、TSV 解析、取消/超时/输出上限、受监督 OCR worker、结果缓存和词框视觉状态 | 继续承载本地 OCR 服务；app 只提供当前 UI owner/asset 并消费结果 | 不下载模型、不联网、不拥有窗口、剪贴板或应用 EventLoop |
 | `pinora-runtime` | AppRuntime、命令分发、领域状态变更、单实例 bootstrap/forward/shutdown、能力探测端口和事件发布 | 继续承载无 UI 的应用工作流 | 不创建窗口、EventLoop、线程、网络或具体平台探测；捕获/剪贴板通过泛型端口注入 |
 | `pinora-app` | desktop shell、OCR 触发/结果 UI 交付、历史窗口/选择编排、存储调用编排、托盘动作编排和窗口编排；导出/历史请求与结果消费 | 继续迁移 Overlay/贴图适配 | 保持唯一事件循环和现有用户行为，迁移后才删除旧路径 |
 
 后续每个 crate 拆分都必须单独建立计划/任务、迁移原有测试、更新依赖图，并通过 workspace 与目标平台编译门禁；不得把一次性目录搬迁当作功能完成。
+
+`pinora-history::retention` 以纯标准库时间策略计算截止点：零天不读取时钟且不触发时间淘汰；
+时钟早于 epoch 或不能表示为 Unix 毫秒时保守返回无截止点；对类型允许的最大 `u16` 输入仍
+保持可表示，并使用饱和回推。app 只提供已保存的设置值，并保留策略调用时机、历史面板刷新
+和错误反馈。该边界有离线测试，不能替代真实时钟、文件系统或桌面性能验证。
 
 ### 2.5 `pinora-desktop` 现状目录树与依赖
 
