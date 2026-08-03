@@ -10,7 +10,7 @@ use pinora_core::{CaptureWindowInfo, DisplayId, DisplayInfo, HotkeyBinding, PinI
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
-use crate::tray_capabilities::{CAPABILITY_MENU_TITLE, TrayCapabilitySummary};
+use crate::tray_capabilities::{CAPABILITY_MENU_TITLE, TrayCapabilitySummary, global_hotkey_label};
 use crate::tray_feedback::TrayFeedback;
 
 /// 避免窗口枚举把 tray 菜单膨胀为大量不可快速扫描的项目。
@@ -53,6 +53,7 @@ pub enum TrayAction {
 pub struct AppTray {
     tray: TrayIcon,
     status_item: MenuItem,
+    global_hotkey_capability_item: MenuItem,
     capture_item: MenuItem,
     capture_id: tray_icon::menu::MenuId,
     delay_capture_ids: [(MenuId, Duration); 3],
@@ -253,6 +254,13 @@ impl AppTray {
             eprintln!("pinora: tray tooltip update unavailable");
         }
     }
+
+    /// Portal 或本地后端完成异步注册后只刷新固定能力标签。不会将 D-Bus 错误、
+    /// 快捷键文本或桌面环境细节带入 tray 菜单。
+    pub fn set_global_hotkey_available(&self, available: bool) {
+        self.global_hotkey_capability_item
+            .set_text(global_hotkey_label(available));
+    }
 }
 
 fn try_new_inner(
@@ -278,6 +286,7 @@ fn try_new_inner(
     let capability_items = capabilities
         .labels()
         .map(|label| MenuItem::new(label, false, None));
+    let global_hotkey_capability_item = capability_items[1].clone();
     let capture = MenuItem::new(capture_menu_label(region_hotkey), true, None);
     let delay_capture_one = MenuItem::new("延时截图 1 秒", true, None);
     let delay_capture_three = MenuItem::new("延时截图 3 秒", true, None);
@@ -412,6 +421,7 @@ fn try_new_inner(
     Ok(AppTray {
         tray,
         status_item: status,
+        global_hotkey_capability_item,
         capture_item: capture,
         capture_id,
         delay_capture_ids,

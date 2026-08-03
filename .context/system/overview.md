@@ -7,7 +7,7 @@
 - Linux xcap 需 `pipewire-devel`、`mesa-libgbm-devel`（**仅 xcap/portal 兜底路径**）。
 - **当前截图后端（Linux/KDE 实验路径）**：`kde-spectacle`（KWin，~0.5s）→ `xcap`/portal（慢）→ 受限能力状态；`FakeCaptureProvider` 仅由显式测试/开发注入使用，不能是生产截图成功的降级结果。
 - **不要默认 portal**：portal/PipeWire 是通用 Wayland 兜底，不是 Snipaste 级体验。
-- **全局热键**：`global-hotkey`（可持久化录制的区域/单显示器全屏主键，默认 F2/F3；兼容 Ctrl+N/Ctrl+Shift+S 区域备用键），注册受桌面环境限制；保留单实例 IPC `pinora capture`，启动时写入 `~/.local/share/applications/pinora.desktop`。
+- **全局热键**：`global-hotkey`（可持久化录制的区域/单显示器全屏主键，默认 F2/F3；兼容 Ctrl+N/Ctrl+Shift+S 区域备用键），注册受桌面环境限制；Linux 纯 Wayland 在 `WAYLAND_DISPLAY`/`XDG_SESSION_TYPE` 门槛通过后异步尝试 XDG `GlobalShortcuts` Portal，Portal session、授权响应和信号等待不阻塞 GUI，失败继续使用 tray/IPC；保留单实例 IPC `pinora capture`，启动时写入 `~/.local/share/applications/pinora.desktop`。
 - **系统剪贴板**：Linux 优先 `wl-copy`，回退 `xclip`；同步 `LocalImageSink` 先保留内存副本，系统写入失败返回 `ClipboardFailed` 而不发布成功，适配器直接持有子进程并在截止时间后回收；桌面异步复制仍由 `ExportJobService` 监督，真实读回和跨平台原生后端未验证。
 
 ## 当前可运行的实验能力（未达到生产声明）
@@ -36,6 +36,7 @@
 - `cargo fmt --check`、`cargo check --workspace` 和 `cargo clippy --workspace --all-targets -- -D warnings` 已于 2026-08-02 通过；当前 `PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace` 通过 app 240 个、core 88 个单元测试，另有 2 个真实桌面测试被忽略；仍没有 GUI 端到端测试。
 - 2026-08-03 的 098 发布链路已完成：当前 `main` CI run `30783363209` 成功；tag `v0.1.0-preview.8` 的 package/release run `30783568639` 在 Linux/macOS/Windows 原生 runner 全部成功；Release 已确认为 pre-release，含 11 个跨平台资产和合并 `SHA256SUMS.txt`，本机下载后逐项校验通过；`runtime-verify` workflow_run `30783727003` 三平台成功并将 runner-safe 报告写入 Release body。该证据只覆盖构建、资产、安装/卸载与 `--version`，不涵盖真实 GUI、tray、热键、权限、任务栏/Dock/分页器、签名/公证或性能。
 - 2026-08-03 的 099 新增用户主动脱敏诊断包导出：`diagnostics_export` 只接受固定平台/能力/反馈标签、稳定 `ErrorCode`、枚举和数值设置摘要；报告通过同目录临时文件、`sync_all`、原子 rename 和可读性校验发布到现有 Pinora 导出目录。托盘新增“导出诊断包”动作，成功/失败只显示固定反馈，不创建额外窗口、不联网、不写入截图、OCR、剪贴板、绝对路径或原始后端错误。离线测试与 workspace 门禁已通过，真实托盘点击和跨平台目录权限仍待原生探针。
+- 2026-08-03 的 100 接入 Linux 纯 Wayland 的 XDG `GlobalShortcuts` Portal：固定绑定 `capture-region` 与 `capture-full-display`，D-Bus session、请求响应、绑定和 `Activated` 信号均在 `pinora-wayland-hotkeys` 后台线程处理；GUI 仅非阻塞轮询动作与能力边沿，未知/取消/失联/缺失接口均受控降级到 tray/IPC，不创建 Portal 控制窗口。新增 `zbus`、`async-channel`、`futures-lite` 仅限 Linux target；非 Linux 条件编译已由 Windows target 检查覆盖。当前开发机 Portal 接口探测为不可用，尚未形成真实 Wayland 授权、触发、任务栏/Dock 或性能证据。
 - 接管早期 Windows target 曾被 GTK 的 `gdk-pixbuf-sys`/`glib-sys` pkg-config 阻塞；GTK 已改为 Linux target 依赖，2026-08-02 的 `cargo check --workspace --target x86_64-pc-windows-msvc` 已通过。该事实只证明交叉编译，不证明 GUI 能力。
 - OCR 通过 `tesseract` 子进程和临时 PNG 工作；适配器已持有自身 `Child`，支持协作式取消、30 秒截止时间、16 MiB 输出上限和 RAII 临时文件清理，不再调用外部 `kill`。贴图与 Overlay UI 已经通过 `OcrJobService` 提交到 `JobSupervisor`，结果交付受 owner、终态和 `AssetRef` generation 门禁保护；worker 不触碰窗口或剪贴板。
 - 截图后端自动选择 KDE `spectacle` → xcap → `Unavailable`；两者不可用时保留后端失败摘要并由 provider 返回 `CapabilityUnavailable`，`fake` 只能通过显式测试/开发注入使用。

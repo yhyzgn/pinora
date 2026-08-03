@@ -2510,7 +2510,9 @@ dependencies = [
 name = "pinora-app"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "fs2",
+ "futures-lite",
  "global-hotkey",
  "gtk",
  "image",
@@ -2520,6 +2522,7 @@ dependencies = [
  "tray-icon",
  "winit",
  "xcap",
+ "zbus",
 ]
 
 [[package]]

@@ -18,6 +18,9 @@ use pinora_core::{
 };
 use winit::keyboard::{KeyCode, ModifiersState};
 
+#[cfg(target_os = "linux")]
+use crate::wayland_portal::{PortalAvailability, WaylandPortalHotkeys};
+
 /// 热键提供者：注册绑定并轮询触发的动作。
 pub trait HotkeySource {
     fn register(&mut self, binding: KeyBinding) -> Result<(), PinoraError>;
@@ -136,6 +139,9 @@ pub struct GlobalHotkeyHub {
     region_hotkey: HotkeyBinding,
     full_display_hotkey: HotkeyBinding,
     status: GlobalHotkeyStatus,
+    #[cfg(target_os = "linux")]
+    portal: Option<WaylandPortalHotkeys>,
+    status_changed: bool,
 }
 
 impl GlobalHotkeyHub {
@@ -159,9 +165,21 @@ impl GlobalHotkeyHub {
                         available: true,
                         notes,
                     },
+                    #[cfg(target_os = "linux")]
+                    portal: None,
+                    status_changed: false,
                 }
             }
-            Err(error) => Self::unavailable(error),
+            Err(error) => {
+                #[cfg(target_os = "linux")]
+                {
+                    Self::with_wayland_portal(error, region_hotkey, full_display_hotkey)
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    Self::unavailable(error)
+                }
+            }
         }
     }
 
@@ -170,21 +188,32 @@ impl GlobalHotkeyHub {
     }
 
     pub fn poll_actions(&mut self) -> Vec<ActionId> {
-        if self.manager.is_none() {
-            return Vec::new();
-        }
-        let Some(registered) = self.registered.as_ref() else {
-            return Vec::new();
-        };
         let mut out = Vec::new();
-        while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
-            if let Some(action) = registered.action_for_pressed_event(event.id(), event.state()) {
-                out.push(action);
+        if let Some(registered) = self.registered.as_ref() {
+            while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
+                if let Some(action) = registered.action_for_pressed_event(event.id(), event.state())
+                {
+                    out.push(action);
+                }
             }
         }
+
+        #[cfg(target_os = "linux")]
+        if let Some(portal) = self.portal.as_ref() {
+            let poll = portal.poll_actions(&mut out);
+            if let Some(availability) = poll.availability {
+                self.apply_portal_availability(availability);
+            }
+        }
+
         // 去抖：同一帧多次 F2 只保留一次 Capture
         out.dedup();
         out
+    }
+
+    /// Portal 初始化与重连发生在后台；桌面壳用该边沿刷新现有 tray 菜单。
+    pub fn take_status_changed(&mut self) -> bool {
+        std::mem::take(&mut self.status_changed)
     }
 
     /// 先注册新组合、再释放旧组合。任何失败都保留旧的动作映射。
@@ -210,6 +239,14 @@ impl GlobalHotkeyHub {
             return Ok(self.manager.is_some());
         }
         let Some(manager) = self.manager.as_ref() else {
+            #[cfg(target_os = "linux")]
+            if let Some(portal) = self.portal.as_ref()
+                && portal.rebind(region_hotkey, full_display_hotkey)
+            {
+                self.region_hotkey = region_hotkey;
+                self.full_display_hotkey = full_display_hotkey;
+                return Ok(true);
+            }
             self.region_hotkey = region_hotkey;
             self.full_display_hotkey = full_display_hotkey;
             return Ok(false);
@@ -253,6 +290,70 @@ impl GlobalHotkeyHub {
                     unavailable_platform_note().into(),
                 ],
             },
+            #[cfg(target_os = "linux")]
+            portal: None,
+            status_changed: false,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn with_wayland_portal(
+        backend_error: String,
+        region_hotkey: HotkeyBinding,
+        full_display_hotkey: HotkeyBinding,
+    ) -> Self {
+        let portal = WaylandPortalHotkeys::start(region_hotkey, full_display_hotkey);
+        let mut hub = Self {
+            manager: None,
+            registered: None,
+            region_hotkey,
+            full_display_hotkey,
+            status: GlobalHotkeyStatus {
+                available: false,
+                notes: vec![
+                    format!("global-hotkey unavailable: {backend_error}"),
+                    "fallback: use the tray menu or `pinora capture` IPC".into(),
+                    if portal.is_some() {
+                        "Linux Wayland: XDG GlobalShortcuts Portal pending".into()
+                    } else {
+                        unavailable_platform_note().into()
+                    },
+                ],
+            },
+            portal,
+            status_changed: false,
+        };
+        if hub.portal.is_some() {
+            hub.status
+                .notes
+                .push("portal errors are reported as stable capability codes".into());
+        }
+        hub
+    }
+
+    #[cfg(target_os = "linux")]
+    fn apply_portal_availability(&mut self, availability: PortalAvailability) {
+        let next = match availability {
+            PortalAvailability::Available => GlobalHotkeyStatus {
+                available: true,
+                notes: vec![
+                    "global-hotkey: XDG GlobalShortcuts Portal registered".into(),
+                    "fallback: `pinora capture` keeps working through single-instance IPC".into(),
+                    "global-hotkey backend: Linux Wayland Portal".into(),
+                ],
+            },
+            PortalAvailability::Unavailable(failure) => GlobalHotkeyStatus {
+                available: false,
+                notes: vec![
+                    format!("global-hotkey portal unavailable: {}", failure.code()),
+                    "fallback: use the tray menu or `pinora capture` IPC".into(),
+                    unavailable_platform_note().into(),
+                ],
+            },
+        };
+        if self.status.available != next.available || self.status.notes != next.notes {
+            self.status = next;
+            self.status_changed = true;
         }
     }
 }

@@ -32,6 +32,8 @@ sudo dnf install -y pipewire-devel mesa-libgbm-devel wayland-devel libxcb-devel
 - 运行探针：`cargo run`
 - 上下文完整性：`python /home/neo/.agents/skills/ctx/scripts/context_bootstrap.py validate --root /home/neo/Projects/neo/pub/pinora`
 
+100 Wayland Portal 增量已执行并通过：`cargo test -p pinora-app wayland_portal -- --nocapture`（4 通过）、`cargo test -p pinora-app hotkey -- --nocapture`（16 通过）、`cargo test -p pinora-app desktop_shell -- --nocapture`（39 通过）、`cargo fmt --check`、`cargo check --workspace`、`cargo check --workspace --target x86_64-pc-windows-msvc`、`cargo clippy --workspace --all-targets -- -D warnings`、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`（app 298 通过、2 忽略；core 90 通过）、`ctx validate` 与 `git diff --check` 均成功。Portal 当前开发机仅验证为缺失接口时的受控不可用状态；不证明真实 Wayland 授权、全局触发、tray-only、任务栏/Dock 或性能。
+
 096 历史保留期增量已执行并通过：`cargo test -p pinora-core settings -- --nocapture`、`cargo test -p pinora-core history -- --nocapture`、`cargo test -p pinora-app --lib settings_store::tests -- --nocapture`、`cargo test -p pinora-app --lib settings_panel::tests -- --nocapture`、`cargo test -p pinora-app --lib history_export::tests -- --nocapture`、`cargo test -p pinora-app --lib desktop_shell::overlay_scale_tests -- --nocapture`；完整门禁使用上方 workspace、Clippy、测试、Windows target、差异和 `ctx validate` 命令。完整测试未连接真实共享数据库、缓存、消息队列、对象存储或第三方服务；2 个真实桌面测试按既有约定忽略。
 
 097 历史最大磁盘占用增量使用同一组定向测试，并额外覆盖 v7 到 v8 设置迁移、非法容量修复、容量下调后的最旧优先 tombstone 与受管 PNG 清理；完整门禁仍使用上方 workspace、Clippy、测试、Windows target、差异和 `ctx validate` 命令。测试不连接真实共享基础设施；2 个真实桌面测试按既有约定忽略。

@@ -39,6 +39,8 @@ mod single_instance;
 mod tray;
 mod tray_capabilities;
 mod tray_feedback;
+#[cfg(target_os = "linux")]
+mod wayland_portal;
 mod window_policy;
 mod worker_lifecycle;
 

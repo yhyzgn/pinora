@@ -1497,7 +1497,15 @@ where
     /// 处理全局热键与 `pinora capture` 等 IPC。
     fn poll_external_actions(&mut self, event_loop: &ActiveEventLoop) {
         // 1) 全局热键
-        for action in self.hotkeys.poll_actions() {
+        let hotkey_actions = self.hotkeys.poll_actions();
+        if self.hotkeys.take_status_changed() {
+            let available = self.hotkeys.status().available;
+            if let Some(tray) = &self.tray {
+                tray.set_global_hotkey_available(available);
+            }
+            self.refresh_diagnostics();
+        }
+        for action in hotkey_actions {
             match action {
                 ActionId::CaptureRegionAndPin => {
                     println!("pinora: global hotkey → capture");

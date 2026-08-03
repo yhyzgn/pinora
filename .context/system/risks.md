@@ -531,6 +531,15 @@
 - 回滚或隔离动作：移除托盘导出项和 `write_report` 调用，恢复仅诊断面板；不改变能力探测、历史、设置、截图、OCR 或窗口策略。
 - 负责人和状态：Neo；报告模型、原子写入和离线门禁已验证，原生托盘/文件系统证据开放。
 
+## R-059：Wayland GlobalShortcuts Portal 的原生后端、授权与触发尚未验证（高）
+
+- 证据和影响范围：100 在 Linux + Wayland 会话门槛通过后启动独立 `pinora-wayland-hotkeys` worker，固定绑定 `capture-region` 与 `capture-full-display`；CreateSession、BindShortcuts、Request 响应和 `Activated` 信号不进入 GUI 事件循环，未知标识、取消、失联和缺失接口只发布稳定能力状态并保留 tray/IPC。Linux target-only 依赖、Portal/Hotkey/Desktop Shell 定向测试、workspace 编译、严格 Clippy、Windows target 编译和全量离线测试已通过；当前开发机只确认 Portal 接口未暴露，未确认授权或真实触发。
+- 触发条件：KDE/GNOME/其他 Wayland backend 对 `org.freedesktop.portal.GlobalShortcuts` 版本、父窗口 token、用户授权 UI、preferred trigger 格式、session 生命周期、重新绑定和 `Activated`/`Deactivated` 信号的实现差异；Portal 服务重启、用户拒绝、桌面休眠恢复或 GUI 线程高负载。
+- 失败模式：Portal 可能拒绝创建/绑定、等待用户交互、返回部分快捷键、断开后不再触发或触发重复；用户仍应能通过 tray/IPC 截图。即使 D-Bus 状态显示 Available，合成器也可能让热键延迟、与其他应用冲突，或辅助窗口短暂出现在任务栏、Dock、分页器；离线 D-Bus 解析、CI、target 编译和当前机器的缺失接口都不能证明这些原生行为。
+- 缓解措施和必需验证：保持两个固定 ID、受限错误码、后台 worker、GUI 非阻塞轮询、重绑先关闭旧 session、失败不破坏既有本地后端/tray/IPC，且所有辅助窗口继续经 `window_policy`。在至少 KDE Wayland 与一个非 KDE Wayland 原生会话验证首次授权/拒绝、两项触发、未知信号过滤、重绑、Portal 重启、休眠恢复、退出清理、tray-only、任务栏/Dock/分页器、焦点、首帧、100%/200% HiDPI 和连续截图帧时间；未通过前不宣称纯 Wayland 热键生产可用或 Snipaste 级流畅度。
+- 回滚或隔离动作：移除 `wayland_portal`、Linux target-only 依赖和 `GlobalHotkeyHub` Portal 接线，恢复纯 Wayland 的 tray/IPC 降级；不改变 X11/Windows/macOS 热键、设置 schema、截图、贴图、OCR、导出或窗口策略。
+- 负责人和状态：Neo；离线契约与静态门禁已验证，真实 Wayland backend、授权、触发、窗口管理器和性能证据开放。
+
 ## 风险一：上下文漂移
 
 - 触发条件：代码、配置或工作流变化后，没有同步更新对应上下文文件。

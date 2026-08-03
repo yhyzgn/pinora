@@ -50,7 +50,7 @@ const fn capture_label(available: bool) -> &'static str {
     }
 }
 
-const fn global_hotkey_label(available: bool) -> &'static str {
+pub(crate) const fn global_hotkey_label(available: bool) -> &'static str {
     if available {
         "全局热键：可用"
     } else {
