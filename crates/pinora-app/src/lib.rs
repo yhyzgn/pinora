@@ -36,6 +36,7 @@ mod settings_panel;
 mod settings_store;
 mod settings_window;
 mod single_instance;
+mod start_on_login;
 mod tray;
 mod tray_capabilities;
 mod tray_feedback;

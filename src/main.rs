@@ -119,6 +119,7 @@ enum CliAction {
     Default,
     Capture,
     Quit,
+    Autostart,
 }
 
 impl CliAction {
@@ -127,6 +128,8 @@ impl CliAction {
             // 二次启动默认也触发截图（比仅 Activate 更有用）
             Self::Default | Self::Capture => Some(b"CAPTURE\n"),
             Self::Quit => Some(b"QUIT\n"),
+            // 登录自启只启动 tray-only 实例；已有实例时绝不触发截图。
+            Self::Autostart => None,
         }
     }
 }
@@ -139,6 +142,7 @@ fn parse_cli_action(args: &[String]) -> CliAction {
     match a {
         "capture" | "--capture" | "-c" => CliAction::Capture,
         "quit" | "--quit" | "-q" => CliAction::Quit,
+        "--pinora-autostart" => CliAction::Autostart,
         "help" | "--help" | "-h" => {
             print_help();
             std::process::exit(0);
@@ -180,4 +184,17 @@ KDE System Settings (always works as backup):
     {exe} capture
 "
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn autostart_action_never_forwards_a_capture_to_an_existing_instance() {
+        let action = parse_cli_action(&["--pinora-autostart".into()]);
+
+        assert_eq!(action, CliAction::Autostart);
+        assert_eq!(action.ipc_frame(), None);
+    }
 }

@@ -1,7 +1,7 @@
 //! 版本化本地设置的纯领域模型。
 
 /// 当前设置 schema 版本。
-pub const SETTINGS_SCHEMA_VERSION: u16 = 8;
+pub const SETTINGS_SCHEMA_VERSION: u16 = 9;
 pub const DEFAULT_HISTORY_LIMIT: u32 = 100;
 pub const DEFAULT_HISTORY_RETENTION_DAYS: u16 = 30;
 pub const HISTORY_RETENTION_DAYS_MIN: u16 = 1;
@@ -365,6 +365,8 @@ impl OcrLanguage {
 pub struct AppSettings {
     pub schema_version: u16,
     pub theme: ThemeMode,
+    /// 用户明确启用后，登录时只启动 tray-only Pinora 进程。
+    pub start_on_login: bool,
     pub history_limit: u32,
     /// 受管历史 PNG 的最大保留时长；范围为 1..=3650 天。
     pub history_retention_days: u16,
@@ -389,6 +391,7 @@ impl Default for AppSettings {
         Self {
             schema_version: SETTINGS_SCHEMA_VERSION,
             theme: ThemeMode::System,
+            start_on_login: false,
             history_limit: DEFAULT_HISTORY_LIMIT,
             history_retention_days: DEFAULT_HISTORY_RETENTION_DAYS,
             history_max_bytes: DEFAULT_HISTORY_MAX_BYTES,
@@ -422,6 +425,8 @@ pub struct SettingsRepairs {
     pub migrated_from_v6: bool,
     /// v7 设置成功按默认新增历史最大字节数字段；下次保存会原子替换为当前记录。
     pub migrated_from_v7: bool,
+    /// v8 设置成功按默认新增用户级开机自启字段；下次保存会原子替换为当前记录。
+    pub migrated_from_v8: bool,
     pub history_limit: bool,
     pub history_retention_days: bool,
     pub history_max_bytes: bool,
@@ -442,6 +447,7 @@ impl SettingsRepairs {
             && !self.migrated_from_v5
             && !self.migrated_from_v6
             && !self.migrated_from_v7
+            && !self.migrated_from_v8
             && !self.history_limit
             && !self.history_retention_days
             && !self.history_max_bytes
@@ -525,6 +531,7 @@ mod tests {
         let (settings, repairs) = AppSettings {
             schema_version: SETTINGS_SCHEMA_VERSION,
             theme: ThemeMode::Dark,
+            start_on_login: false,
             history_limit: 0,
             history_retention_days: 0,
             history_max_bytes: 0,

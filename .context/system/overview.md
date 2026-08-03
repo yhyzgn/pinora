@@ -40,6 +40,7 @@
 - 2026-08-03 的 101 修复 KDE/Spectacle 多显示器指定全屏：`spectacle -m` 只表示当前鼠标所在屏幕，不能代表 tray 选择的 `DisplayId`，因此仅在唯一显示器拓扑下使用；多显示器目标统一走一次 `-f` 全桌面快照和目标 bounds 裁剪。离线决策测试与 workspace 门禁已通过，真实 KDE 异构缩放、截图性能和任务栏/Dock 行为仍待探针。
 - 2026-08-03 的 102 移除 KDE 后端在 `kscreen-doctor` 失败时的固定 `3840x2160` 伪显示器，改为执行真实 `xrandr --query` 并解析 connected 输出；两种拓扑探测均失败时明确返回 `CapabilityUnavailable`，不创建伪截图来源。解析和 workspace 门禁已通过，真实驱动输出格式、Wayland 环境和权限行为仍待探针。
 - 2026-08-03 的 103 将 `GlobalShortcuts` Portal 最低版本收紧为 v2；v1 或更低版本在 CreateSession 前映射为 `portal_version_unsupported`，不报告 Available。Portal 动作、后台 worker、tray/IPC 回退不变；版本门槛测试与 workspace 门禁已通过，真实 backend 方法完整性和授权行为仍由 R-059 跟踪。
+- 2026-08-03 的 104 将设置 schema 升级至 v9，新增默认关闭的 `start_on_login`。设置面板支持鼠标、方向键和键盘导航；保存开关变化时先管理当前用户的 Linux XDG Autostart、Windows `HKCU...Run` 或 macOS `~/Library/LaunchAgents` 项，平台成功后才原子保存设置，后续热键重绑或设置保存失败会尝试补偿回滚。启动项带稳定 Pinora 所有权标记，启动参数显式使用 `--pinora-autostart`，已有实例不会转发截图命令；未知启动项不会被覆盖或删除。离线契约、workspace 门禁和 Windows target 编译已验证，真实登录时序、平台权限、tray/Dock/任务栏/分页器与 macOS `SMAppService` 受管路径仍未验证。
 - 接管早期 Windows target 曾被 GTK 的 `gdk-pixbuf-sys`/`glib-sys` pkg-config 阻塞；GTK 已改为 Linux target 依赖，2026-08-02 的 `cargo check --workspace --target x86_64-pc-windows-msvc` 已通过。该事实只证明交叉编译，不证明 GUI 能力。
 - OCR 通过 `tesseract` 子进程和临时 PNG 工作；适配器已持有自身 `Child`，支持协作式取消、30 秒截止时间、16 MiB 输出上限和 RAII 临时文件清理，不再调用外部 `kill`。贴图与 Overlay UI 已经通过 `OcrJobService` 提交到 `JobSupervisor`，结果交付受 owner、终态和 `AssetRef` generation 门禁保护；worker 不触碰窗口或剪贴板。
 - 截图后端自动选择 KDE `spectacle` → xcap → `Unavailable`；两者不可用时保留后端失败摘要并由 provider 返回 `CapabilityUnavailable`，`fake` 只能通过显式测试/开发注入使用。

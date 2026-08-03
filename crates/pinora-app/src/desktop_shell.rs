@@ -48,6 +48,7 @@ use crate::overlay_toolbar::{
 };
 use crate::settings_panel::{SettingsPanelAction, SettingsPanelKey};
 use crate::settings_window::SettingsWindow;
+use crate::start_on_login;
 use crate::tray::{AppTray, TrayAction, TrayPinListEntry};
 use crate::tray_capabilities::TrayCapabilitySummary;
 use crate::tray_feedback::{TrayExportOperation, TrayFeedback};
@@ -2089,8 +2090,35 @@ where
             .unwrap_or_default();
         let hotkeys_changed = draft.region_hotkey != previous.region_hotkey
             || draft.full_display_hotkey != previous.full_display_hotkey;
+        let start_on_login_changed = draft.start_on_login != previous.start_on_login;
         let ocr_confidence_threshold_changed =
             draft.ocr_confidence_threshold != previous.ocr_confidence_threshold;
+        let executable = if start_on_login_changed {
+            match std::env::current_exe() {
+                Ok(path) => Some(path),
+                Err(_) => {
+                    if let Some(settings) = self.settings.as_mut() {
+                        settings.mark_save_failed("start_on_login_invalid_executable");
+                        settings.request_redraw();
+                    }
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let mut start_on_login_applied = false;
+        if let (true, Some(executable)) = (start_on_login_changed, executable.as_deref()) {
+            if let Err(error) = start_on_login::set_enabled(draft.start_on_login, executable) {
+                if let Some(settings) = self.settings.as_mut() {
+                    settings.mark_save_failed(error.code());
+                    settings.request_redraw();
+                }
+                eprintln!("pinora: start-on-login update rejected ({})", error.code());
+                return;
+            }
+            start_on_login_applied = true;
+        }
         let hotkeys_rebound = if hotkeys_changed {
             match self
                 .hotkeys
@@ -2101,6 +2129,13 @@ where
                     if let Some(settings) = self.settings.as_mut() {
                         settings.mark_save_failed("hotkey_registration_failed");
                         settings.request_redraw();
+                    }
+                    if start_on_login_applied
+                        && let Some(executable) = executable.as_deref()
+                        && let Err(error) =
+                            start_on_login::set_enabled(previous.start_on_login, executable)
+                    {
+                        eprintln!("pinora: start-on-login rollback failed ({})", error.code());
                     }
                     eprintln!(
                         "pinora: settings hotkey update rejected; existing bindings retained"
@@ -2171,6 +2206,13 @@ where
                         .is_err()
                 {
                     eprintln!("pinora: settings save rollback could not restore hotkeys");
+                }
+                if start_on_login_applied
+                    && let Some(executable) = executable.as_deref()
+                    && let Err(error) =
+                        start_on_login::set_enabled(previous.start_on_login, executable)
+                {
+                    eprintln!("pinora: start-on-login rollback failed ({})", error.code());
                 }
                 if let Some(settings) = self.settings.as_mut() {
                     settings.mark_save_failed("settings_save_failed");

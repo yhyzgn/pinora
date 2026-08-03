@@ -20,7 +20,8 @@ const V4_RECORD_LEN: usize = 24;
 const V5_RECORD_LEN: usize = 25;
 const V6_RECORD_LEN: usize = 27;
 const V7_RECORD_LEN: usize = 29;
-const RECORD_LEN: usize = 37;
+const V8_RECORD_LEN: usize = 37;
+const RECORD_LEN: usize = 38;
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +128,7 @@ fn encode(settings: AppSettings) -> Result<[u8; RECORD_LEN], String> {
     bytes[26] = repaired.jpeg_quality;
     bytes[27..29].copy_from_slice(&repaired.history_retention_days.to_le_bytes());
     bytes[29..37].copy_from_slice(&repaired.history_max_bytes.to_le_bytes());
+    bytes[37] = u8::from(repaired.start_on_login);
     Ok(bytes)
 }
 
@@ -139,7 +141,8 @@ fn decode(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         V5_RECORD_LEN => decode_v5(bytes),
         V6_RECORD_LEN => decode_v6(bytes),
         V7_RECORD_LEN => decode_v7(bytes),
-        RECORD_LEN => decode_v8(bytes),
+        V8_RECORD_LEN => decode_v8(bytes),
+        RECORD_LEN => decode_v9(bytes),
         _ => Err("settings record length is invalid".into()),
     }
 }
@@ -153,6 +156,7 @@ fn decode_v1(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
     let (settings, mut repairs) = AppSettings {
         schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
+        start_on_login: false,
         history_limit,
         history_retention_days: DEFAULT_HISTORY_RETENTION_DAYS,
         history_max_bytes: DEFAULT_HISTORY_MAX_BYTES,
@@ -182,6 +186,7 @@ fn decode_v2(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
     let (settings, mut repairs) = AppSettings {
         schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
+        start_on_login: false,
         history_limit,
         history_retention_days: DEFAULT_HISTORY_RETENTION_DAYS,
         history_max_bytes: DEFAULT_HISTORY_MAX_BYTES,
@@ -215,6 +220,7 @@ fn decode_v3(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
     let (settings, mut repairs) = AppSettings {
         schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
+        start_on_login: false,
         history_limit,
         history_retention_days: DEFAULT_HISTORY_RETENTION_DAYS,
         history_max_bytes: DEFAULT_HISTORY_MAX_BYTES,
@@ -251,6 +257,7 @@ fn decode_v4(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
     let (settings, mut repairs) = AppSettings {
         schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
+        start_on_login: false,
         history_limit,
         history_retention_days: DEFAULT_HISTORY_RETENTION_DAYS,
         history_max_bytes: DEFAULT_HISTORY_MAX_BYTES,
@@ -287,6 +294,7 @@ fn decode_v5(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
     let (settings, mut repairs) = AppSettings {
         schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
+        start_on_login: false,
         history_limit,
         history_retention_days: DEFAULT_HISTORY_RETENTION_DAYS,
         history_max_bytes: DEFAULT_HISTORY_MAX_BYTES,
@@ -325,6 +333,7 @@ fn decode_v6(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
     let (settings, mut repairs) = AppSettings {
         schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
+        start_on_login: false,
         history_limit,
         history_retention_days: DEFAULT_HISTORY_RETENTION_DAYS,
         history_max_bytes: DEFAULT_HISTORY_MAX_BYTES,
@@ -364,6 +373,7 @@ fn decode_v7(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
     let (settings, mut repairs) = AppSettings {
         schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
+        start_on_login: false,
         history_limit,
         history_retention_days,
         history_max_bytes: DEFAULT_HISTORY_MAX_BYTES,
@@ -385,7 +395,7 @@ fn decode_v7(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
 }
 
 fn decode_v8(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
-    validate_magic_and_schema(bytes, SETTINGS_SCHEMA_VERSION)?;
+    validate_magic_and_schema(bytes, 8)?;
     let theme =
         ThemeMode::from_wire(bytes[10]).ok_or_else(|| "settings theme is invalid".to_string())?;
     let ocr_language = OcrLanguage::from_wire(bytes[18])
@@ -406,6 +416,51 @@ fn decode_v8(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
     let (settings, mut repairs) = AppSettings {
         schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
+        start_on_login: false,
+        history_limit,
+        history_retention_days,
+        history_max_bytes,
+        pin_limit,
+        default_pin_opacity_percent: bytes[17],
+        default_pin_always_on_top,
+        ocr_language,
+        ocr_confidence_threshold: bytes[24],
+        export_format,
+        jpeg_quality: bytes[26],
+        region_hotkey,
+        full_display_hotkey,
+    }
+    .with_repaired_values();
+    repairs.region_hotkey |= region_invalid;
+    repairs.full_display_hotkey |= full_invalid;
+    repairs.migrated_from_v8 = true;
+    Ok((settings, repairs))
+}
+
+fn decode_v9(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
+    validate_magic_and_schema(bytes, SETTINGS_SCHEMA_VERSION)?;
+    let theme =
+        ThemeMode::from_wire(bytes[10]).ok_or_else(|| "settings theme is invalid".to_string())?;
+    let ocr_language = OcrLanguage::from_wire(bytes[18])
+        .ok_or_else(|| "settings OCR language is invalid".to_string())?;
+    let default_pin_always_on_top = decode_bool(bytes[23])?;
+    let start_on_login = decode_bool(bytes[37])?;
+    let export_format = ExportImageFormat::from_wire(bytes[25])
+        .ok_or_else(|| "settings export format is invalid".to_string())?;
+    let history_limit = u32::from_le_bytes([bytes[11], bytes[12], bytes[13], bytes[14]]);
+    let pin_limit = u16::from_le_bytes([bytes[15], bytes[16]]);
+    let history_retention_days = u16::from_le_bytes([bytes[27], bytes[28]]);
+    let history_max_bytes = u64::from_le_bytes([
+        bytes[29], bytes[30], bytes[31], bytes[32], bytes[33], bytes[34], bytes[35], bytes[36],
+    ]);
+    let (region_hotkey, region_invalid) =
+        decode_hotkey(bytes[19], bytes[20], DEFAULT_REGION_HOTKEY);
+    let (full_display_hotkey, full_invalid) =
+        decode_hotkey(bytes[21], bytes[22], DEFAULT_FULL_DISPLAY_HOTKEY);
+    let (settings, mut repairs) = AppSettings {
+        schema_version: SETTINGS_SCHEMA_VERSION,
+        theme,
+        start_on_login,
         history_limit,
         history_retention_days,
         history_max_bytes,
@@ -551,7 +606,7 @@ mod tests {
     #[test]
     fn unknown_schema_is_rejected() {
         let mut bytes = encode(AppSettings::default()).expect("encode");
-        bytes[8] = 9;
+        bytes[8] = 10;
         assert_eq!(
             decode(&bytes),
             Err("settings schema version is unsupported".into())
@@ -584,7 +639,7 @@ mod tests {
     }
 
     #[test]
-    fn v8_round_trip_preserves_export_ocr_settings_hotkeys_retention_and_capacity() {
+    fn v9_round_trip_preserves_export_ocr_settings_hotkeys_retention_capacity_and_autostart() {
         let settings = AppSettings {
             history_retention_days: 365,
             history_max_bytes: 3 * 1024 * 1024 * 1024,
@@ -595,13 +650,28 @@ mod tests {
             jpeg_quality: 75,
             region_hotkey: HotkeyBinding::new(HotkeyModifiers::CONTROL, HotkeyCode::KeyR),
             full_display_hotkey: HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4),
+            start_on_login: true,
             ..AppSettings::default()
         };
 
-        let (decoded, repairs) = decode(&encode(settings).expect("encode v8")).expect("decode v8");
+        let (decoded, repairs) = decode(&encode(settings).expect("encode v9")).expect("decode v9");
 
         assert_eq!(decoded, settings);
         assert!(repairs.is_empty());
+    }
+
+    #[test]
+    fn v8_settings_migrate_with_autostart_disabled() {
+        let current = encode(AppSettings::default()).expect("encode v9");
+        let mut bytes = [0u8; V8_RECORD_LEN];
+        bytes.copy_from_slice(&current[..V8_RECORD_LEN]);
+        bytes[8..10].copy_from_slice(&8u16.to_le_bytes());
+
+        let (decoded, repairs) = decode(&bytes).expect("migrate v8");
+
+        assert!(!decoded.start_on_login);
+        assert!(repairs.migrated_from_v8);
+        assert!(!repairs.is_empty());
     }
 
     #[test]

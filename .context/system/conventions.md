@@ -40,6 +40,8 @@ sudo dnf install -y pipewire-devel mesa-libgbm-devel wayland-devel libxcb-devel
 
 103 Wayland Portal 版本门槛增量已通过：`cargo test -p pinora-app wayland_portal -- --nocapture`（5 通过）、`cargo fmt --check`、`cargo check --workspace`、`cargo check --workspace --target x86_64-pc-windows-msvc`、`cargo clippy --workspace --all-targets -- -D warnings` 和 `PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`（app 303 通过、2 忽略；core 90 通过）。该门禁只证明 v1 及更低版本不会进入绑定，不证明 backend 方法完整性、授权 UI、全局触发、tray-only 或性能。
 
+104 用户级开机自启增量已完成实现：`cargo test -p pinora-app start_on_login -- --nocapture`（3 通过）覆盖 Linux `.desktop` 参数转义、`--pinora-autostart` tray-only 参数、同目录同步原子写入和未知项所有权冲突；设置 schema v1-v8 迁移到 v9 并补充 v9 往返。新鲜完整门禁 `cargo fmt --check`、`cargo check --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`（app 307 通过、2 忽略；core 90 通过）、`cargo check --workspace --target x86_64-pc-windows-msvc`、`git diff --check` 与 `ctx validate` 均通过。该验证不证明真实登录会话、平台权限、tray/Dock/任务栏/分页器或启动性能；macOS 当前为 LaunchAgent 兼容路径，不是 `SMAppService` 受管实现。
+
 096 历史保留期增量已执行并通过：`cargo test -p pinora-core settings -- --nocapture`、`cargo test -p pinora-core history -- --nocapture`、`cargo test -p pinora-app --lib settings_store::tests -- --nocapture`、`cargo test -p pinora-app --lib settings_panel::tests -- --nocapture`、`cargo test -p pinora-app --lib history_export::tests -- --nocapture`、`cargo test -p pinora-app --lib desktop_shell::overlay_scale_tests -- --nocapture`；完整门禁使用上方 workspace、Clippy、测试、Windows target、差异和 `ctx validate` 命令。完整测试未连接真实共享数据库、缓存、消息队列、对象存储或第三方服务；2 个真实桌面测试按既有约定忽略。
 
 097 历史最大磁盘占用增量使用同一组定向测试，并额外覆盖 v7 到 v8 设置迁移、非法容量修复、容量下调后的最旧优先 tombstone 与受管 PNG 清理；完整门禁仍使用上方 workspace、Clippy、测试、Windows target、差异和 `ctx validate` 命令。测试不连接真实共享基础设施；2 个真实桌面测试按既有约定忽略。

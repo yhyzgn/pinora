@@ -567,6 +567,15 @@
 - 回滚或隔离动作：若官方/实机证据确认 v1 完整兼容，独立任务中降低版本门槛并补方法契约；否则维持 v2 或对不完整 backend 隐藏 Portal 入口，不引入同步 D-Bus 或后台键盘监听。
 - 负责人和状态：Neo；离线版本门槛与静态门禁已验证，真实 backend 方法/授权/桌面行为证据开放。
 
+## R-063：用户级开机自启的真实登录与窗口驻留尚未验证（高）
+
+- 证据和影响范围：104 将设置 schema 升级至 v9，开机自启默认关闭；设置保存先调用平台适配器，再以原子记录保存。Linux 使用用户级 XDG Autostart `.desktop`，Windows 使用当前用户 `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run`，macOS 使用用户级 `~/Library/LaunchAgents/io.github.yhyzgn.pinora.plist` 兼容路径。启动项带 Pinora 所有权标记并显式传递 `--pinora-autostart`，已有实例不会触发截图；保存或热键重绑失败会尝试恢复旧启动项。离线测试覆盖 schema v1-v8 迁移、v9 往返、参数转义、`TryExec`、原子文件与所有权冲突；补偿调用路径已由源码审计，尚无独立故障注入测试。workspace 门禁和 Windows target 编译通过。
+- 触发条件：用户目录权限/只读文件、桌面会话加载顺序、XDG 配置目录覆盖、Windows Run 注册表解析、macOS `launchd` 加载与用户批准、应用路径迁移/升级、单实例竞争，以及登录时托盘与辅助窗口映射的合成器时序。
+- 失败模式：启动项可能写入成功但登录时未加载、重复启动仍触发错误动作、未知项被误处理，或辅助窗口短暂进入任务栏、Dock、分页器；CI、交叉编译和离线文件测试不能观察这些行为，也不能证明启动延迟或 Snipaste 级流畅度。当前 macOS 实现不是 macOS 13+ `SMAppService` 受管 LoginItem/Agent。
+- 缓解措施和必需验证：维持用户显式开关、稳定所有权标记、绝对且存在的可执行文件、同目录临时文件 + `sync_all` + rename、平台失败不保存新值、未知项拒绝覆盖/删除和 `--pinora-autostart` tray-only 入口。在 Linux X11/KDE Wayland、Windows 和 macOS 原生登录会话验证启用/禁用/升级迁移/权限拒绝/已有实例竞争、启动时无截图、tray 常驻、任务栏/Dock/分页器、首帧、焦点和启动耗时；macOS 后续应评估迁移到 `SMAppService`。
+- 回滚或隔离动作：隐藏设置入口并停止适配器调用，保留 v9 读取但不改变现有项；仅由应用关闭 Pinora 托管项，不删除未知启动项。若平台原生探针失败，保留 tray/IPC 手动入口并按稳定错误码反馈。
+- 负责人和状态：Neo；离线契约与静态门禁已验证，真实登录、权限、窗口管理器、启动性能和 `SMAppService` 证据开放。
+
 ## 风险一：上下文漂移
 
 - 触发条件：代码、配置或工作流变化后，没有同步更新对应上下文文件。

@@ -20,6 +20,7 @@ const REPORT_PREFIX: &str = "pinora-diagnostics";
 pub(crate) struct SanitizedSettings {
     pub schema_version: u16,
     pub theme: &'static str,
+    pub start_on_login: bool,
     pub history_limit: u32,
     pub history_retention_days: u16,
     pub history_max_bytes: u64,
@@ -36,6 +37,7 @@ impl SanitizedSettings {
         Self {
             schema_version: settings.schema_version,
             theme: theme_label(settings.theme),
+            start_on_login: settings.start_on_login,
             history_limit: settings.history_limit,
             history_retention_days: settings.history_retention_days,
             history_max_bytes: settings.history_max_bytes,
@@ -100,6 +102,11 @@ impl SanitizedDiagnosticReport {
             &self.settings.schema_version.to_string(),
         );
         push_line(&mut report, "settings.theme", self.settings.theme);
+        push_bool_line(
+            &mut report,
+            "settings.start_on_login",
+            self.settings.start_on_login,
+        );
         push_line(
             &mut report,
             "settings.history_limit",
@@ -288,10 +295,21 @@ mod tests {
     fn sanitized_settings_keep_enum_labels_stable() {
         let settings = AppSettings {
             theme: ThemeMode::Dark,
+            start_on_login: true,
             ..AppSettings::default()
         };
         let summary = SanitizedSettings::from_settings(settings);
         assert_eq!(summary.theme, "dark");
         assert_eq!(summary.export_format, "png");
+        assert!(summary.start_on_login);
+        let capabilities = CapabilitySnapshot::default();
+        let panel = DiagnosticsPanel::from_runtime(
+            &capabilities,
+            false,
+            false,
+            crate::tray_feedback::TrayFeedback::Ready,
+        );
+        let report = SanitizedDiagnosticReport::from_runtime(&capabilities, &panel, settings);
+        assert!(report.render().contains("settings.start_on_login=true\n"));
     }
 }

@@ -12,7 +12,7 @@ use pinora_core::{
 use crate::panel_theme::PanelTheme;
 
 pub const PANEL_WIDTH: u32 = 560;
-pub const PANEL_HEIGHT: u32 = 950;
+pub const PANEL_HEIGHT: u32 = 1014;
 
 const ROW_X: i32 = 28;
 const ROW_W: u32 = PANEL_WIDTH - 56;
@@ -38,10 +38,11 @@ pub enum SettingField {
     JpegQuality,
     RegionHotkey,
     FullDisplayHotkey,
+    StartOnLogin,
 }
 
 impl SettingField {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Theme,
         Self::HistoryLimit,
         Self::HistoryRetentionDays,
@@ -55,6 +56,7 @@ impl SettingField {
         Self::JpegQuality,
         Self::RegionHotkey,
         Self::FullDisplayHotkey,
+        Self::StartOnLogin,
     ];
 
     pub const fn index(self) -> usize {
@@ -72,6 +74,7 @@ impl SettingField {
             Self::JpegQuality => 10,
             Self::RegionHotkey => 11,
             Self::FullDisplayHotkey => 12,
+            Self::StartOnLogin => 13,
         }
     }
 
@@ -90,6 +93,7 @@ impl SettingField {
             Self::JpegQuality => "JPEG QUALITY",
             Self::RegionHotkey => "REGION HOTKEY",
             Self::FullDisplayHotkey => "FULL DISPLAY HOTKEY",
+            Self::StartOnLogin => "START ON LOGIN",
         }
     }
 
@@ -107,7 +111,7 @@ impl SettingField {
     }
 
     pub const fn is_binary_toggle(self) -> bool {
-        matches!(self, Self::DefaultPinAlwaysOnTop)
+        matches!(self, Self::DefaultPinAlwaysOnTop | Self::StartOnLogin)
     }
 }
 
@@ -294,6 +298,9 @@ impl SettingsPanel {
             SettingField::DefaultPinAlwaysOnTop => {
                 self.draft.default_pin_always_on_top = direction > 0;
             }
+            SettingField::StartOnLogin => {
+                self.draft.start_on_login = direction > 0;
+            }
             SettingField::OcrLanguage => {
                 const LANGUAGES: [OcrLanguage; 3] = [
                     OcrLanguage::Auto,
@@ -449,6 +456,13 @@ impl SettingsPanel {
             SettingField::PinOpacity => format!("{}%", self.draft.default_pin_opacity_percent),
             SettingField::DefaultPinAlwaysOnTop => {
                 if self.draft.default_pin_always_on_top {
+                    "ON".into()
+                } else {
+                    "OFF".into()
+                }
+            }
+            SettingField::StartOnLogin => {
+                if self.draft.start_on_login {
                     "ON".into()
                 } else {
                     "OFF".into()
@@ -880,7 +894,14 @@ mod tests {
     fn keyboard_navigation_wraps_and_steps_with_bounds() {
         let mut panel = SettingsPanel::new(AppSettings::default());
         panel.handle_key(SettingsPanelKey::Up);
-        assert_eq!(panel.selected(), SettingField::FullDisplayHotkey);
+        assert_eq!(panel.selected(), SettingField::StartOnLogin);
+        panel.handle_key(SettingsPanelKey::Down);
+        assert_eq!(panel.selected(), SettingField::Theme);
+        panel.select(SettingField::StartOnLogin);
+        panel.handle_key(SettingsPanelKey::Right);
+        assert!(panel.draft().start_on_login);
+        panel.handle_key(SettingsPanelKey::Left);
+        assert!(!panel.draft().start_on_login);
         panel.select(SettingField::OcrLanguage);
         panel.handle_key(SettingsPanelKey::Right);
         assert_eq!(panel.draft().ocr_language, OcrLanguage::English);
@@ -1152,6 +1173,7 @@ mod tests {
         assert!(SettingField::ExportFormat.row_rect().bottom() <= save_rect().origin.y);
         assert!(SettingField::JpegQuality.row_rect().bottom() <= save_rect().origin.y);
         assert!(SettingField::FullDisplayHotkey.row_rect().bottom() <= save_rect().origin.y);
+        assert!(SettingField::StartOnLogin.row_rect().bottom() <= save_rect().origin.y);
     }
 
     #[test]

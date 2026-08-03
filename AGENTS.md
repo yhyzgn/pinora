@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/103_wayland_portal_version_gate.md`
-- 任务：`.context/tasks/103_wayland_portal_version_gate.md`
+- 计划：`.context/plans/104_start_on_login.md`
+- 任务：`.context/tasks/104_start_on_login.md`
 
 ## 交付要求
 
