@@ -30,7 +30,6 @@ use crate::history_session::{ActiveHistoryLoad, HistoryLoadIntent, HistoryLoadRe
 use crate::overlay_selection_readout::{
     SelectionReadout, layout_selection_readout, paint_selection_readout,
 };
-use crate::overlay_session::{OverlayAssetIdentity, OverlayPhase, overlay_asset_for_revision};
 use crate::pin_session::{
     ClosedPinSnapshot, PinMouseMode, PinPresentation, next_pin_recency,
     pin_mouse_mode_after_platform_request,
@@ -77,6 +76,7 @@ use pinora_jobs::JobState;
 use pinora_ocr::{
     OcrJobCompletion, OcrJobService, OcrJobStart, tesseract_available, word_visual_state,
 };
+use pinora_overlay::{OverlayAssetIdentity, OverlayPhase, overlay_asset_for_revision};
 use pinora_panels::{DiagnosticsWindow, HistoryWindow, SettingsWindow};
 use pinora_storage::{ExportNameAllocator, HistoryStore, default_history_path};
 use softbuffer::{Context, Rect as DamageRect, Surface};

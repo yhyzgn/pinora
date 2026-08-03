@@ -1,0 +1,13 @@
+[package]
+name = "pinora-overlay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pinora Overlay session state and derived asset identity"
+
+[dependencies]
+pinora-core = { workspace = true }
+
+[dev-dependencies]
+pinora-jobs = { workspace = true }

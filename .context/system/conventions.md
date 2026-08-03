@@ -199,11 +199,11 @@ EventLoop 和所有导出副作用。`cargo test -p pinora-app export_session --
 `cargo check --workspace`、严格 Clippy、Windows target、fmt、diff 与 `ctx validate` 均通过。这些离线门禁
 不证明真实鼠标命中、窗口管理器、焦点、任务栏/Dock、HiDPI、tray-only 或性能，风险由 R-083 跟踪。
 
-133 Overlay 会话状态模块已完成：`pinora-app::overlay_session` 唯一拥有 `OverlayPhase`、
-`OverlayAssetIdentity`、`AnnotationRevision` 到 `AssetRef` 的 generation 映射和派生图像身份盖章；
-模块只依赖 `pinora-core`，不依赖 winit。`desktop_shell` 继续独占 Overlay Window/Surface、绘制、输入、
-标注文档写入、OCR/导出任务、tray 和 EventLoop。`cargo test -p pinora-app overlay_session -- --nocapture`
-（3 项）、`cargo test -p pinora-app --lib -- --nocapture`（27 项）、
+133/134 Overlay 会话 crate 已完成：`pinora-overlay` 唯一拥有 `OverlayPhase`、`OverlayAssetIdentity`、
+`AnnotationRevision` 到 `AssetRef` 的 generation 映射和派生图像身份盖章；生产依赖只包含
+`pinora-core`，`pinora-jobs` 仅作测试依赖，不依赖 winit。`desktop_shell` 继续独占 Overlay Window/Surface、
+绘制、输入、标注文档写入、OCR/导出任务、tray 和 EventLoop。`cargo test -p pinora-overlay -- --nocapture`
+（3 项）、`cargo test -p pinora-app --lib -- --nocapture`（24 项）、
 `PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`、`cargo check --workspace`、严格 Clippy、Windows target、
 `--version`、fmt、diff 与 `ctx validate` 均通过。这些离线门禁不证明真实 GUI、窗口管理器、焦点、
 任务栏/Dock、HiDPI、tray-only 或性能，风险由 R-084 跟踪。

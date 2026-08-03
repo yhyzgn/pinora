@@ -2519,6 +2519,7 @@ dependencies = [
  "pinora-history",
  "pinora-jobs",
  "pinora-ocr",
+ "pinora-overlay",
  "pinora-panels",
  "pinora-platform",
  "pinora-runtime",
@@ -2596,6 +2597,14 @@ dependencies = [
  "pinora-core",
  "pinora-jobs",
  "png 0.17.16",
+]
+
+[[package]]
+name = "pinora-overlay"
+version = "0.1.0"
+dependencies = [
+ "pinora-core",
+ "pinora-jobs",
 ]
 
 [[package]]

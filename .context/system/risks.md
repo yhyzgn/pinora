@@ -779,10 +779,10 @@
 
 ## R-084：Overlay 会话状态已拆分，但真实 Overlay 与资产结果时序仍未验证（高）
 
-- 证据和影响范围：133 将 `OverlayPhase`、`OverlayAssetIdentity`、`AnnotationRevision` 到 `AssetRef`
-  generation 的映射和派生 `CaptureImage` 的身份盖章迁入 `pinora-app::overlay_session`。模块只依赖
-  `pinora-core`，不依赖 winit；`desktop_shell` 保留 Overlay Window/Surface、绘制、输入、标注文档写入、
-  OCR/导出任务、tray 和 EventLoop。3 项状态测试、app 27 项回归和完整静态门禁通过。
+- 证据和影响范围：133/134 将 `OverlayPhase`、`OverlayAssetIdentity`、`AnnotationRevision` 到 `AssetRef`
+  generation 的映射和派生 `CaptureImage` 的身份盖章迁入 `pinora-overlay`。生产代码只依赖
+  `pinora-core`，`pinora-jobs` 仅作测试依赖，不依赖 winit；`desktop_shell` 保留 Overlay Window/Surface、
+  绘制、输入、标注文档写入、OCR/导出任务、tray 和 EventLoop。crate 3 项、app 24 项回归和完整静态门禁通过。
 - 触发条件：确认选区后快速标注、撤销/重做、重选，任务完成恰好与 revision 变化或 Overlay 关闭交错，
   或 Windows/macOS/X11/KDE Wayland 的窗口、输入、任务与 tray 调度和离线模型不同。
 - 失败模式：错误的 `ImageId`、generation 或盖章可能接受陈旧 OCR/导出结果、拒绝当前结果，或让重选复用
@@ -790,8 +790,8 @@
 - 缓解措施和必需验证：同一确认选区只以 revision 推进 generation，重选立即创建新身份，结果继续经过
   owner/asset 门禁；在 Windows、macOS、Linux X11、KDE Wayland 验证连续标注、撤销/重做、重选、OCR/复制/
   保存竞态、Overlay 关闭、tray-only、任务栏/Dock/分页器、焦点、100%/200% 缩放和帧时间。
-- 回滚或隔离动作：恢复 `desktop_shell` 内阶段与资产身份定义并移除 `overlay_session`；不改变窗口、图像数据、
-  标注文档、任务协议、tray、历史或设置。
+- 回滚或隔离动作：移除 `pinora-overlay` workspace 成员与 app 依赖，并恢复 app 内部实现；不改变窗口、
+  图像数据、标注文档、任务协议、tray、历史或设置。
 - 负责人和状态：Neo；离线状态、app、workspace、Clippy、Windows target、版本、格式、差异和上下文门禁已验证，
   真实 Overlay、窗口管理器、tray-only 和性能证据开放。
 

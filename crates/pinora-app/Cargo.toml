@@ -13,6 +13,7 @@ pinora-capture = { workspace = true }
 pinora-jobs = { workspace = true }
 pinora-storage = { workspace = true }
 pinora-desktop = { workspace = true }
+pinora-overlay = { workspace = true }
 pinora-ocr = { workspace = true }
 pinora-export = { workspace = true }
 pinora-history = { workspace = true }

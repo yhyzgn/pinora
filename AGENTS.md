@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/133_overlay_session_state.md`
-- 任务：`.context/tasks/133_overlay_session_state.md`
+- 计划：`.context/plans/134_overlay_crate.md`
+- 任务：`.context/tasks/134_overlay_crate.md`
 
 ## 交付要求
 

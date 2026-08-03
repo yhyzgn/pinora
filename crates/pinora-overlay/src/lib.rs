@@ -1,12 +1,12 @@
 //! Overlay 会话的纯状态与派生资产身份。
 //!
-//! Overlay 窗口、绘制、输入、标注文档写入和任务提交仍由 `desktop_shell` 持有。
+//! 窗口、绘制、输入、标注文档写入和任务提交由应用桌面壳持有。
 
 use pinora_core::{AnnotationRevision, AssetGeneration, AssetRef, CaptureImage, ImageId};
 
 /// Overlay 内阶段：框选中 / 已出选区（工具栏就绪）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OverlayPhase {
+pub enum OverlayPhase {
     Selecting,
     Ready,
 }
@@ -15,29 +15,35 @@ pub(crate) enum OverlayPhase {
 ///
 /// 选区内标注只改变 generation；重选来源像素时才生成新的图像身份。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct OverlayAssetIdentity {
+pub struct OverlayAssetIdentity {
     image_id: ImageId,
 }
 
-impl OverlayAssetIdentity {
-    pub(crate) fn new() -> Self {
+impl Default for OverlayAssetIdentity {
+    fn default() -> Self {
         Self {
             image_id: ImageId::new(),
         }
     }
+}
 
-    pub(crate) fn current(self, revision: AnnotationRevision) -> AssetRef {
+impl OverlayAssetIdentity {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn current(self, revision: AnnotationRevision) -> AssetRef {
         let generation = AssetGeneration::from_raw(revision.raw())
             .expect("annotation revision is guaranteed non-zero");
         AssetRef::new(self.image_id, generation)
     }
 
-    pub(crate) fn stamp(self, image: &mut CaptureImage) {
+    pub fn stamp(self, image: &mut CaptureImage) {
         image.id = self.image_id;
     }
 }
 
-pub(crate) fn overlay_asset_for_revision(
+pub fn overlay_asset_for_revision(
     identity: Option<OverlayAssetIdentity>,
     revision: AnnotationRevision,
 ) -> Option<AssetRef> {
@@ -50,7 +56,8 @@ mod tests {
     use pinora_core::{
         Annotation, AnnotationDoc, AnnotationRevision, CaptureImage, CaptureMetadata,
         CorrelationId, DEFAULT_STROKE, DEFAULT_WIDTH, DisplayId, ImageId, JobId, JobKind, JobOwner,
-        JobResultRef, PixelPoint, PixelRect, RgbaBuffer, SessionId,
+        JobResultRef, JobSpec, JobTerminalState, PixelPoint, PixelRect, PixelSize, RgbaBuffer,
+        SessionId,
     };
     use pinora_jobs::{JobResultDisposition, JobSupervisor};
 
@@ -71,7 +78,7 @@ mod tests {
         assert_eq!(submitted.image_id, current.image_id);
         assert_ne!(submitted.generation, current.generation);
 
-        let spec = pinora_core::JobSpec::new(
+        let spec = JobSpec::new(
             JobId::from_raw(11),
             CorrelationId::from_raw(12),
             submitted,
@@ -85,7 +92,7 @@ mod tests {
             supervisor
                 .accept_result(JobResultRef::new(ticket.id, submitted), current, 1)
                 .expect("known job"),
-            JobResultDisposition::Rejected(pinora_core::JobTerminalState::StaleAsset)
+            JobResultDisposition::Rejected(JobTerminalState::StaleAsset)
         );
 
         let before_empty_undo = identity.current(doc.revision());
@@ -136,7 +143,7 @@ mod tests {
 
         let mut image = CaptureImage::new(
             ImageId::from_raw(99),
-            RgbaBuffer::solid(pinora_core::PixelSize::new(2, 2), [1, 2, 3, 255]),
+            RgbaBuffer::solid(PixelSize::new(2, 2), [1, 2, 3, 255]),
             PixelRect::new(0, 0, 2, 2),
             CaptureMetadata::new(DisplayId::new("test"), 1.0, 0),
         )
