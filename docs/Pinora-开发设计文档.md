@@ -248,7 +248,7 @@ flowchart LR
     ExportSession --> HistoryNow
     ExportSession --> Desktop
     ExportSession --> JobsNow
-    App --> HistorySession["pinora-app::history_session\n已实现：历史加载意图/请求/活动状态/结果资产门禁"]
+    App --> HistorySession["pinora-history::history_session\n已实现：历史加载意图/请求/活动状态/结果资产门禁"]
     HistorySession --> Core
     HistorySession --> HistoryNow
     App --> PinSession["pinora-pin\n已实现：鼠标状态/呈现参数/关闭快照/最近使用序号"]
@@ -301,13 +301,13 @@ flowchart LR
 | `pinora-overlay` | Overlay 阶段、确认选区的派生资产身份、revision 到 generation 映射和派生图像身份盖章 | 继续收敛不含窗口资源的 Overlay 会话语义 | 生产依赖仅 `pinora-core`；不拥有选区几何、标注文档、Window/Surface、输入、绘制、任务、tray 或 EventLoop |
 | `pinora-pin` | 贴图鼠标命中状态、平台确认后的纯转移、呈现参数、关闭恢复快照和最近使用序号 | 继续收敛不含窗口资源的贴图会话语义 | 生产依赖仅 `pinora-core`；不拥有 `PinWin`、Window/Surface、输入、平台调用、OCR、导出、tray 或 EventLoop |
 | `pinora-export` | 原图/标注图来源、已提交标注烧录/草稿预览回退、PNG/JPEG/WebP 编码、原子文件发布、内存与系统剪贴板、取消/超时受监督导出 worker | 后续接收更窄的导出端口并与历史记录编排解耦 | 不拥有窗口、历史索引、托盘或应用 EventLoop；外部子进程必须可回收 |
-| `pinora-history` | 受管历史索引加载、PNG 摘要/尺寸校验、插入、删除/清空、配额/保留期 tombstone 清理、当前 Unix 毫秒到截止时间策略、异步历史图像读取 | 后续把历史策略与导出输入进一步抽象为端口 | 不拥有窗口、Panel、托盘或 EventLoop；所有路径限制在受管目录 |
+| `pinora-history` | 受管历史索引加载、PNG 摘要/尺寸校验、插入、删除/清空、配额/保留期 tombstone 清理、当前 Unix 毫秒到截止时间策略、异步历史图像读取、加载意图/请求/活动状态与结果资产门禁 | 后续把历史策略与导出输入进一步抽象为端口 | 不拥有窗口、Panel、托盘或 EventLoop；所有路径限制在受管目录 |
 | `pinora-diagnostics` | 固定白名单诊断报告、平台/反馈标签校验、设置脱敏摘要、字段顺序、文本渲染和原子文件发布 | 后续接收更窄的诊断快照端口 | 不拥有窗口、Panel、托盘、EventLoop、线程或外部进程 |
 | `pinora-panels` | 设置、历史、诊断三个辅助窗口的 Window/Surface、Panel 状态、主题刷新、输入转发和 softbuffer 绘制适配 | 后续迁移 Overlay/贴图窗口适配 | 不拥有 ApplicationHandler、EventLoop、托盘、截图、贴图、worker 或业务副作用；窗口创建/展示必须经过 `window_policy` |
 | `pinora-tray` | `tray-icon` 菜单构造、托盘句柄、事件轮询、动态贴图列表、热键/能力/固定反馈同步 | 后续抽象平台 tray backend 或引入原生探针 | 不拥有截图、贴图、设置、历史、诊断业务工作流或 EventLoop |
 | `pinora-ocr` | tesseract CLI、PNG 临时输入、TSV 解析、取消/超时/输出上限、受监督 OCR worker、结果缓存和词框视觉状态 | 继续承载本地 OCR 服务；app 只提供当前 UI owner/asset 并消费结果 | 不下载模型、不联网、不拥有窗口、剪贴板或应用 EventLoop |
 | `pinora-runtime` | AppRuntime、命令分发、领域状态变更、单实例 bootstrap/forward/shutdown、能力探测端口和事件发布 | 继续承载无 UI 的应用工作流 | 不创建窗口、EventLoop、线程、网络或具体平台探测；捕获/剪贴板通过泛型端口注入 |
-| `pinora-app` | desktop shell、导出/历史加载会话状态、OCR 触发/结果 UI 交付、历史选择编排、存储调用编排、托盘动作编排、设置/历史/诊断打开时机与业务副作用；导出/历史请求与结果消费 | 继续迁移 Overlay/贴图适配 | 保持唯一事件循环和现有用户行为，窗口资源适配已迁至 `pinora-panels` |
+| `pinora-app` | desktop shell、导出会话状态、OCR 触发/结果 UI 交付、历史选择编排、存储调用编排、托盘动作编排、设置/历史/诊断打开时机与业务副作用；导出/历史结果 UI 消费 | 继续迁移 Overlay/贴图适配 | 保持唯一事件循环和现有用户行为，窗口资源适配已迁至 `pinora-panels` |
 
 后续每个 crate 拆分都必须单独建立计划/任务、迁移原有测试、更新依赖图，并通过 workspace 与目标平台编译门禁；不得把一次性目录搬迁当作功能完成。
 
@@ -806,9 +806,9 @@ flowchart LR
 ```mermaid
 flowchart LR
     Shell["desktop_shell\n任务启动/轮询、窗口、贴图/编辑器、错误反馈、EventLoop"]
-    Session["history_session\n意图/请求/活动状态/准备类型映射/资产门禁"]
+    Session["pinora-history::history_session\n意图/请求/活动状态/准备类型映射/资产门禁"]
     Core["pinora-core\nHistoryEntry、JobId、JobOwner、AssetRef"]
-    History["pinora-history\nHistoryLoadPreparation / HistoryLoadJobService"]
+    History["pinora-history::history_load_job\nHistoryLoadPreparation / HistoryLoadJobService"]
     Effects["文件读取 / worker / Window / Surface / tray"]
 
     Shell --> Session
@@ -1365,12 +1365,12 @@ pinora/
 │   ├── pinora-jobs/           # 已存在：任务监督、取消、结果门禁、worker 回收
 │   ├── pinora-overlay/        # 已存在：Overlay 阶段、资产身份、revision 映射与盖章
 │   ├── pinora-pin/            # 已存在：贴图鼠标状态、呈现参数、关闭快照与最近使用序号
-│   ├── pinora-app/            # 已存在：runtime、export/history session、desktop_shell 与当前编排模块
+│   ├── pinora-app/            # 已存在：runtime、export session、desktop_shell 与当前编排模块
 │   ├── pinora-storage/        # 已存在：设置、历史 codec、原子文件和受管文件名
 │   ├── pinora-desktop/        # 已存在：交互/XRGB 渲染/Overlay 坐标/输入/窗口策略/呈现状态/面板/读数/菜单
 │   ├── pinora-ocr/            # 已存在：Tesseract/TSV/受监督 OCR 服务/词框视觉状态
 │   ├── pinora-export/         # 已存在：图像编码、原子文件、系统剪贴板和导出任务
-│   ├── pinora-history/        # 已存在：历史策略、受管文件和异步图像读取
+│   ├── pinora-history/        # 已存在：历史策略、受管文件、异步图像读取和加载会话门禁
 │   ├── pinora-diagnostics/    # 已存在：脱敏诊断报告、固定字段和原子发布
 │   ├── pinora-panels/         # 已存在：设置/历史/诊断 Window/Surface 与 Panel 适配
 │   ├── pinora-runtime/        # 已存在：命令/状态/单实例工作流与能力端口

@@ -57,9 +57,9 @@ graph LR
 - `pinora-desktop` 现唯一拥有 `settings_panel`、`history_browser`、`diagnostics_panel`、`overlay_selection_readout`、`overlay_geometry`、`overlay_annotation`、`pin_context_menu` 与 `xrgb` 的纯自绘状态、布局、物理像素坐标、标注投影、脏区裁剪、命中、XRGB 绘制和贴图基础帧缓存；`pinora-app` 通过 crate 导出复用这些模块，但仍持有 Window/Surface。
 - `pinora-desktop` 的 `overlay_input` 现唯一拥有 Overlay 的撤销/重做、文本 Enter、微调步长和双击复制意图判定；`pinora-app` 仍独占 winit 事件分发、标注文档写入、任务提交和窗口生命周期。
 - `pinora-export` 现唯一拥有 `capture_export`、`image_sink` 与 `export_job` 的导出来源、标注合成、图像编码、原子保存、系统剪贴板和受监督导出 worker；`pinora-app` 仅通过 crate re-export 与服务接口使用它们。
-- `pinora-history` 现唯一拥有 `history_export`、`history_load_job` 与 `retention` 的历史索引、
-  tombstone 策略、受管 PNG 校验、异步读取 worker、当前 Unix 毫秒读取及保留期截止时间
-  计算；`pinora-app` 仅通过 crate re-export 使用历史服务，并独占策略调用时机与窗口反馈。
+- `pinora-history` 现唯一拥有 `history_export`、`history_load_job`、`history_session` 与 `retention` 的
+  历史索引、tombstone 策略、受管 PNG 校验、异步读取 worker、加载意图/请求/活动状态/资产门禁、当前 Unix
+  毫秒读取及保留期截止时间计算；`pinora-app` 仅消费 crate 契约，并独占策略调用时机与窗口反馈。
 - `pinora-diagnostics` 现唯一拥有固定白名单诊断报告、平台/反馈标签校验、字段顺序、设置脱敏
   摘要、报告渲染和同目录原子文件发布；`pinora-app` 只组装 `DiagnosticsPanel`/runtime 的
   稳定值并处理 `ExportDiagnostics` 托盘动作与固定反馈。该 crate 不依赖 desktop、tray、winit、
@@ -205,6 +205,14 @@ EventLoop 和所有导出副作用。`cargo test -p pinora-app export_session --
 （3 项）、`cargo test -p pinora-app --lib -- --nocapture`（26 项）、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`、
 `cargo check --workspace`、严格 Clippy、Windows target、fmt、diff 与 `ctx validate` 均通过。这些离线门禁
 不证明真实历史目录权限、worker 时序、窗口管理器、焦点、HiDPI、tray-only 或性能，风险由 R-082 跟踪。
+
+137 历史加载会话 crate 已完成：`pinora-history::history_session` 唯一拥有 `HistoryLoadIntent`、
+`HistoryLoadRequest`、`ActiveHistoryLoad`、`HistoryLoadPreparation` 映射和结果资产门禁；新模块只依赖
+`pinora-core` 与既有 history 契约，不依赖 app、desktop 或 winit。`desktop_shell` 继续独占
+`HistoryLoadJobService`、历史窗口、贴图/编辑器、错误反馈和 EventLoop。`cargo test -p pinora-history -- --nocapture`
+（35 项）、`cargo test -p pinora-app --lib -- --nocapture`（12 项）、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`、
+`cargo check --workspace`、严格 Clippy、Windows target、`--version`、fmt、diff 与 `ctx validate` 均通过。
+这些离线门禁不证明真实历史目录权限、worker 时序、窗口管理器、焦点、HiDPI、tray-only 或性能，风险由 R-082 跟踪。
 
 132/135 贴图会话 crate 已完成：`pinora-pin` 唯一拥有 `PinMouseMode`、平台请求后的状态转移、
 `PinPresentation`、`ClosedPinSnapshot` 和饱和最近使用序号；生产依赖仅为 `pinora-core`，不依赖

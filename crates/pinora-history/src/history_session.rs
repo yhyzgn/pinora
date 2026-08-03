@@ -3,18 +3,19 @@
 //! 文件读取、worker、窗口和唯一 EventLoop 仍由 `desktop_shell` 持有。
 
 use pinora_core::{AssetRef, HistoryEntry, JobId, JobOwner};
-use pinora_history::HistoryLoadPreparation;
+
+use crate::HistoryLoadPreparation;
 
 /// 历史条目被消费的方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HistoryLoadIntent {
+pub enum HistoryLoadIntent {
     Preview,
     Reopen,
     Edit,
 }
 
 impl HistoryLoadIntent {
-    pub(crate) const fn preparation(self) -> HistoryLoadPreparation {
+    pub const fn preparation(self) -> HistoryLoadPreparation {
         match self {
             Self::Preview => HistoryLoadPreparation::Preview,
             Self::Reopen => HistoryLoadPreparation::Pin,
@@ -25,58 +26,58 @@ impl HistoryLoadIntent {
 
 /// 已从历史面板快照的加载请求。
 #[derive(Debug, Clone)]
-pub(crate) struct HistoryLoadRequest {
+pub struct HistoryLoadRequest {
     entry: HistoryEntry,
     intent: HistoryLoadIntent,
 }
 
 impl HistoryLoadRequest {
-    pub(crate) const fn new(entry: HistoryEntry, intent: HistoryLoadIntent) -> Self {
+    pub const fn new(entry: HistoryEntry, intent: HistoryLoadIntent) -> Self {
         Self { entry, intent }
     }
 
-    pub(crate) const fn entry(&self) -> &HistoryEntry {
+    pub const fn entry(&self) -> &HistoryEntry {
         &self.entry
     }
 
-    pub(crate) const fn intent(&self) -> HistoryLoadIntent {
+    pub const fn intent(&self) -> HistoryLoadIntent {
         self.intent
     }
 
-    pub(crate) const fn preparation(&self) -> HistoryLoadPreparation {
+    pub const fn preparation(&self) -> HistoryLoadPreparation {
         self.intent.preparation()
     }
 
-    pub(crate) fn asset(&self) -> AssetRef {
+    pub fn asset(&self) -> AssetRef {
         AssetRef::new(self.entry.image_id, self.entry.generation)
     }
 
-    pub(crate) fn matches_entry(&self, entry: &HistoryEntry) -> bool {
+    pub fn matches_entry(&self, entry: &HistoryEntry) -> bool {
         entry.image_id == self.entry.image_id && entry.generation == self.entry.generation
     }
 
-    pub(crate) fn into_entry(self) -> HistoryEntry {
+    pub fn into_entry(self) -> HistoryEntry {
         self.entry
     }
 }
 
 /// 已提交给历史读取服务的加载请求。
 #[derive(Debug, Clone)]
-pub(crate) struct ActiveHistoryLoad {
+pub struct ActiveHistoryLoad {
     job_id: JobId,
     request: HistoryLoadRequest,
 }
 
 impl ActiveHistoryLoad {
-    pub(crate) const fn new(job_id: JobId, request: HistoryLoadRequest) -> Self {
+    pub const fn new(job_id: JobId, request: HistoryLoadRequest) -> Self {
         Self { job_id, request }
     }
 
-    pub(crate) fn has_job_id(&self, job_id: JobId) -> bool {
+    pub fn has_job_id(&self, job_id: JobId) -> bool {
         self.job_id == job_id
     }
 
-    pub(crate) fn accepts_result(
+    pub fn accepts_result(
         &self,
         selected: Option<&HistoryEntry>,
         job_id: JobId,
@@ -89,7 +90,7 @@ impl ActiveHistoryLoad {
         .then(|| self.request.asset())
     }
 
-    pub(crate) fn into_request(self) -> HistoryLoadRequest {
+    pub fn into_request(self) -> HistoryLoadRequest {
         self.request
     }
 }
@@ -97,11 +98,11 @@ impl ActiveHistoryLoad {
 #[cfg(test)]
 mod tests {
     use super::{ActiveHistoryLoad, HistoryLoadIntent, HistoryLoadRequest};
+    use crate::HistoryLoadPreparation;
     use pinora_core::{
         AssetGeneration, AssetRef, ContentDigest, DisplayId, HistoryEntry, HistoryEntrySpec,
         HistoryOcrState, ImageId, JobId, JobOwner, PixelRect,
     };
-    use pinora_history::HistoryLoadPreparation;
 
     fn entry(id: u64) -> HistoryEntry {
         HistoryEntry::new(HistoryEntrySpec {

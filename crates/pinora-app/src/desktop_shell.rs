@@ -21,7 +21,6 @@ use crate::export_session::{
     tray_export_operation,
 };
 use crate::history_browser::{HistoryPanelAction, HistoryPanelKey};
-use crate::history_session::{ActiveHistoryLoad, HistoryLoadIntent, HistoryLoadRequest};
 use crate::overlay_selection_readout::{
     SelectionReadout, layout_selection_readout, paint_selection_readout,
 };
@@ -67,6 +66,7 @@ use pinora_desktop::{
     window_point_to_image, window_rect_from_points, window_selection_to_image, xrgb_pixel_count,
 };
 use pinora_diagnostics::{DiagnosticReportInput, SanitizedDiagnosticReport, write_report};
+use pinora_history::{ActiveHistoryLoad, HistoryLoadIntent, HistoryLoadRequest};
 use pinora_jobs::JobState;
 use pinora_ocr::{
     OcrJobCompletion, OcrJobService, OcrJobStart, tesseract_available, word_visual_state,

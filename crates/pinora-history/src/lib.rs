@@ -5,6 +5,7 @@
 
 mod history_export;
 mod history_load_job;
+mod history_session;
 mod retention;
 
 pub use history_export::{
@@ -16,4 +17,5 @@ pub use history_load_job::{
     HistoryLoadCompletion, HistoryLoadInput, HistoryLoadJobService, HistoryLoadPayload,
     HistoryLoadPreparation, HistoryLoadRunner, LocalHistoryLoadRunner,
 };
+pub use history_session::{ActiveHistoryLoad, HistoryLoadIntent, HistoryLoadRequest};
 pub use retention::history_retention_cutoff_ms;

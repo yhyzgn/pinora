@@ -747,16 +747,20 @@
   不读取文件、不启动或轮询 worker、不创建窗口或访问 runtime/tray；`desktop_shell` 保留
   `HistoryLoadJobService`、文件读取入口、历史窗口/贴图/编辑器、错误反馈和 EventLoop。3 项状态测试、
   app 26 项回归和完整静态门禁通过。
+- 迁移补充：137 已将上述会话状态从 `pinora-app::history_session` 迁入 `pinora-history::history_session`。
+  模块只依赖 `pinora-core` 与既有 history 契约，不依赖 app、desktop、winit 或窗口句柄；history 35 项、
+  app 12 项回归和完整静态门禁通过。
 - 触发条件：历史文件被删除、损坏或占用，快速切换/删除/清空条目，worker 取消/超时后返回，历史窗口
   关闭/重开，或 Windows/macOS/X11/KDE Wayland 的文件、窗口和事件调度与离线模型不同。
 - 失败模式：错误的 job id、owner、image id 或 generation 匹配可能接受过期图像并更新错误的预览、
   贴图或编辑器；真实环境仍可能出现加载延迟、窗口焦点/任务栏/Dock 异常或可感知卡顿。
-- 缓解措施和必需验证：保持请求启动前的当前选择复核，并只在 job、`JobOwner::History`、image id 与
+- 缓解措施和必需验证：保持请求启动前的当前选择复核，并只在 `pinora-history::history_session` 中同时验证
+  job、`JobOwner::History`、image id 与
   generation 同时匹配时交付结果；在 Windows、macOS、Linux X11、KDE Wayland 验证损坏/只读/占用文件、
   快速选择/删除/清空/关闭、取消/超时、预览/重新贴图/编辑器、tray、任务栏/Dock/分页器、焦点、
   100%/200% 缩放和帧时间。
-- 回滚或隔离动作：恢复 `desktop_shell` 内历史加载会话值对象和纯匹配函数，并移除 `history_session`；
-  不改变历史索引、受管 PNG、worker 协议、窗口策略、贴图、tray 或设置。
+- 回滚或隔离动作：移除 `pinora-history::history_session` 并恢复 `pinora-app::history_session`；不改变
+  历史索引、受管 PNG、worker 协议、窗口策略、贴图、tray 或设置。
 - 负责人和状态：Neo；离线状态、app、workspace、Clippy、Windows target、格式、差异和上下文门禁已验证，
   真实文件、worker、窗口管理器、tray-only 和性能证据开放。
 
