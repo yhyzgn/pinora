@@ -249,6 +249,7 @@ where
         history: None,
         diagnostics: None,
         pins: HashMap::new(),
+        pin_recency_clock: 0,
         recent_closed_pin: None,
         drag_pin: None,
         pin_resize: None,
@@ -764,6 +765,8 @@ struct PinWin {
     context_menu: Option<PinContextMenu>,
     /// winit 没有跨平台的实际可见性查询；这是 Pinora 对自己贴图可见状态的事实记录。
     visible: bool,
+    /// 仅用于 tray 列表排序的进程内最近使用序号，不进入领域或持久化。
+    last_used: u64,
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
     /// 最近一次 OCR 结果。
@@ -870,6 +873,8 @@ struct DesktopApp<L, P, C, S> {
     /// 用户主动打开的、非持久化的诊断面板；关闭后立即回到 tray-only。
     diagnostics: Option<DiagnosticsWindow>,
     pins: HashMap<WindowId, PinWin>,
+    /// 单调饱和的 UI 序号；进程重启后归零，不具有跨会话语义。
+    pin_recency_clock: u64,
     recent_closed_pin: Option<ClosedPinSnapshot>,
     drag_pin: Option<WindowId>,
     pin_resize: Option<PinResizeDrag>,
@@ -1143,6 +1148,7 @@ where
             .map(|pin| TrayPinListEntry {
                 pin_id: pin.pin_id,
                 visible: pin.visible,
+                last_used: pin.last_used,
             })
             .collect();
         if let Some(tray) = self.tray.as_mut()
@@ -1153,13 +1159,32 @@ where
     }
 
     fn activate_pin(&mut self, pin_id: PinId) {
-        let Some(pin) = self.pins.values_mut().find(|pin| pin.pin_id == pin_id) else {
+        let window_id = self
+            .pins
+            .iter()
+            .find_map(|(window_id, pin)| (pin.pin_id == pin_id).then_some(*window_id));
+        let Some(window_id) = window_id else { return };
+        if let Some(pin) = self.pins.get_mut(&window_id) {
+            pin.visible = true;
+            window_policy::show_auxiliary_window(AuxiliaryWindowKind::Pin, &pin.window, &pin.title);
+            pin.window.focus_window();
+            pin.window.request_redraw();
+        }
+        self.mark_pin_recent(window_id);
+    }
+
+    fn allocate_pin_recency(&mut self) -> u64 {
+        self.pin_recency_clock = next_pin_recency(self.pin_recency_clock);
+        self.pin_recency_clock
+    }
+
+    fn mark_pin_recent(&mut self, window_id: WindowId) {
+        let recency = next_pin_recency(self.pin_recency_clock);
+        let Some(pin) = self.pins.get_mut(&window_id) else {
             return;
         };
-        pin.visible = true;
-        window_policy::show_auxiliary_window(AuxiliaryWindowKind::Pin, &pin.window, &pin.title);
-        pin.window.focus_window();
-        pin.window.request_redraw();
+        self.pin_recency_clock = recency;
+        pin.last_used = recency;
         self.refresh_tray_pin_list();
     }
 
@@ -4105,6 +4130,7 @@ where
 
         let id = window.id();
         let asset = AssetRef::initial(image.id);
+        let last_used = self.allocate_pin_recency();
         self.pins.insert(
             id,
             PinWin {
@@ -4121,6 +4147,7 @@ where
                 always_on_top,
                 context_menu: None,
                 visible: true,
+                last_used,
                 window: window.clone(),
                 surface,
                 ocr: None,
@@ -4407,7 +4434,7 @@ where
                 self.set_pin_cursor(window_id, CursorIcon::Default);
             }
             WindowEvent::Focused(true) => {
-                // 确保键盘可用
+                self.mark_pin_recent(window_id);
             }
             _ => {}
         }
@@ -6142,6 +6169,10 @@ fn pin_window_level(always_on_top: bool) -> WindowLevel {
     }
 }
 
+fn next_pin_recency(current: u64) -> u64 {
+    current.saturating_add(1)
+}
+
 fn blit_rect(dst: &mut [u32], src: &[u32], stride: usize, height: usize, rect: PixelRect) {
     let x0 = rect.origin.x.max(0) as usize;
     let y0 = rect.origin.y.max(0) as usize;
@@ -6758,6 +6789,13 @@ mod overlay_scale_tests {
     fn default_pin_level_maps_to_the_requested_window_level() {
         assert!(matches!(pin_window_level(true), WindowLevel::AlwaysOnTop));
         assert!(matches!(pin_window_level(false), WindowLevel::Normal));
+    }
+
+    #[test]
+    fn pin_recency_counter_is_monotonic_and_saturates() {
+        assert_eq!(next_pin_recency(0), 1);
+        assert_eq!(next_pin_recency(41), 42);
+        assert_eq!(next_pin_recency(u64::MAX), u64::MAX);
     }
 
     #[test]

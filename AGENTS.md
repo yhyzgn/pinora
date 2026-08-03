@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/089_tray_pin_list.md`
-- 任务：`.context/tasks/089_tray_pin_list.md`
+- 计划：`.context/plans/090_pin_recency_order.md`
+- 任务：`.context/tasks/090_pin_recency_order.md`
 
 ## 交付要求
 

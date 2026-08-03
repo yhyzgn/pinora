@@ -17,11 +17,12 @@ use crate::tray_feedback::TrayFeedback;
 const MAX_WINDOW_CAPTURE_CANDIDATES: usize = 20;
 const EMPTY_PIN_LIST_LABEL: &str = "没有打开的贴图";
 
-/// 传入托盘的贴图可见性快照。标签由 tray 适配器生成，避免泄露图像或窗口内容。
+/// 传入托盘的贴图可见性快照。排序键和标签都不含图像或窗口内容。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TrayPinListEntry {
     pub pin_id: PinId,
     pub visible: bool,
+    pub last_used: u64,
 }
 
 /// 托盘菜单动作。
@@ -479,7 +480,12 @@ fn pin_list_label(index: usize, visible: bool) -> String {
 
 fn ordered_pin_list_entries(entries: &[TrayPinListEntry]) -> Vec<TrayPinListEntry> {
     let mut entries = entries.to_vec();
-    entries.sort_by_key(|entry| entry.pin_id.raw());
+    entries.sort_by(|left, right| {
+        right
+            .last_used
+            .cmp(&left.last_used)
+            .then_with(|| left.pin_id.raw().cmp(&right.pin_id.raw()))
+    });
     entries
 }
 
@@ -705,10 +711,12 @@ mod tests {
             TrayPinListEntry {
                 pin_id: PinId::from_raw(20),
                 visible: false,
+                last_used: 4,
             },
             TrayPinListEntry {
                 pin_id: PinId::from_raw(3),
                 visible: true,
+                last_used: 4,
             },
         ];
 
@@ -717,6 +725,26 @@ mod tests {
         assert_eq!(ordered[1].pin_id, PinId::from_raw(20));
         assert!(ordered[0].visible);
         assert!(!ordered[1].visible);
+    }
+
+    #[test]
+    fn pin_list_entries_prioritize_recent_use_before_identity() {
+        let entries = [
+            TrayPinListEntry {
+                pin_id: PinId::from_raw(3),
+                visible: true,
+                last_used: 4,
+            },
+            TrayPinListEntry {
+                pin_id: PinId::from_raw(20),
+                visible: false,
+                last_used: 9,
+            },
+        ];
+
+        let ordered = ordered_pin_list_entries(&entries);
+        assert_eq!(ordered[0].pin_id, PinId::from_raw(20));
+        assert_eq!(ordered[1].pin_id, PinId::from_raw(3));
     }
 
     #[test]
