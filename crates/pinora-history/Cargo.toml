@@ -1,0 +1,15 @@
+[package]
+name = "pinora-history"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pinora managed history policy, persistence coordination and async image loading"
+
+[dependencies]
+pinora-core = { workspace = true }
+pinora-capture = { workspace = true }
+pinora-jobs = { workspace = true }
+pinora-storage = { workspace = true }
+pinora-export = { workspace = true }
+png = "0.17"

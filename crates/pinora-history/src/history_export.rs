@@ -8,13 +8,13 @@ use pinora_core::{
     HistoryEntrySpec, HistoryIndex, HistoryInsert, HistoryOcrState, ImageId, JobOwner, RgbaBuffer,
 };
 
-use crate::ExportJobInput;
+use pinora_export::ExportJobInput;
 use pinora_storage::{HistoryLoad, HistoryStore};
 
 const MAX_HISTORY_PNG_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Debug)]
-pub(crate) struct HistoryExportCandidate {
+pub struct HistoryExportCandidate {
     pub owner: JobOwner,
     pub asset: AssetRef,
     display: pinora_core::DisplayId,
@@ -25,7 +25,7 @@ pub(crate) struct HistoryExportCandidate {
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct HistoryCleanup {
+pub struct HistoryCleanup {
     pub removed_files: usize,
     pub missing_files: usize,
     pub protected_files: usize,
@@ -37,7 +37,7 @@ pub(crate) struct HistoryCleanup {
 ///
 /// 计数只用于受控运行日志和界面刷新决策，不携带路径、图像或 OCR 内容。
 #[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct HistoryPolicyReconcile {
+pub struct HistoryPolicyReconcile {
     pub quota_evicted_entries: usize,
     pub expired_entries: usize,
     pub cleanup: HistoryCleanup,
@@ -49,7 +49,7 @@ impl HistoryPolicyReconcile {
     }
 }
 
-pub(crate) fn load_history_index(store: &HistoryStore) -> Result<HistoryIndex, String> {
+pub fn load_history_index(store: &HistoryStore) -> Result<HistoryIndex, String> {
     match store.load() {
         HistoryLoad::Missing(index) | HistoryLoad::Loaded(index) => Ok(index),
         HistoryLoad::Invalid(error) => Err(error),
@@ -57,7 +57,7 @@ pub(crate) fn load_history_index(store: &HistoryStore) -> Result<HistoryIndex, S
 }
 
 /// A history candidate exists only for a PNG written directly below the managed export directory.
-pub(crate) fn history_candidate_for_export(
+pub fn history_candidate_for_export(
     export_dir: &Path,
     owner: JobOwner,
     asset: AssetRef,
@@ -100,7 +100,7 @@ fn managed_png_file_name(export_dir: &Path, path: &Path) -> Option<String> {
 }
 
 /// Insert an entry only after the PNG is readable; restore the in-memory index if persistence fails.
-pub(crate) fn record_history_candidate(
+pub fn record_history_candidate(
     store: &HistoryStore,
     index: &mut HistoryIndex,
     candidate: HistoryExportCandidate,
@@ -135,7 +135,7 @@ pub(crate) fn record_history_candidate(
 /// New tombstones are first persisted as an atomic index update. On that write failure the entire
 /// in-memory policy change is restored. File cleanup remains the second phase so failures retain
 /// durable tombstones for a later retry and cannot silently lose deletion intent.
-pub(crate) fn reconcile_history_policy(
+pub fn reconcile_history_policy(
     store: &HistoryStore,
     export_dir: &Path,
     index: &mut HistoryIndex,
@@ -316,7 +316,7 @@ pub(crate) fn load_history_image(
 /// 先持久化 tombstone，再尝试受管文件清理。
 ///
 /// 索引保存失败时内存完整回滚；清理阶段失败时已落盘 tombstone 保留，下次可重试。
-pub(crate) fn delete_history_entry(
+pub fn delete_history_entry(
     store: &HistoryStore,
     export_dir: &Path,
     index: &mut HistoryIndex,
@@ -338,7 +338,7 @@ pub(crate) fn delete_history_entry(
 ///
 /// The index save is the durable commit point. A failed save restores the in-memory index;
 /// cleanup failures leave tombstones in place so a later retry can finish the operation.
-pub(crate) fn clear_history_entries(
+pub fn clear_history_entries(
     store: &HistoryStore,
     export_dir: &Path,
     index: &mut HistoryIndex,

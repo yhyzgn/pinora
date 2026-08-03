@@ -3,8 +3,6 @@
 mod desktop_shell;
 mod diagnostics_export;
 mod diagnostics_window;
-mod history_export;
-mod history_load_job;
 mod history_window;
 mod ocr_job;
 mod platform;
@@ -15,6 +13,12 @@ mod tray;
 pub(crate) use pinora_desktop::{
     diagnostics_panel, history_browser, overlay_selection_readout, panel_theme, pin_context_menu,
     settings_panel, tray_capabilities, tray_feedback,
+};
+pub(crate) use pinora_history::{
+    HistoryExportCandidate, HistoryLoadCompletion, HistoryLoadInput, HistoryLoadJobService,
+    HistoryLoadPayload, HistoryLoadPreparation, clear_history_entries, delete_history_entry,
+    history_candidate_for_export, load_history_index, reconcile_history_policy,
+    record_history_candidate,
 };
 
 pub use desktop_shell::run_desktop_shell;

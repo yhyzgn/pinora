@@ -15,7 +15,7 @@ pinora-storage = { workspace = true }
 pinora-desktop = { workspace = true }
 pinora-ocr = { workspace = true }
 pinora-export = { workspace = true }
-png = "0.17"
+pinora-history = { workspace = true }
 winit = "0.30"
 softbuffer = "0.4"
 # 关闭 libxdo 默认特性，避免链接 -lxdo（Wayland/KDE 不需要）

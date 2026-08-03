@@ -2516,11 +2516,11 @@ dependencies = [
  "pinora-core",
  "pinora-desktop",
  "pinora-export",
+ "pinora-history",
  "pinora-jobs",
  "pinora-ocr",
  "pinora-platform",
  "pinora-storage",
- "png 0.17.16",
  "softbuffer",
  "tray-icon",
  "winit",
@@ -2558,6 +2558,18 @@ dependencies = [
  "image",
  "pinora-core",
  "pinora-jobs",
+ "png 0.17.16",
+]
+
+[[package]]
+name = "pinora-history"
+version = "0.1.0"
+dependencies = [
+ "pinora-capture",
+ "pinora-core",
+ "pinora-export",
+ "pinora-jobs",
+ "pinora-storage",
  "png 0.17.16",
 ]
 

@@ -8,7 +8,7 @@
 | 日期 | 2026-08-01 |
 | 状态 | 目标设计；不等同于当前实现或平台支持声明 |
 | 产品代号 | Pinora（Pin + Liora，可后续更名） |
-| 当前代码状态 | Rust 2024 workspace；当前实际 crate 为 `pinora-core`、`pinora-platform`、`pinora-capture`、`pinora-jobs`、`pinora-storage`、`pinora-desktop`、`pinora-ocr`、`pinora-export`、`pinora-app`，桌面能力仍以 Linux/KDE 实验路径为主，尚未达到可发布架构 |
+| 当前代码状态 | Rust 2024 workspace；当前实际 crate 为 `pinora-core`、`pinora-platform`、`pinora-capture`、`pinora-jobs`、`pinora-storage`、`pinora-desktop`、`pinora-ocr`、`pinora-export`、`pinora-history`、`pinora-app`，桌面能力仍以 Linux/KDE 实验路径为主，尚未达到可发布架构 |
 
 > **阅读说明**：本文是后续重构的目标设计，而非功能清单式承诺。任何模块、平台能力或性能目标，只有在对应任务完成代码、测试和授权的隔离探针后，才能写入已实现状态。UI 框架、平台 SDK 和 OCR 引擎均未在本文锁定；不得将草案直接复制为公共 API。
 
@@ -251,6 +251,12 @@ flowchart LR
     App --> ExportNow["pinora-export\n已实现：图像编码/原子文件/系统剪贴板/导出任务"]
     ExportNow --> Core
     ExportNow --> JobsNow
+    App --> HistoryNow["pinora-history\n已实现：历史策略/受管文件/异步读取"]
+    HistoryNow --> Core
+    HistoryNow --> StorageNow
+    HistoryNow --> CaptureNow
+    HistoryNow --> JobsNow
+    HistoryNow --> ExportNow
     App --> Ocr["pinora-ocr\n已实现：tesseract/TSV/词框视觉状态；后续：任务编排适配"]
     Ocr --> Core
     Desktop --> Core
@@ -270,8 +276,9 @@ flowchart LR
 | `pinora-storage` | 设置 schema、历史索引 codec、原子本地文件和受管文件名 | 继续承载纯本地持久化；后续接收文件编码端口 | 不拥有任务、剪贴板子进程或窗口 |
 | `pinora-desktop` | 贴图几何、Overlay 工具栏布局/命中、预览缓存、窗口策略/KWin、设置/历史/诊断面板、Overlay 选区读数、贴图客户区菜单、面板主题、tray 能力摘要和固定反馈 | 继续迁移托盘菜单句柄与剩余辅助 UI 适配 | 不拥有应用 EventLoop、任务线程、文件或外部进程 |
 | `pinora-export` | PNG/JPEG/WebP 编码、原子文件发布、内存与系统剪贴板、取消/超时受监督导出 worker | 后续接收更窄的导出端口并与历史记录编排解耦 | 不拥有窗口、历史索引、托盘或应用 EventLoop；外部子进程必须可回收 |
+| `pinora-history` | 受管历史索引加载、PNG 摘要/尺寸校验、插入、删除/清空、配额/保留期 tombstone 清理、异步历史图像读取 | 后续把历史策略与导出输入进一步抽象为端口 | 不拥有窗口、Panel、托盘或 EventLoop；所有路径限制在受管目录 |
 | `pinora-ocr` | tesseract CLI、PNG 临时输入、TSV 解析、取消/超时/输出上限、词框视觉状态 | 继续承载本地 OCR 适配；任务 owner/generation 编排留在 app | 不下载模型、不联网、不拥有窗口或剪贴板 |
-| `pinora-app` | runtime、desktop shell、具体 OCR/历史任务、存储调用编排、托盘和窗口编排；导出请求与结果消费 | 继续迁移 OCR/历史任务和 Overlay/贴图适配 | 保持唯一事件循环和现有用户行为，迁移后才删除旧路径 |
+| `pinora-app` | runtime、desktop shell、具体 OCR 编排、历史窗口/选择编排、存储调用编排、托盘和窗口编排；导出/历史请求与结果消费 | 继续迁移 OCR/Overlay/贴图适配 | 保持唯一事件循环和现有用户行为，迁移后才删除旧路径 |
 
 后续每个 crate 拆分都必须单独建立计划/任务、迁移原有测试、更新依赖图，并通过 workspace 与目标平台编译门禁；不得把一次性目录搬迁当作功能完成。
 
@@ -1190,7 +1197,8 @@ pinora/
 │   ├── pinora-storage/        # 已存在：设置、历史 codec、原子文件和受管文件名
 │   ├── pinora-desktop/        # 已存在：交互/窗口策略/呈现状态/面板/读数/菜单；后续托盘句柄适配
 │   ├── pinora-ocr/            # 已存在：Tesseract/TSV/词框视觉状态；任务门禁仍在 app
-│   └── pinora-export/         # 已存在：图像编码、原子文件、系统剪贴板和导出任务
+│   ├── pinora-export/         # 已存在：图像编码、原子文件、系统剪贴板和导出任务
+│   └── pinora-history/        # 已存在：历史策略、受管文件和异步图像读取
 ├── assets/
 └── docs/
     └── Pinora-开发设计文档.md

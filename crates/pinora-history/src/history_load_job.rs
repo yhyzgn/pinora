@@ -25,7 +25,7 @@ use pinora_jobs::{WorkerWaitOutcome, reap_finished_workers, wait_for_workers};
 
 /// 历史读取 worker 的不可变输入。
 #[derive(Debug, Clone)]
-pub(crate) struct HistoryLoadInput {
+pub struct HistoryLoadInput {
     pub export_dir: PathBuf,
     pub entry: HistoryEntry,
     pub preparation: HistoryLoadPreparation,
@@ -33,7 +33,7 @@ pub(crate) struct HistoryLoadInput {
 
 /// 由历史加载 worker 预先生成的最小显示材料。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HistoryLoadPreparation {
+pub enum HistoryLoadPreparation {
     Preview,
     Pin,
     Editor,
@@ -41,7 +41,7 @@ pub(crate) enum HistoryLoadPreparation {
 
 /// 已经通过历史文件校验且按消费意图完成像素准备的结果。
 #[derive(Debug)]
-pub(crate) enum HistoryLoadPayload {
+pub enum HistoryLoadPayload {
     Preview {
         size: PixelSize,
         pixels_xrgb: Vec<u32>,
@@ -58,7 +58,7 @@ pub(crate) enum HistoryLoadPayload {
 }
 
 impl HistoryLoadPayload {
-    pub(crate) const fn preparation(&self) -> HistoryLoadPreparation {
+    pub const fn preparation(&self) -> HistoryLoadPreparation {
         match self {
             Self::Preview { .. } => HistoryLoadPreparation::Preview,
             Self::Pin { .. } => HistoryLoadPreparation::Pin,
@@ -68,7 +68,7 @@ impl HistoryLoadPayload {
 }
 
 /// 可替换的历史读取执行端口。生产实现只读受管 PNG，测试可注入内存 runner。
-pub(crate) trait HistoryLoadRunner: Send + Sync + 'static {
+pub trait HistoryLoadRunner: Send + Sync + 'static {
     fn load(
         &self,
         export_dir: &Path,
@@ -79,7 +79,7 @@ pub(crate) trait HistoryLoadRunner: Send + Sync + 'static {
 
 /// 默认本地历史读取 runner。
 #[derive(Debug, Default)]
-pub(crate) struct LocalHistoryLoadRunner;
+pub struct LocalHistoryLoadRunner;
 
 impl HistoryLoadRunner for LocalHistoryLoadRunner {
     fn load(
@@ -115,7 +115,7 @@ struct WorkerResult {
 
 /// 主线程处理历史读取 worker 的唯一输出。
 #[derive(Debug)]
-pub(crate) enum HistoryLoadCompletion {
+pub enum HistoryLoadCompletion {
     Completed {
         job: AcceptedJobResult,
         payload: HistoryLoadPayload,
@@ -160,7 +160,7 @@ fn prepare_history_payload(
 }
 
 /// 历史窗口只允许一个实际文件读取 worker，避免快速搜索或切换时堆积大图解码。
-pub(crate) struct HistoryLoadJobService<R: HistoryLoadRunner = LocalHistoryLoadRunner> {
+pub struct HistoryLoadJobService<R: HistoryLoadRunner = LocalHistoryLoadRunner> {
     supervisor: JobSupervisor,
     runner: Arc<R>,
     sender: Sender<WorkerResult>,
@@ -169,7 +169,7 @@ pub(crate) struct HistoryLoadJobService<R: HistoryLoadRunner = LocalHistoryLoadR
 }
 
 impl HistoryLoadJobService<LocalHistoryLoadRunner> {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::with_runner(LocalHistoryLoadRunner)
     }
 }
@@ -184,7 +184,7 @@ impl<R> HistoryLoadJobService<R>
 where
     R: HistoryLoadRunner,
 {
-    pub(crate) fn with_runner(runner: R) -> Self {
+    pub fn with_runner(runner: R) -> Self {
         let (sender, receiver) = mpsc::channel();
         Self {
             supervisor: JobSupervisor::new(),
@@ -196,7 +196,7 @@ where
     }
 
     /// 启动一次历史读取。尚未收敛的取消 worker 存在时拒绝新启动，由调用方保留最新请求。
-    pub(crate) fn start(
+    pub fn start(
         &mut self,
         spec: JobSpec,
         input: HistoryLoadInput,
@@ -248,16 +248,16 @@ where
         Ok(ticket)
     }
 
-    pub(crate) fn is_idle(&mut self) -> bool {
+    pub fn is_idle(&mut self) -> bool {
         let _ = reap_finished_workers(&mut self.workers);
         self.workers.is_empty()
     }
 
-    pub(crate) fn cancel_all(&mut self) -> usize {
+    pub fn cancel_all(&mut self) -> usize {
         self.supervisor.cancel_all()
     }
 
-    pub(crate) fn cancel_all_and_wait(&mut self, timeout: Duration) -> WorkerWaitOutcome {
+    pub fn cancel_all_and_wait(&mut self, timeout: Duration) -> WorkerWaitOutcome {
         let cancelled = self.cancel_all();
         let mut outcome = wait_for_workers(&mut self.workers, timeout);
         outcome.cancelled = cancelled;
@@ -265,11 +265,7 @@ where
     }
 
     /// 轮询并仅交付仍属于当前历史选择的读取结果。
-    pub(crate) fn poll<F>(
-        &mut self,
-        now_ms: u64,
-        mut current_asset: F,
-    ) -> Vec<HistoryLoadCompletion>
+    pub fn poll<F>(&mut self, now_ms: u64, mut current_asset: F) -> Vec<HistoryLoadCompletion>
     where
         F: FnMut(JobId, JobOwner) -> Option<AssetRef>,
     {
