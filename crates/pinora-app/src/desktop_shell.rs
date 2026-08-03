@@ -10,11 +10,16 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{
     OnceLock,
-    mpsc::{self, Receiver, TryRecvError},
+    mpsc::{self, TryRecvError},
 };
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::capture_session::{
+    CaptureFailureScope, DelayedCapture, LoadingState, Mode, OverlayPresentation, OverlayTarget,
+    capture_failure_scope, history_edit_target, pin_edit_target, screen_capture_overlay_target,
+    snapshot_visible_ids, virtual_desktop_overlay_target, window_capture_overlay_target,
+};
 use crate::diagnostics_panel::DiagnosticsPanel;
 use crate::history_browser::{HistoryPanelAction, HistoryPanelKey};
 use crate::overlay_selection_readout::{
@@ -32,8 +37,8 @@ use crate::{
     reconcile_history_policy, record_history_candidate,
 };
 use pinora_capture::{
-    CaptureMode, CapturePreview, CaptureTarget, FrameCache, OverlayInitialSelection,
-    apply_initial_selection, initial_selection_for_capture, resolve_capture_target, rgba_to_xrgb,
+    CaptureMode, CapturePreview, CaptureTarget, FrameCache, apply_initial_selection,
+    initial_selection_for_capture, resolve_capture_target, rgba_to_xrgb,
 };
 use pinora_core::{
     ActionId, AnnotateSession, AnnotateTool, Annotation, AnnotationRevision, AssetGeneration,
@@ -109,13 +114,6 @@ fn pending_asset_for_owner(
     pending_assets
         .get(&job_id)
         .and_then(|(pending_owner, asset)| (*pending_owner == owner).then_some(*asset))
-}
-
-fn snapshot_visible_ids<T: Copy>(items: impl IntoIterator<Item = (T, bool)>) -> Vec<T> {
-    items
-        .into_iter()
-        .filter_map(|(id, visible)| visible.then_some(id))
-        .collect()
 }
 
 /// 已确认 Overlay 选区的派生图像身份。
@@ -344,127 +342,6 @@ where
         );
     }
     Ok(())
-}
-
-enum Mode {
-    /// 下一帧启动：后台截屏（无全屏遮罩，避免截到自己）。
-    StartCapture,
-    /// 正在后台截屏，显示小加载窗。
-    LoadingCapture,
-    /// tray 发起的无窗口倒计时；到期后只能走冷捕获。
-    DelayedCapture,
-    /// 空闲：仅贴图窗口。
-    Idle,
-}
-
-/// `LoadingState` 失败时必须采用的恢复路径。延时会话优先，因为它拥有需要恢复的
-/// 贴图可见性快照；正常和窗口截图不应以失败退出 tray 主循环。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CaptureFailureScope {
-    Standard,
-    Window,
-    Delayed,
-}
-
-fn capture_failure_scope(target: &CaptureTarget, delayed_active: bool) -> CaptureFailureScope {
-    if delayed_active {
-        CaptureFailureScope::Delayed
-    } else if matches!(target, CaptureTarget::Window(_)) {
-        CaptureFailureScope::Window
-    } else {
-        CaptureFailureScope::Standard
-    }
-}
-
-/// Overlay 的窗口呈现方式。历史编辑不能假装当前桌面仍是原始全屏捕获。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OverlayPresentation {
-    ScreenCapture,
-    VirtualDesktop,
-    WindowCapture,
-    HistoryEditor,
-    PinEditor,
-}
-
-/// 截屏中：后台抓当前屏（无全屏遮罩，避免截到自己）；完成后立刻开真实 overlay。
-struct LoadingState {
-    // 后台捕获错误只跨线程传递稳定错误码，避免平台后端文本泄露窗口身份或标题。
-    preview_rx: Receiver<Result<CapturePreview, ErrorCode>>,
-    target: OverlayTarget,
-}
-
-/// 延时区域截图的清理所有者。
-///
-/// 快照只保存倒计时开始时由 Pinora 确认可见的贴图窗口；恢复时已经关闭的窗口
-/// 会被忽略，因此不会复活用户已经关闭的贴图。
-struct DelayedCapture {
-    deadline: Instant,
-    hidden_pin_ids: Vec<WindowId>,
-}
-
-impl DelayedCapture {
-    fn new(delay: Duration, hidden_pin_ids: Vec<WindowId>) -> Self {
-        Self {
-            deadline: Instant::now() + delay,
-            hidden_pin_ids,
-        }
-    }
-
-    fn is_due(&self, now: Instant) -> bool {
-        now >= self.deadline
-    }
-}
-
-/// 打开 Overlay 所需的捕获来源与初始交互意图。
-struct OverlayTarget {
-    display_id: DisplayId,
-    display_origin: PixelPoint,
-    image_width: u32,
-    image_height: u32,
-    initial_selection: OverlayInitialSelection,
-    presentation: OverlayPresentation,
-    min_selection_edge: u32,
-    edit_pin_id: Option<PinId>,
-}
-
-fn history_edit_target(image: &CaptureImage) -> OverlayTarget {
-    OverlayTarget {
-        display_id: image.metadata.display.clone(),
-        // 输出保持历史图像原始来源坐标；窗口位置不假定旧显示器仍存在。
-        display_origin: image.source_rect.origin,
-        image_width: image.pixels.size.width,
-        image_height: image.pixels.size.height,
-        initial_selection: OverlayInitialSelection::FullImage,
-        presentation: OverlayPresentation::HistoryEditor,
-        min_selection_edge: 1,
-        edit_pin_id: None,
-    }
-}
-
-fn window_capture_overlay_target(window: &CaptureWindowInfo) -> OverlayTarget {
-    OverlayTarget {
-        display_id: window.display.clone(),
-        display_origin: window.bounds.origin,
-        image_width: window.bounds.size.width,
-        image_height: window.bounds.size.height,
-        initial_selection: OverlayInitialSelection::FullImage,
-        presentation: OverlayPresentation::WindowCapture,
-        min_selection_edge: 1,
-        edit_pin_id: None,
-    }
-}
-
-fn pin_edit_target(image: &CaptureImage, pin_id: PinId) -> OverlayTarget {
-    OverlayTarget {
-        display_id: image.metadata.display.clone(),
-        display_origin: image.source_rect.origin,
-        image_width: image.pixels.size.width,
-        image_height: image.pixels.size.height,
-        initial_selection: OverlayInitialSelection::FullImage,
-        presentation: OverlayPresentation::PinEditor,
-        min_selection_edge: 1,
-        edit_pin_id: Some(pin_id),
-    }
 }
 
 /// Overlay 内阶段：框选中 / 已出选区（工具栏就绪）。
@@ -1077,6 +954,15 @@ where
         self.refresh_tray_pin_list();
     }
 
+    fn set_pins_visible_by_pin_ids(&mut self, pin_ids: &[PinId], visible: bool) {
+        let window_ids: Vec<_> = self
+            .pins
+            .iter()
+            .filter_map(|(window_id, pin)| pin_ids.contains(&pin.pin_id).then_some(*window_id))
+            .collect();
+        self.set_pins_visible(&window_ids, visible);
+    }
+
     fn refresh_tray_pin_list(&mut self) {
         let entries: Vec<_> = self
             .pins
@@ -1137,12 +1023,8 @@ where
         self.refresh_tray_pin_list();
     }
 
-    fn snapshot_visible_pin_ids(&self) -> Vec<WindowId> {
-        snapshot_visible_ids(
-            self.pins
-                .iter()
-                .map(|(window_id, pin)| (*window_id, pin.visible)),
-        )
+    fn snapshot_visible_pin_ids(&self) -> Vec<PinId> {
+        snapshot_visible_ids(self.pins.values().map(|pin| (pin.pin_id, pin.visible)))
     }
 
     fn set_delayed_capture_tray_state(&self, active: bool) {
@@ -1224,8 +1106,8 @@ where
         let Some(delayed) = self.delayed_capture.take() else {
             return false;
         };
-        let restored = delayed.hidden_pin_ids.len();
-        self.set_pins_visible(&delayed.hidden_pin_ids, true);
+        let restored = delayed.hidden_pin_ids().len();
+        self.set_pins_visible_by_pin_ids(delayed.hidden_pin_ids(), true);
         self.set_delayed_capture_tray_state(false);
         if restored > 0 {
             println!("pinora: restored {restored} delayed-capture pin(s)");
@@ -1461,16 +1343,13 @@ where
             return self.open_overlay_with_preview(
                 event_loop,
                 prep,
-                OverlayTarget {
+                screen_capture_overlay_target(
                     display_id,
                     display_origin,
-                    image_width: img_w,
-                    image_height: img_h,
+                    img_w,
+                    img_h,
                     initial_selection,
-                    presentation: OverlayPresentation::ScreenCapture,
-                    min_selection_edge: 2,
-                    edit_pin_id: None,
-                },
+                ),
             );
         }
 
@@ -1482,16 +1361,7 @@ where
                 let workspace = resolve_all_displays_rect(&displays)?;
                 (
                     CaptureRequest::AllDisplays,
-                    OverlayTarget {
-                        display_id: DisplayId::virtual_desktop(),
-                        display_origin: workspace.origin,
-                        image_width: workspace.size.width,
-                        image_height: workspace.size.height,
-                        initial_selection,
-                        presentation: OverlayPresentation::VirtualDesktop,
-                        min_selection_edge: 2,
-                        edit_pin_id: None,
-                    },
+                    virtual_desktop_overlay_target(workspace, initial_selection),
                     "all displays".to_owned(),
                 )
             }
@@ -1517,16 +1387,13 @@ where
                     CaptureRequest::FullDisplay {
                         display: display.id.clone(),
                     },
-                    OverlayTarget {
-                        display_id: display.id,
-                        display_origin: display.bounds.origin,
+                    screen_capture_overlay_target(
+                        display.id,
+                        display.bounds.origin,
                         image_width,
                         image_height,
                         initial_selection,
-                        presentation: OverlayPresentation::ScreenCapture,
-                        min_selection_edge: 2,
-                        edit_pin_id: None,
-                    },
+                    ),
                     display_name,
                 )
             }
@@ -2581,7 +2448,7 @@ where
             cache.pause();
         }
         let hidden_pin_ids = self.snapshot_visible_pin_ids();
-        self.set_pins_visible(&hidden_pin_ids, false);
+        self.set_pins_visible_by_pin_ids(&hidden_pin_ids, false);
         self.delayed_capture = Some(DelayedCapture::new(delay, hidden_pin_ids));
         self.set_delayed_capture_tray_state(true);
         self.mode = Mode::DelayedCapture;
@@ -2744,8 +2611,7 @@ where
         let img_h = prep.image.pixels.size.height.max(1);
 
         let mut target = loading.target;
-        target.image_width = img_w;
-        target.image_height = img_h;
+        target.update_image_dimensions(img_w, img_h);
         let failure_scope = self.capture_failure_scope();
         // 此时 capture provider 已经取得真实像素，恢复不会进入本次截图。
         if self.delayed_capture.is_some() {
@@ -6151,114 +6017,6 @@ mod overlay_scale_tests {
             sample_overlay_source_color(&image, PixelRect::new(2, 1, 2, 2), PixelPoint::new(2, 1),),
             None
         );
-    }
-
-    #[test]
-    fn delayed_failure_recovery_precedes_window_and_standard_capture_scopes() {
-        let window = CaptureTarget::Window(CaptureWindowInfo {
-            id: pinora_core::CaptureWindowId::from_raw(4),
-            app_name: "Example".into(),
-            title: "Private window".into(),
-            bounds: PixelRect::new(1, 2, 3, 4),
-            display: DisplayId::new("display"),
-            scale: 1.0,
-            is_minimized: false,
-        });
-
-        assert_eq!(
-            capture_failure_scope(&CaptureTarget::DefaultLargest, false),
-            CaptureFailureScope::Standard
-        );
-        assert_eq!(
-            capture_failure_scope(&window, false),
-            CaptureFailureScope::Window
-        );
-        assert_eq!(
-            capture_failure_scope(&window, true),
-            CaptureFailureScope::Delayed
-        );
-    }
-
-    #[test]
-    fn window_capture_opens_a_full_image_editor_without_a_display_capture_target() {
-        let window = CaptureWindowInfo {
-            id: pinora_core::CaptureWindowId::from_raw(3),
-            app_name: "Example".into(),
-            title: "Private window".into(),
-            bounds: PixelRect::new(40, 50, 800, 600),
-            display: DisplayId::new("window-display"),
-            scale: 1.25,
-            is_minimized: false,
-        };
-
-        let target = window_capture_overlay_target(&window);
-
-        assert_eq!(target.display_id, window.display);
-        assert_eq!(target.display_origin, window.bounds.origin);
-        assert_eq!(target.image_width, 800);
-        assert_eq!(target.image_height, 600);
-        assert_eq!(target.initial_selection, OverlayInitialSelection::FullImage);
-        assert_eq!(target.presentation, OverlayPresentation::WindowCapture);
-        assert_eq!(target.min_selection_edge, 1);
-        assert_eq!(target.edit_pin_id, None);
-    }
-
-    #[test]
-    fn pin_edit_opens_a_full_image_editor_for_the_existing_pin() {
-        let pin_id = PinId::from_raw(37);
-        let image = CaptureImage::new(
-            ImageId::from_raw(38),
-            RgbaBuffer::solid(PixelSize::new(800, 600), [1, 2, 3, 255]),
-            PixelRect::new(240, -30, 800, 600),
-            CaptureMetadata::new(DisplayId::new("pin-display"), 1.25, 77),
-        )
-        .unwrap();
-
-        let target = pin_edit_target(&image, pin_id);
-
-        assert_eq!(target.display_id, image.metadata.display);
-        assert_eq!(target.display_origin, image.source_rect.origin);
-        assert_eq!(target.image_width, 800);
-        assert_eq!(target.image_height, 600);
-        assert_eq!(target.initial_selection, OverlayInitialSelection::FullImage);
-        assert_eq!(target.presentation, OverlayPresentation::PinEditor);
-        assert_eq!(target.min_selection_edge, 1);
-        assert_eq!(target.edit_pin_id, Some(pin_id));
-    }
-
-    #[test]
-    fn delayed_capture_snapshot_keeps_only_previously_visible_ids() {
-        let snapshot = snapshot_visible_ids([(11_u8, true), (12_u8, false), (13_u8, true)]);
-
-        assert_eq!(snapshot, vec![11, 13]);
-    }
-
-    #[test]
-    fn delayed_capture_is_not_due_before_its_deadline() {
-        let delayed = DelayedCapture::new(Duration::from_secs(60), Vec::new());
-
-        assert!(!delayed.is_due(Instant::now()));
-    }
-
-    #[test]
-    fn history_image_opens_an_ordinary_full_image_editor() {
-        let display = DisplayId::new("historic-display");
-        let image = CaptureImage::new(
-            ImageId::from_raw(33),
-            RgbaBuffer::solid(PixelSize::new(1, 1), [1, 2, 3, 255]),
-            PixelRect::new(240, -30, 1, 1),
-            CaptureMetadata::new(display.clone(), 1.5, 77),
-        )
-        .unwrap();
-
-        let target = history_edit_target(&image);
-
-        assert_eq!(target.display_id, display);
-        assert_eq!(target.display_origin, PixelPoint::new(240, -30));
-        assert_eq!(target.initial_selection, OverlayInitialSelection::FullImage);
-        assert_eq!(target.presentation, OverlayPresentation::HistoryEditor);
-        assert_eq!(target.min_selection_edge, 1);
-        assert_eq!(target.edit_pin_id, None);
     }
 
     #[test]

@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/128_panels_crate.md`
-- 任务：`.context/tasks/128_panels_crate.md`
+- 计划：`.context/plans/129_capture_session_state.md`
+- 任务：`.context/tasks/129_capture_session_state.md`
 
 ## 交付要求
 

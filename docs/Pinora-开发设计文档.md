@@ -235,7 +235,7 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    Main["pinora\nsrc/main.rs"] --> App["pinora-app\n当前：runtime + desktop_shell + UI/业务模块"]
+    Main["pinora\nsrc/main.rs"] --> App["pinora-app\n当前：runtime + capture_session + desktop_shell + UI/业务模块"]
     Main --> Platform["pinora-platform\n已实现：启动项、单实例/IPC、热键、Wayland Portal"]
     App --> Platform
     App --> Core["pinora-core\n纯领域模型"]
@@ -243,6 +243,9 @@ flowchart LR
 
     App --> CaptureNow["pinora-capture\n已实现：请求契约 + KDE/xcap/fake + FrameCache + CapturePreview"]
     CaptureNow --> Core
+    App --> CaptureSession["pinora-app::capture_session\n已实现：模式/失败范围/延时状态/Overlay 目标映射"]
+    CaptureSession --> CaptureNow
+    CaptureSession --> Core
     App --> JobsNow["pinora-jobs\n已实现：监督、取消、worker 回收"]
     JobsNow --> Core
     App --> StorageNow["pinora-storage\n已实现：设置/历史 codec + 原子文件 + 命名"]
@@ -710,17 +713,35 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
-    Idle --> Preparing: StartCapture
-    Preparing --> Selecting: OverlayReady
-    Preparing --> Failed: PermissionDenied / DisplayUnavailable
+    Idle --> StartCapture: 区域/全屏/窗口/全部显示器请求
+    Idle --> DelayedCapture: tray 延时区域截图
+    DelayedCapture --> StartCapture: 到期，禁用帧缓存
+    DelayedCapture --> Idle: 取消，恢复开始时可见的 PinId
+    StartCapture --> Selecting: 预截帧命中并建立 Overlay
+    StartCapture --> LoadingCapture: 冷捕获或窗口目标
+    LoadingCapture --> Selecting: CapturePreview
+    LoadingCapture --> Idle: 标准/窗口捕获失败
+    LoadingCapture --> Idle: 延时失败，恢复开始时可见的 PinId
     Selecting --> Selecting: PointerMove / KeyboardNudge
     Selecting --> Confirming: ConfirmSelection
-    Selecting --> Cancelled: Escape / CloseOverlay
-    Confirming --> Captured: CaptureSucceeded
-    Confirming --> Failed: CaptureError
-    Captured --> [*]: DispatchPostCaptureAction
-    Cancelled --> [*]
-    Failed --> [*]: ShowRecoverableError
+    Selecting --> Idle: Escape / CloseOverlay
+    Confirming --> Idle: DispatchPostCaptureAction
+```
+
+#### 当前捕获会话模块边界
+
+```mermaid
+flowchart LR
+    Shell["desktop_shell\n真实捕获、线程、Window/Surface、EventLoop、tray 和恢复副作用"]
+    Session["capture_session\nMode、LoadingState、DelayedCapture、失败范围、Overlay 目标"]
+    Capture["pinora-capture\nCaptureTarget、CapturePreview、初始选区"]
+    Core["pinora-core\nCaptureImage、DisplayId、PinId、ErrorCode"]
+    Window["Window / Surface / EventLoop / tray / worker"]
+
+    Shell --> Session
+    Session --> Capture
+    Session --> Core
+    Session -. 不创建或操作 .-> Window
 ```
 
 ### 4.3 贴图窗口与多贴图管理（P0）
@@ -1254,7 +1275,7 @@ pinora/
 │   ├── pinora-platform/       # 已存在：启动项、单实例/IPC、热键、Wayland Portal
 │   ├── pinora-capture/        # 已存在：请求契约、KDE/xcap/fake 选择、显示器快照、FrameCache、CapturePreview
 │   ├── pinora-jobs/           # 已存在：任务监督、取消、结果门禁、worker 回收
-│   ├── pinora-app/            # 已存在：runtime、desktop_shell 与当前编排模块
+│   ├── pinora-app/            # 已存在：runtime、capture_session、desktop_shell 与当前编排模块
 │   ├── pinora-storage/        # 已存在：设置、历史 codec、原子文件和受管文件名
 │   ├── pinora-desktop/        # 已存在：交互/XRGB 渲染/Overlay 坐标/输入/窗口策略/呈现状态/面板/读数/菜单
 │   ├── pinora-ocr/            # 已存在：Tesseract/TSV/受监督 OCR 服务/词框视觉状态
