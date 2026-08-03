@@ -13,7 +13,7 @@
 - Pinora 空闲状态不创建控制窗口；托盘、已成功注册的全局热键与单实例 IPC 是后台入口。所有辅助 `WindowAttributes` 必须经 `window_policy::auxiliary_window_attributes`；新建事件循环必须使用 `window_policy::auxiliary_event_loop`，禁止绕开任务栏/Dock 策略。
 - KWin 特例仅允许在窗口映射后按 Pinora 自身标题调用 `kwin_place`；`busctl` 失败只能记录，不能阻塞事件循环或被当作其他 Wayland 合成器的支持证据。
 
-## 当前 crate 边界（任务 118 已验证）
+## 当前 crate 边界（任务 124 已验证）
 
 ```mermaid
 graph LR
@@ -21,6 +21,7 @@ graph LR
     App --> Runtime["pinora-runtime\n命令/状态/单实例工作流"]
     App --> Platform["pinora-platform\n系统集成"]
     App --> Desktop["pinora-desktop\n纯 UI 面板/读数/菜单 + 交互原语"]
+    App --> Capture["pinora-capture\n捕获请求/后端/预截帧"]
     App --> Export["pinora-export\n图像合成/导出/编码/剪贴板任务"]
     App --> History["pinora-history\n历史策略/异步读取"]
     App --> Tray["pinora-tray\n菜单/句柄/事件"]
@@ -33,7 +34,7 @@ graph LR
     Export --> Jobs["pinora-jobs\n任务监督"]
     History --> Core
     History --> Storage["pinora-storage\n本地索引"]
-    History --> Capture["pinora-capture\n预览帧/像素转换"]
+    History --> Capture
     History --> Jobs
     Tray --> Core
     Tray --> Desktop
@@ -41,6 +42,7 @@ graph LR
 ```
 
 - `pinora-platform` 唯一拥有 `start_on_login`、`single_instance`、`os_instance`、`hotkey` 和 Linux `wayland_portal`。
+- `pinora-capture` 现唯一拥有 `capture_request` 的截图模式、截图目标、Overlay 初始选区策略和显示器目标解析，以及既有真实后端、显式 fake、`FrameCache` 与 `CapturePreview`；`pinora-app` 只消费该契约并编排实际捕获、失败恢复和窗口生命周期。
 - `pinora-desktop` 现唯一拥有 `settings_panel`、`history_browser`、`diagnostics_panel`、`overlay_selection_readout`、`overlay_geometry`、`overlay_annotation`、`pin_context_menu` 与 `xrgb` 的纯自绘状态、布局、物理像素坐标、标注投影、脏区裁剪、命中、XRGB 绘制和贴图基础帧缓存；`pinora-app` 通过 crate 导出复用这些模块，但仍持有 Window/Surface。
 - `pinora-export` 现唯一拥有 `capture_export`、`image_sink` 与 `export_job` 的导出来源、标注合成、图像编码、原子保存、系统剪贴板和受监督导出 worker；`pinora-app` 仅通过 crate re-export 与服务接口使用它们。
 - `pinora-history` 现唯一拥有 `history_export` 与 `history_load_job` 的历史索引、tombstone 策略、受管 PNG 校验和异步读取 worker；`pinora-app` 仅通过 crate re-export 使用历史服务。
@@ -114,6 +116,8 @@ sudo dnf install -y pipewire-devel mesa-libgbm-devel wayland-devel libxcb-devel
 122 捕获预览帧数据契约已完成：`pinora-capture::CapturePreview` 现唯一拥有由 `CaptureImage` 构建 XRGB 基础/暗化帧、从 `CachedFrame` 移交像素所有权及按物理像素尺寸进行完整性校验；app 只保留冷捕获接收/错误编排、Overlay 目标以及 Window/Surface。capture 27 项、app 35 项定向测试通过，完整 workspace、Clippy、Windows target、fmt、diff 和上下文校验均通过。真实捕获、softbuffer、HiDPI、焦点、tray-only 和性能仍未验证。
 
 123 标注导出图像合成契约已完成：`pinora-export::capture_export` 现拥有 `CaptureExportSource`、原图/标注图选择、已提交标注文档烧录、草稿预览回退和异常长度回退；app 只保留选区裁剪、资产盖章、Overlay 语义与导出任务编排。`cargo test -p pinora-export -- --nocapture`（30 通过，1 项真实剪贴板测试忽略）、`cargo test -p pinora-app --lib -- --nocapture`（33 通过）、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`、完整 workspace 检查、Clippy、Windows target、fmt、diff 和上下文校验均已通过。真实剪贴板/文件、窗口、HiDPI、焦点、tray-only 和性能仍未验证。
+
+124 捕获请求契约已完成：`pinora-capture::capture_request` 现拥有 `CaptureMode`、`CaptureTarget`、`OverlayInitialSelection`、模式标签、目标标签、初始选区应用和显示器目标解析；app 只保留请求发起、倒计时、失败恢复、实际捕获、Overlay、Window/Surface 和 EventLoop。`cargo test -p pinora-capture -- --nocapture`（33 通过，1 项真实显示会话测试忽略）、`cargo test -p pinora-app --lib -- --nocapture`（30 通过）、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`、完整 workspace 检查、Clippy、Windows target、`--version` 探针、fmt、diff 和上下文校验均已通过。真实截图权限、窗口、HiDPI、焦点、tray-only 和性能仍未验证。
 
 096 历史保留期增量已执行并通过：`cargo test -p pinora-core settings -- --nocapture`、`cargo test -p pinora-core history -- --nocapture`、`cargo test -p pinora-app --lib settings_store::tests -- --nocapture`、`cargo test -p pinora-app --lib settings_panel::tests -- --nocapture`、`cargo test -p pinora-app --lib history_export::tests -- --nocapture`、`cargo test -p pinora-app --lib desktop_shell::overlay_scale_tests -- --nocapture`；完整门禁使用上方 workspace、Clippy、测试、Windows target、差异和 `ctx validate` 命令。完整测试未连接真实共享数据库、缓存、消息队列、对象存储或第三方服务；2 个真实桌面测试按既有约定忽略。
 

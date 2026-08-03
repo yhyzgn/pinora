@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/123_annotation_export_composition.md`
-- 任务：`.context/tasks/123_annotation_export_composition.md`
+- 计划：`.context/plans/124_capture_request_contract.md`
+- 任务：`.context/tasks/124_capture_request_contract.md`
 
 ## 交付要求
 
