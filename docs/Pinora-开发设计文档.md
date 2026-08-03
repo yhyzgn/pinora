@@ -235,7 +235,7 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    Main["pinora\nsrc/main.rs"] --> App["pinora-app\n当前：runtime + 三个会话状态模块 + desktop_shell + UI/业务模块"]
+    Main["pinora\nsrc/main.rs"] --> App["pinora-app\n当前：runtime + 四个会话状态模块 + desktop_shell + UI/业务模块"]
     Main --> Platform["pinora-platform\n已实现：启动项、单实例/IPC、热键、Wayland Portal"]
     App --> Platform
     App --> Core["pinora-core\n纯领域模型"]
@@ -254,6 +254,8 @@ flowchart LR
     App --> HistorySession["pinora-app::history_session\n已实现：历史加载意图/请求/活动状态/结果资产门禁"]
     HistorySession --> Core
     HistorySession --> HistoryNow
+    App --> PinSession["pinora-app::pin_session\n已实现：鼠标状态/呈现参数/关闭快照/最近使用序号"]
+    PinSession --> Core
     App --> JobsNow["pinora-jobs\n已实现：监督、取消、worker 回收"]
     JobsNow --> Core
     App --> StorageNow["pinora-storage\n已实现：设置/历史 codec + 原子文件 + 命名"]
@@ -304,7 +306,7 @@ flowchart LR
 | `pinora-tray` | `tray-icon` 菜单构造、托盘句柄、事件轮询、动态贴图列表、热键/能力/固定反馈同步 | 后续抽象平台 tray backend 或引入原生探针 | 不拥有截图、贴图、设置、历史、诊断业务工作流或 EventLoop |
 | `pinora-ocr` | tesseract CLI、PNG 临时输入、TSV 解析、取消/超时/输出上限、受监督 OCR worker、结果缓存和词框视觉状态 | 继续承载本地 OCR 服务；app 只提供当前 UI owner/asset 并消费结果 | 不下载模型、不联网、不拥有窗口、剪贴板或应用 EventLoop |
 | `pinora-runtime` | AppRuntime、命令分发、领域状态变更、单实例 bootstrap/forward/shutdown、能力探测端口和事件发布 | 继续承载无 UI 的应用工作流 | 不创建窗口、EventLoop、线程、网络或具体平台探测；捕获/剪贴板通过泛型端口注入 |
-| `pinora-app` | desktop shell、捕获/导出/历史加载会话状态、OCR 触发/结果 UI 交付、历史选择编排、存储调用编排、托盘动作编排、设置/历史/诊断打开时机与业务副作用；导出/历史请求与结果消费 | 继续迁移 Overlay/贴图适配 | 保持唯一事件循环和现有用户行为，窗口资源适配已迁至 `pinora-panels` |
+| `pinora-app` | desktop shell、捕获/导出/历史加载/贴图会话状态、OCR 触发/结果 UI 交付、历史选择编排、存储调用编排、托盘动作编排、设置/历史/诊断打开时机与业务副作用；导出/历史请求与结果消费 | 继续迁移 Overlay/贴图适配 | 保持唯一事件循环和现有用户行为，窗口资源适配已迁至 `pinora-panels` |
 
 后续每个 crate 拆分都必须单独建立计划/任务、迁移原有测试、更新依赖图，并通过 workspace 与目标平台编译门禁；不得把一次性目录搬迁当作功能完成。
 
@@ -787,6 +789,20 @@ flowchart LR
     Session --> Core
     Session --> History
     Session -. 不执行 .-> Effects
+```
+
+#### 当前贴图会话模块边界
+
+```mermaid
+flowchart LR
+    Shell["desktop_shell\n贴图窗口/输入/runtime/OCR/导出/tray/EventLoop"]
+    Session["pin_session\n鼠标状态/呈现参数/关闭快照/最近使用序号"]
+    Core["pinora-core\nCaptureImage、PixelPoint"]
+    Window["Window / Surface / winit / worker / tray"]
+
+    Shell --> Session
+    Session --> Core
+    Session -. 不依赖 .-> Window
 ```
 
 ### 4.3 贴图窗口与多贴图管理（P0）
@@ -1320,7 +1336,7 @@ pinora/
 │   ├── pinora-platform/       # 已存在：启动项、单实例/IPC、热键、Wayland Portal
 │   ├── pinora-capture/        # 已存在：请求契约、KDE/xcap/fake 选择、显示器快照、FrameCache、CapturePreview
 │   ├── pinora-jobs/           # 已存在：任务监督、取消、结果门禁、worker 回收
-│   ├── pinora-app/            # 已存在：runtime、capture_session、export_session、history_session、desktop_shell 与当前编排模块
+│   ├── pinora-app/            # 已存在：runtime、capture_session、export_session、history_session、pin_session、desktop_shell 与当前编排模块
 │   ├── pinora-storage/        # 已存在：设置、历史 codec、原子文件和受管文件名
 │   ├── pinora-desktop/        # 已存在：交互/XRGB 渲染/Overlay 坐标/输入/窗口策略/呈现状态/面板/读数/菜单
 │   ├── pinora-ocr/            # 已存在：Tesseract/TSV/受监督 OCR 服务/词框视觉状态

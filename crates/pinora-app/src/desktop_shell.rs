@@ -30,6 +30,10 @@ use crate::history_session::{ActiveHistoryLoad, HistoryLoadIntent, HistoryLoadRe
 use crate::overlay_selection_readout::{
     SelectionReadout, layout_selection_readout, paint_selection_readout,
 };
+use crate::pin_session::{
+    ClosedPinSnapshot, PinMouseMode, PinPresentation, next_pin_recency,
+    pin_mouse_mode_after_platform_request,
+};
 use crate::settings_panel::{SettingsPanelAction, SettingsPanelKey};
 use crate::tray_capabilities::TrayCapabilitySummary;
 use crate::tray_feedback::{TrayExportOperation, TrayFeedback};
@@ -465,32 +469,6 @@ struct PinWin {
     cursor_icon: CursorIcon,
 }
 
-/// 贴图窗口请求给平台的鼠标命中状态。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PinMouseMode {
-    Direct,
-    Passthrough,
-}
-
-impl PinMouseMode {
-    const fn hittest_enabled(self) -> bool {
-        matches!(self, Self::Direct)
-    }
-}
-
-/// 平台调用失败时，进程内状态必须保留原值，不能把请求当作已生效。
-const fn pin_mouse_mode_after_platform_request(
-    current: PinMouseMode,
-    requested: PinMouseMode,
-    platform_succeeded: bool,
-) -> PinMouseMode {
-    if platform_succeeded {
-        requested
-    } else {
-        current
-    }
-}
-
 /// 一次贴图尺寸手势的稳定输入。原生协议可用时只用于保持比例；否则在当前窗口内
 /// 依据同一快照执行手动尺寸请求。
 #[derive(Debug, Clone, Copy)]
@@ -528,25 +506,6 @@ fn cursor_for_pin_resize(handle: Option<PinResizeHandle>) -> CursorIcon {
         Some(PinResizeHandle::NorthWest) => CursorIcon::NwResize,
         None => CursorIcon::Default,
     }
-}
-
-/// 创建贴图窗口所需的呈现参数。预处理像素仅由受监督的历史读取 worker 提供。
-struct PinPresentation {
-    position: PixelPoint,
-    scale: f64,
-    opacity: f64,
-    always_on_top: bool,
-    pixels_xrgb: Option<Vec<u32>>,
-}
-
-#[derive(Clone)]
-struct ClosedPinSnapshot {
-    image: CaptureImage,
-    position: PixelPoint,
-    scale: f64,
-    opacity: f64,
-    locked: bool,
-    always_on_top: bool,
 }
 
 struct DesktopApp<L, P, C, S> {
@@ -4896,14 +4855,14 @@ where
                 .outer_position()
                 .map(|position| PixelPoint::new(position.x, position.y))
                 .unwrap_or(PixelPoint::new(0, 0));
-            let snapshot = ClosedPinSnapshot {
-                image: pin.image.clone(),
+            let snapshot = ClosedPinSnapshot::new(
+                pin.image.clone(),
                 position,
-                scale: pin.scale,
-                opacity: pin.opacity,
-                locked: pin.locked,
-                always_on_top: pin.always_on_top,
-            };
+                pin.scale,
+                pin.opacity,
+                pin.locked,
+                pin.always_on_top,
+            );
             self.ocr_jobs.close_owner(JobOwner::Pin(pin.pin_id));
             self.export_jobs.close_owner(JobOwner::Pin(pin.pin_id));
             println!("pinora: pin {} closed", pin.pin_id);
@@ -5834,10 +5793,6 @@ fn pin_window_level(always_on_top: bool) -> WindowLevel {
     }
 }
 
-fn next_pin_recency(current: u64) -> u64 {
-    current.saturating_add(1)
-}
-
 #[cfg(test)]
 mod overlay_scale_tests {
     use super::*;
@@ -5903,43 +5858,6 @@ mod overlay_scale_tests {
     fn default_pin_level_maps_to_the_requested_window_level() {
         assert!(matches!(pin_window_level(true), WindowLevel::AlwaysOnTop));
         assert!(matches!(pin_window_level(false), WindowLevel::Normal));
-    }
-
-    #[test]
-    fn pin_recency_counter_is_monotonic_and_saturates() {
-        assert_eq!(next_pin_recency(0), 1);
-        assert_eq!(next_pin_recency(41), 42);
-        assert_eq!(next_pin_recency(u64::MAX), u64::MAX);
-    }
-
-    #[test]
-    fn pin_mouse_mode_changes_only_after_the_platform_accepts_the_request() {
-        assert!(PinMouseMode::Direct.hittest_enabled());
-        assert!(!PinMouseMode::Passthrough.hittest_enabled());
-        assert_eq!(
-            pin_mouse_mode_after_platform_request(
-                PinMouseMode::Direct,
-                PinMouseMode::Passthrough,
-                true,
-            ),
-            PinMouseMode::Passthrough
-        );
-        assert_eq!(
-            pin_mouse_mode_after_platform_request(
-                PinMouseMode::Direct,
-                PinMouseMode::Passthrough,
-                false,
-            ),
-            PinMouseMode::Direct
-        );
-        assert_eq!(
-            pin_mouse_mode_after_platform_request(
-                PinMouseMode::Passthrough,
-                PinMouseMode::Direct,
-                false,
-            ),
-            PinMouseMode::Passthrough
-        );
     }
 
     #[test]

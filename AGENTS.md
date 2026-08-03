@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/131_history_session_state.md`
-- 任务：`.context/tasks/131_history_session_state.md`
+- 计划：`.context/plans/132_pin_session_state.md`
+- 任务：`.context/tasks/132_pin_session_state.md`
 
 ## 交付要求
 

@@ -31,7 +31,7 @@
 ## 2026-08-01 接管审计事实
 
 - 接管初期 Unix 单实例路径直接依赖 Unix socket；后续实现已将 `OsSingleInstance` 与 `forward_ipc_frame` 按 Unix/非 Unix 条件编译，根 `src/main.rs` 只依赖其抽象入口。真实 Windows/macOS 的并发启动、权限和异常恢复仍待桌面探针。
-- `crates/pinora-app/src/desktop_shell.rs` 仍集中承载唯一 winit/softbuffer 事件循环、截图编排、Overlay 绘制、标注输入、贴图生命周期、OCR 触发、托盘和 IPC 轮询；任务 128 将设置、历史和诊断窗口的 Window/Surface 与 Panel 适配迁入 `pinora-panels`，任务 129/130/131 再将无窗口副作用的捕获、导出和历史加载会话状态迁入 `capture_session`/`export_session`/`history_session`，但 Overlay/贴图和全部真实副作用仍在 shell 中，单体化风险保持开放。
+- `crates/pinora-app/src/desktop_shell.rs` 仍集中承载唯一 winit/softbuffer 事件循环、截图编排、Overlay 绘制、标注输入、贴图生命周期、OCR 触发、托盘和 IPC 轮询；任务 128 将设置、历史和诊断窗口的 Window/Surface 与 Panel 适配迁入 `pinora-panels`，任务 129/130/131/132 再将无窗口副作用的捕获、导出、历史加载和贴图会话状态迁入 `capture_session`/`export_session`/`history_session`/`pin_session`，但 Overlay/贴图和全部真实副作用仍在 shell 中，单体化风险保持开放。
 - 任务 105 已将启动项、单实例/IPC、全局热键和 Linux Wayland Portal 迁入 `pinora-platform`；任务 106 又将 KDE/Spectacle、xcap、显式 fake、后端选择和 `FrameCache` 迁入 `pinora-capture`，任务 122 再将冷捕获/预截帧共用的 `CapturePreview` 构造、完整性校验与缓存帧所有权移交迁入该 crate；任务 107 将任务监督、协作式取消、结果门禁和有界 worker 回收迁入 `pinora-jobs`；任务 108 将设置 codec、历史索引 codec 和受管文件名分配迁入 `pinora-storage`；任务 109 将贴图几何、Overlay 工具栏布局/命中和已提交预览缓存迁入 `pinora-desktop`，任务 111 又将辅助窗口创建、映射和 KWin 隔离策略迁入该 crate，任务 112 再将面板主题、tray 能力摘要和固定反馈迁入该 crate，任务 113 进一步将设置/历史/诊断面板、Overlay 选区读数和贴图客户区菜单迁入该 crate，任务 119 再将 XRGB 缩放/压暗/边框/手柄/脏区恢复及贴图基础帧缓存迁入该 crate，任务 120 再将 Overlay 物理像素坐标映射和选区手柄命中迁入该 crate，任务 121 再将标注显示投影、脏区裁剪和 XRGB 块拷贝迁入同一 crate；任务 110 将 tesseract CLI、PNG 临时输入、TSV 解析和词框视觉状态迁入 `pinora-ocr`，任务 117 再将 OCR 任务服务、结果缓存、worker 回收和结果门禁迁入同一 crate；任务 114 将图像编码、原子文件、系统剪贴板和受监督导出 worker 迁入 `pinora-export`，任务 123 再将导出来源、标注图烧录与草稿预览回退迁入该 crate；任务 115 将历史索引策略、受管 PNG 校验、删除/清空和异步图像读取迁入 `pinora-history`，任务 126 再将当前 Unix 毫秒读取与保留期截止时间策略迁入该 crate，任务 127 又将固定白名单诊断报告与原子发布迁入 `pinora-diagnostics`；任务 116 将 `tray-icon` 菜单、句柄、事件映射和动态贴图列表迁入 `pinora-tray`；任务 118 将命令/状态/单实例工作流和能力探测端口迁入 `pinora-runtime`。`pinora-app` 不再直接声明 `fs2`、`global-hotkey`、`xcap`、`zbus`、`async-channel`、`futures-lite`、`tray-icon` 或 GTK，也不再拥有通用任务状态机、命令分发、纯本地 codec、预览帧像素转换/完整性校验、无窗口 XRGB 呈现、Overlay 物理像素映射/选区命中/标注投影/脏区裁剪、设置/历史/诊断面板、Overlay 选区读数、贴图客户区菜单、导出来源/标注合成、导出 IO、历史文件或历史时间策略、诊断报告/原子发布、托盘适配或具体 OCR worker 服务；OCR 触发/结果 UI 交付、冷捕获线程与错误编排、历史窗口/选择、Overlay/贴图窗口、Window/Surface 上传、托盘动作编排和唯一 EventLoop 仍在 app，后续按功能任务继续拆分。
 - `cargo fmt --check`、`cargo check --workspace` 和 `cargo clippy --workspace --all-targets -- -D warnings` 已于 2026-08-02 通过；当前 `PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace` 通过 app 240 个、core 88 个单元测试，另有 2 个真实桌面测试被忽略；仍没有 GUI 端到端测试。
 - 2026-08-03 的 098 发布链路已完成：当前 `main` CI run `30783363209` 成功；tag `v0.1.0-preview.8` 的 package/release run `30783568639` 在 Linux/macOS/Windows 原生 runner 全部成功；Release 已确认为 pre-release，含 11 个跨平台资产和合并 `SHA256SUMS.txt`，本机下载后逐项校验通过；`runtime-verify` workflow_run `30783727003` 三平台成功并将 runner-safe 报告写入 Release body。该证据只覆盖构建、资产、安装/卸载与 `--version`，不涵盖真实 GUI、tray、热键、权限、任务栏/Dock/分页器、签名/公证或性能。
@@ -82,6 +82,12 @@
   `HistoryLoadJobService`、窗口/贴图/编辑器、错误反馈和 EventLoop。状态模块 3 项、app 26 项、
   workspace 回归、严格 Clippy、Windows target、格式、差异和上下文校验通过；离线证据不证明真实
   历史目录权限、worker 时序、窗口管理器、焦点、HiDPI、tray-only 或性能。
+- 2026-08-03 的 132 将 `PinMouseMode`、平台请求后的纯状态转移、`PinPresentation`、
+  `ClosedPinSnapshot` 和饱和最近使用序号迁入 `pinora-app::pin_session`。模块只依赖
+  `pinora-core`，不依赖 winit；`desktop_shell` 保留 `PinWin`、Window/Surface、输入、平台命中、
+  runtime、OCR、导出、tray 和 EventLoop。状态模块 3 项、app 27 项、workspace 回归、严格 Clippy、
+  Windows target、格式、差异和上下文校验通过；离线证据不证明真实鼠标命中、窗口管理器、焦点、
+  任务栏/Dock、HiDPI、tray-only 或性能。
 - 2026-08-02 的 049/050 本地实现将截图方式、Overlay 初始选区和窗口呈现方式分离：历史条目在完整性校验后通过普通编辑窗口进入全图标注，不重新捕获屏幕；失败保留历史窗口并恢复帧缓存。
 - 2026-08-02 的 050/054 实现移除了空闲控制窗口与启动自动截图，并将全部生产窗口构造收敛至 `window_policy`：Windows 请求跳过任务栏、X11 请求 Utility、macOS 使用 Accessory/`LSUIElement`，KDE Wayland 在映射后额外请求 `skipTaskbar`/`skipPager`；隐藏 display-handle 也受创建前策略约束。提交 `609b862` 的三平台 CI 已验证该代码可通过各原生 runner 的静态门禁。这不等于真实任务栏、Dock 或合成器验收。
 - 2026-08-02 的 057 实现为 `CaptureProvider` 增加了经快照验证的窗口枚举/捕获契约：xcap 在点击后按内部窗口 ID、几何、显示器和缩放重新枚举验证，最小化、消失或拓扑变化不会回退为显示器截图；tray 仅在启动时保存最多 20 个经过清洗的候选。窗口捕获和 Overlay 创建失败会回到 tray 空闲态，后台线程只回传稳定错误码，避免后端错误文本写入日志。提交 `b60ebf0` 的本地全量门禁与 GitHub CI `30736791038`（Linux/macOS/Windows）均通过；真实窗口像素、权限、任务栏/Dock 与合成器行为尚未验证。
