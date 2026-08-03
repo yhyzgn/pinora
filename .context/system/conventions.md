@@ -66,15 +66,15 @@ graph LR
   摘要、报告渲染和同目录原子文件发布；`pinora-app` 只组装 `DiagnosticsPanel`/runtime 的
   稳定值并处理 `ExportDiagnostics` 托盘动作与固定反馈。该 crate 不依赖 desktop、tray、winit、
   Window、EventLoop、线程或外部进程。
-- `pinora-panels` 现承载设置、历史和诊断三个辅助窗口的 Window/Surface、Panel 状态、主题
-  刷新、输入转发和绘制适配；所有创建/展示继续通过 `pinora-desktop::window_policy`。它不
-  拥有 ApplicationHandler、EventLoop、托盘、截图、贴图、worker 或业务副作用，`pinora-app`
-  只负责打开时机、事件循环、设置/历史/诊断编排和结果反馈。
+- `pinora-panels` 现承载设置、历史、诊断三个辅助窗口及 Overlay 的 Window/Surface、Panel 状态、主题
+  刷新、输入转发和绘制资源适配；所有创建/展示继续通过 `pinora-desktop::window_policy`。它不拥有
+  ApplicationHandler、EventLoop、托盘、截图、贴图、worker 或业务副作用，`pinora-app` 只负责打开时机、
+  事件循环、Overlay 会话/绘制/输入、设置/历史/诊断编排和结果反馈。
 - `pinora-tray` 现唯一拥有 `tray-icon` 的菜单、句柄、事件映射和动态贴图列表；`pinora-app` 仅消费 `TrayAction` 并编排业务操作。
 - `pinora-runtime` 现唯一拥有 `AppRuntime`、命令分发、单实例生命周期、领域事件发布和 `CapabilityProbe` 端口；`pinora-app` 仅实现真实能力探测。
 - `pinora-pin` 现唯一拥有贴图鼠标命中状态、平台确认后的纯状态转移、呈现参数、关闭恢复快照和饱和最近使用序号；其生产依赖仅为 `pinora-core`。`pinora-app` 继续独占 `PinWin`、Window/Surface、输入、平台命中调用、OCR、导出、tray 和唯一 EventLoop。
-- `pinora-app` 当前仍拥有 OCR 触发与 UI 结果交付、历史选择、Overlay/贴图窗口和唯一 EventLoop；
-  设置/历史/诊断的 Window/Surface 适配已迁入 `pinora-panels`，Overlay/贴图适配仍按后续任务拆分。
+- `pinora-app` 当前仍拥有 OCR 触发与 UI 结果交付、历史选择、Overlay 会话/绘制/输入、贴图窗口和唯一 EventLoop；
+  设置/历史/诊断及 Overlay 的 Window/Surface 适配已迁入 `pinora-panels`，贴图适配仍按后续任务拆分。
 
 ## 系统依赖（Linux + xcap）
 
@@ -200,6 +200,14 @@ tray 映射，`desktop_shell` 继续独占运行时、文件名、任务、结�
 `cargo test -p pinora-app --lib -- --nocapture`（10 通过）、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`、
 `cargo check --workspace`、严格 Clippy、Windows target、`--version`、fmt、diff 与 `ctx validate` 均通过。
 这些离线门禁不证明真实文件系统、系统剪贴板、tray、窗口管理器、焦点、HiDPI 或性能，风险由 R-081 跟踪。
+
+139 Overlay 窗口适配器已完成：`pinora-panels::OverlayWindow` 唯一拥有 Overlay 的 Window/Surface、
+隐藏创建、展示、隐藏、焦点、IME、重绘和固定像素尺寸同步；`OverlayState` 不再直接持有平台资源。
+`desktop_shell` 继续独占 Overlay 会话、标注/绘制、输入、任务、关闭 owner 和唯一 EventLoop。
+`cargo test -p pinora-panels -- --nocapture`（1 通过）、`cargo test -p pinora-app --lib -- --nocapture`（11 通过）、
+`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`、`cargo check --workspace`、严格 Clippy、Windows target、
+`--version`、fmt、diff 与 `ctx validate` 均通过；panels 生产依赖图不含 app、capture 或业务服务。
+这些离线门禁不证明真实任务栏/Dock/分页器、tray-only、首帧、焦点、IME、HiDPI 或性能，风险由 R-085 跟踪。
 
 131 历史加载会话状态模块已完成：`pinora-app::history_session` 唯一拥有 `HistoryLoadIntent`、
 `HistoryLoadRequest`、`ActiveHistoryLoad`、`HistoryLoadPreparation` 映射和当前历史选择的结果资产门禁。

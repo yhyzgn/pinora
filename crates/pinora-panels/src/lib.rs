@@ -1,15 +1,17 @@
-//! Pinora 辅助面板窗口适配。
+//! Pinora 辅助面板与 Overlay 窗口适配。
 //!
 //! 本 crate 只绑定既有 Panel 模型与 winit/softbuffer 资源，并通过统一的
 //! `pinora-desktop::window_policy` 创建和展示窗口。唯一 EventLoop、业务状态写入以及
-//! 设置/历史/诊断副作用仍由 `pinora-app` 编排。
+//! 设置/历史/诊断和 Overlay 副作用仍由 `pinora-app` 编排。
 
 mod diagnostics_window;
 mod history_window;
+mod overlay_window;
 mod settings_window;
 
 pub use diagnostics_window::DiagnosticsWindow;
 pub use history_window::HistoryWindow;
+pub use overlay_window::OverlayWindow;
 pub use settings_window::SettingsWindow;
 
 #[cfg(test)]
@@ -36,6 +38,7 @@ mod tests {
             "settings_window.rs",
             "history_window.rs",
             "diagnostics_window.rs",
+            "overlay_window.rs",
         ] {
             let path = source_dir.join(module);
             let source = fs::read_to_string(&path).expect("read panel window adapter");
@@ -48,6 +51,13 @@ mod tests {
                 "{path:?} must use the shared presentation policy"
             );
         }
+        let overlay_path = source_dir.join("overlay_window.rs");
+        let overlay_source =
+            fs::read_to_string(&overlay_path).expect("read overlay window adapter");
+        assert!(
+            overlay_source.contains("AuxiliaryWindowKind::Overlay"),
+            "{overlay_path:?} must create and present an Overlay window"
+        );
     }
 
     fn rust_sources(dir: &Path) -> Vec<PathBuf> {

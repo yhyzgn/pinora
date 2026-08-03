@@ -73,7 +73,7 @@ use pinora_ocr::{
     OcrJobCompletion, OcrJobService, OcrJobStart, tesseract_available, word_visual_state,
 };
 use pinora_overlay::{OverlayAssetIdentity, OverlayPhase, overlay_asset_for_revision};
-use pinora_panels::{DiagnosticsWindow, HistoryWindow, SettingsWindow};
+use pinora_panels::{DiagnosticsWindow, HistoryWindow, OverlayWindow, SettingsWindow};
 use pinora_pin::{
     ClosedPinSnapshot, PinMouseMode, PinPresentation, next_pin_recency,
     pin_mouse_mode_after_platform_request,
@@ -316,8 +316,7 @@ where
 }
 
 struct OverlayState {
-    window: Rc<Window>,
-    surface: Surface<Rc<Window>, Rc<Window>>,
+    window: OverlayWindow,
     /// 选区外：真实桌面暗化（与截图 1:1 像素）。
     dimmed: Vec<u32>,
     /// 选区内：真实桌面原图。
@@ -729,7 +728,7 @@ where
             return;
         }
         if let Some(ov) = self.overlay.as_ref()
-            && ov.window.id() == window_id
+            && ov.window.window_id() == window_id
         {
             self.handle_overlay_event(event_loop, event);
             return;
@@ -2301,7 +2300,7 @@ where
             self.ocr_jobs.close_owner(JobOwner::Session(ov.session_id));
             self.export_jobs
                 .close_owner(JobOwner::Session(ov.session_id));
-            ov.window.set_visible(false);
+            ov.window.hide();
             edited_pin
         } else {
             None
@@ -2532,16 +2531,6 @@ where
                 )
             }
         };
-        let window =
-            window_policy::create_auxiliary_window(event_loop, AuxiliaryWindowKind::Overlay, attrs)
-                .map_err(|e| {
-                    PinoraError::new(ErrorCode::Internal, format!("overlay window: {e}"))
-                })?;
-        let window = Rc::new(window);
-
-        let mut surface = Surface::new(context, window.clone())
-            .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("overlay surface: {e}")))?;
-
         // 1:1 原图像素显示（不降采样，避免全屏发糊）。
         // softbuffer 固定为截图尺寸；禁止跟窗口 resize 走（否则会整屏 scale 卡死）。
         // 性能靠：脏区 present、工具零重绘、拖选节流、release 构建。
@@ -2551,9 +2540,13 @@ where
         let buf_h = src_h;
         let dimmed = prep.dimmed;
         let base = prep.base;
-        if let (Some(w), Some(h)) = (NonZeroU32::new(buf_w), NonZeroU32::new(buf_h)) {
-            let _ = surface.resize(w, h);
-        }
+        let window = OverlayWindow::open(
+            event_loop,
+            context,
+            title.to_owned(),
+            attrs,
+            PixelSize::new(buf_w, buf_h),
+        )?;
         let size = window.inner_size();
         let win_w = size.width.max(1);
         let win_h = size.height.max(1);
@@ -2568,8 +2561,7 @@ where
         window.set_ime_allowed(true);
 
         self.overlay = Some(OverlayState {
-            window: window.clone(),
-            surface,
+            window,
             dimmed,
             base,
             frame,
@@ -2638,9 +2630,10 @@ where
             );
         }
         self.mode = CaptureSessionMode::Idle;
-        window_policy::show_auxiliary_window(AuxiliaryWindowKind::Overlay, &window, title);
-        window.focus_window();
-        window.request_redraw();
+        let overlay = self.overlay.as_ref().expect("overlay was just created");
+        overlay.window.show();
+        overlay.window.focus();
+        overlay.window.request_redraw();
         Ok(())
     }
 
@@ -2855,9 +2848,8 @@ where
                 // 只更新鼠标映射用的窗口尺寸；softbuffer 保持 img 尺寸
                 ov.win_w = size.width.max(1);
                 ov.win_h = size.height.max(1);
-                if let (Some(w), Some(h)) = (NonZeroU32::new(ov.buf_w), NonZeroU32::new(ov.buf_h)) {
-                    let _ = ov.surface.resize(w, h);
-                }
+                ov.window
+                    .sync_pixel_size(PixelSize::new(ov.buf_w, ov.buf_h));
                 // 不在此全量 clone dimmed / 不清 buffer_synced，避免拖一下窗口就卡死
             }
             _ => {}
@@ -3634,7 +3626,7 @@ where
             self.ocr_jobs.close_owner(JobOwner::Session(ov.session_id));
             self.export_jobs
                 .close_owner(JobOwner::Session(ov.session_id));
-            ov.window.set_visible(false);
+            ov.window.hide();
             drop(ov);
         }
         self.mode = CaptureSessionMode::Idle;
@@ -3837,7 +3829,7 @@ where
             self.ocr_jobs.close_owner(JobOwner::Session(ov.session_id));
             self.export_jobs
                 .close_owner(JobOwner::Session(ov.session_id));
-            ov.window.set_visible(false);
+            ov.window.hide();
             edited_pin
         } else {
             None
@@ -5561,12 +5553,12 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
     }
 
     // 确保 surface 仍是 img 尺寸（防止别处误 resize）
-    if let (Some(w), Some(h)) = (NonZeroU32::new(ov.buf_w), NonZeroU32::new(ov.buf_h)) {
-        let _ = ov.surface.resize(w, h);
-    }
+    ov.window
+        .sync_pixel_size(PixelSize::new(ov.buf_w, ov.buf_h));
 
     let mut buffer = ov
-        .surface
+        .window
+        .surface_mut()
         .buffer_mut()
         .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("overlay buffer: {e}")))?;
     let needed = img_w * img_h;
@@ -5766,6 +5758,27 @@ fn pin_window_level(always_on_top: bool) -> WindowLevel {
 mod overlay_scale_tests {
     use super::*;
     use pinora_core::{CaptureImage, CaptureMetadata, DisplayId, ImageId, PixelSize, RgbaBuffer};
+    use std::fs;
+    use std::path::Path;
+
+    #[test]
+    fn overlay_platform_resources_are_owned_by_the_panels_adapter() {
+        let source_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("desktop_shell.rs");
+        let source = fs::read_to_string(source_path).expect("read desktop shell source");
+        let overlay_state = source
+            .split_once("struct OverlayState {")
+            .and_then(|(_, rest)| {
+                rest.split_once("#[derive(Debug, Clone)]\nstruct SelectedAnnotationDrag")
+            })
+            .map(|(state, _)| state)
+            .expect("locate OverlayState definition");
+
+        assert!(overlay_state.contains("window: OverlayWindow"));
+        assert!(!overlay_state.contains("Rc<Window>"));
+        assert!(!overlay_state.contains("Surface<"));
+    }
 
     #[test]
     fn selection_readout_maps_buffer_pixels_to_the_source_and_global_origin() {

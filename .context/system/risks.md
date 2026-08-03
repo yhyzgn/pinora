@@ -800,6 +800,23 @@
 - 负责人和状态：Neo；离线状态、app、workspace、Clippy、Windows target、版本、格式、差异和上下文门禁已验证，
   真实 Overlay、窗口管理器、tray-only 和性能证据开放。
 
+## R-085：Overlay 窗口适配已迁移，但原生映射与帧时间仍未验证（高）
+
+- 证据和影响范围：139 将 Overlay 的 Window/Surface、隐藏创建、展示、隐藏、焦点、IME、重绘和固定像素尺寸同步迁入
+  `pinora-panels::OverlayWindow`。`OverlayState` 仅组合适配器与选区、标注、工具栏、预览缓存、派生资产身份；
+  `desktop_shell` 继续独占捕获、绘制、输入、任务、关闭 owner 和唯一 EventLoop。panels 策略源码守卫、app 资源所有权
+  守卫、workspace 回归与完整静态门禁通过。
+- 触发条件：区域/全屏/虚拟桌面/窗口/历史编辑/贴图编辑 Overlay 的首次映射、快速关闭、窗口 resize、输入法、焦点切换、
+  4K/HiDPI 连续拖选，或 Windows/macOS/X11/KDE Wayland 对辅助窗口和 softbuffer 的调度差异。
+- 失败模式：适配器遗漏或平台时序可能导致首帧空白、表面尺寸不一致、关闭后窗口仍短暂显示、焦点/IME 丢失，或 Overlay 进入
+  任务栏、Dock、分页器，违背 tray-only 约束；连续拖拽也可能产生可感知延迟。
+- 缓解措施和必需验证：保持创建/展示均经 `window_policy`，表面固定为原始截图像素，关闭仍先取消 owner；在 Windows、macOS、
+  Linux X11、KDE Wayland 验证所有 Overlay 呈现模式、打开/取消/完成、首次帧、焦点、IME、1x/2x DPI、连续拖选、
+  任务栏/Dock/分页器、tray-only 和帧时间。
+- 回滚或隔离动作：移除 `OverlayWindow` 并恢复 `OverlayState` 的直接资源字段；不改动选区、标注、任务、导出、OCR、tray 或设置。
+- 负责人和状态：Neo；离线 panels/app/workspace、Clippy、Windows target、版本、格式、差异、依赖图和上下文门禁已验证，
+  真实窗口管理器、tray-only、焦点、IME、HiDPI 与性能证据开放。
+
 ## 风险一：上下文漂移
 
 - 触发条件：代码、配置或工作流变化后，没有同步更新对应上下文文件。

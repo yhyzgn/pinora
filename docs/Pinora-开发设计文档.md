@@ -273,7 +273,7 @@ flowchart LR
     HistoryNow --> ExportNow
     App --> DiagnosticsNow["pinora-diagnostics\n已实现：脱敏报告/字段校验/原子发布"]
     DiagnosticsNow --> Core
-    App --> PanelsNow["pinora-panels\n已实现：设置/历史/诊断窗口适配"]
+    App --> PanelsNow["pinora-panels\n已实现：设置/历史/诊断/Overlay 窗口适配"]
     PanelsNow --> Desktop
     PanelsNow --> StorageNow
     App --> TrayNow["pinora-tray\n已实现：tray-icon 菜单/句柄/事件"]
@@ -305,11 +305,11 @@ flowchart LR
 | `pinora-export` | 原图/标注图来源、已提交标注烧录/草稿预览回退、PNG/JPEG/WebP 编码、原子文件发布、内存与系统剪贴板、取消/超时受监督导出 worker | 后续接收更窄的导出端口并与历史记录编排解耦 | 不拥有窗口、历史索引、托盘或应用 EventLoop；外部子进程必须可回收 |
 | `pinora-history` | 受管历史索引加载、PNG 摘要/尺寸校验、插入、删除/清空、配额/保留期 tombstone 清理、当前 Unix 毫秒到截止时间策略、异步历史图像读取、加载意图/请求/活动状态与结果资产门禁 | 后续把历史策略与导出输入进一步抽象为端口 | 不拥有窗口、Panel、托盘或 EventLoop；所有路径限制在受管目录 |
 | `pinora-diagnostics` | 固定白名单诊断报告、平台/反馈标签校验、设置脱敏摘要、字段顺序、文本渲染和原子文件发布 | 后续接收更窄的诊断快照端口 | 不拥有窗口、Panel、托盘、EventLoop、线程或外部进程 |
-| `pinora-panels` | 设置、历史、诊断三个辅助窗口的 Window/Surface、Panel 状态、主题刷新、输入转发和 softbuffer 绘制适配 | 后续迁移 Overlay/贴图窗口适配 | 不拥有 ApplicationHandler、EventLoop、托盘、截图、贴图、worker 或业务副作用；窗口创建/展示必须经过 `window_policy` |
+| `pinora-panels` | 设置、历史、诊断三个辅助窗口与 Overlay 的 Window/Surface、Panel 状态、主题刷新、输入转发和 softbuffer 绘制适配 | 后续迁移贴图窗口适配 | 不拥有 ApplicationHandler、EventLoop、托盘、截图、贴图、worker 或业务副作用；窗口创建/展示必须经过 `window_policy` |
 | `pinora-tray` | `tray-icon` 菜单构造、托盘句柄、事件轮询、动态贴图列表、热键/能力/固定反馈同步 | 后续抽象平台 tray backend 或引入原生探针 | 不拥有截图、贴图、设置、历史、诊断业务工作流或 EventLoop |
 | `pinora-ocr` | tesseract CLI、PNG 临时输入、TSV 解析、取消/超时/输出上限、受监督 OCR worker、结果缓存和词框视觉状态 | 继续承载本地 OCR 服务；app 只提供当前 UI owner/asset 并消费结果 | 不下载模型、不联网、不拥有窗口、剪贴板或应用 EventLoop |
 | `pinora-runtime` | AppRuntime、命令分发、领域状态变更、单实例 bootstrap/forward/shutdown、能力探测端口和事件发布 | 继续承载无 UI 的应用工作流 | 不创建窗口、EventLoop、线程、网络或具体平台探测；捕获/剪贴板通过泛型端口注入 |
-| `pinora-app` | desktop shell、导出会话状态、OCR 触发/结果 UI 交付、历史选择编排、存储调用编排、托盘动作编排、设置/历史/诊断打开时机与业务副作用；导出/历史结果 UI 消费 | 继续迁移 Overlay/贴图适配 | 保持唯一事件循环和现有用户行为，窗口资源适配已迁至 `pinora-panels` |
+| `pinora-app` | desktop shell、导出协调状态、OCR 触发/结果 UI 交付、历史选择编排、存储调用编排、托盘动作编排、设置/历史/诊断/Overlay 打开时机与业务副作用；导出/历史结果 UI 消费 | 继续迁移贴图窗口适配 | 保持唯一事件循环和现有用户行为；Overlay 会话/绘制/输入留 app，窗口资源适配已迁至 `pinora-panels` |
 
 后续每个 crate 拆分都必须单独建立计划/任务、迁移原有测试、更新依赖图，并通过 workspace 与目标平台编译门禁；不得把一次性目录搬迁当作功能完成。
 
@@ -806,6 +806,24 @@ flowchart LR
     Coordinator --> Jobs
     Contract -. 不依赖 .-> Effects
     Coordinator -. 不执行 .-> Effects
+```
+
+#### 当前 Overlay 窗口适配边界
+
+```mermaid
+flowchart LR
+    Shell["desktop_shell\n捕获/Overlay 会话/绘制/输入/任务/关闭编排/EventLoop"]
+    State["OverlayState\n选区/标注/工具栏/预览缓存/派生资产"]
+    Adapter["pinora-panels::OverlayWindow\nWindow/Surface/创建/展示/焦点/IME/像素尺寸同步"]
+    Policy["pinora-desktop::window_policy\n隐藏创建 + taskbar/Dock/pager 隔离"]
+    Core["pinora-core + pinora-overlay\n领域模型/派生资产身份"]
+    Effects["截图 / worker / tray / 文件 / OCR / 导出"]
+
+    Shell --> State
+    State --> Adapter
+    State --> Core
+    Adapter --> Policy
+    Adapter -. 不拥有 .-> Effects
 ```
 
 #### 当前历史加载会话模块边界
