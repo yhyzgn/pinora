@@ -9,15 +9,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use pinora_core::{AppSettings, CapabilitySnapshot, ErrorCode};
-
-use crate::diagnostics_panel::DiagnosticsPanel;
+use pinora_core::{AppSettings, ErrorCode, ExportImageFormat, ThemeMode};
 
 static REPORT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const REPORT_PREFIX: &str = "pinora-diagnostics";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SanitizedSettings {
+struct SanitizedSettings {
     pub schema_version: u16,
     pub theme: &'static str,
     pub start_on_login: bool,
@@ -33,7 +31,7 @@ pub(crate) struct SanitizedSettings {
 }
 
 impl SanitizedSettings {
-    pub(crate) const fn from_settings(settings: AppSettings) -> Self {
+    const fn from_settings(settings: AppSettings) -> Self {
         Self {
             schema_version: settings.schema_version,
             theme: theme_label(settings.theme),
@@ -51,8 +49,41 @@ impl SanitizedSettings {
     }
 }
 
+/// 创建诊断报告所需的已脱敏状态。
+///
+/// 能力数组的固定顺序为捕获、全局热键、图像剪贴板、置顶和本地 OCR。调用方不能为
+/// 报告自定义字段名，避免将未审计的运行时文本写入磁盘。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiagnosticReportInput {
+    platform: &'static str,
+    capabilities: [bool; 5],
+    feedback: &'static str,
+    error_code: Option<ErrorCode>,
+    settings: AppSettings,
+}
+
+impl DiagnosticReportInput {
+    pub fn new(
+        platform: &'static str,
+        capabilities: [bool; 5],
+        feedback: &'static str,
+        error_code: Option<ErrorCode>,
+        settings: AppSettings,
+    ) -> Option<Self> {
+        let platform = fixed_platform_label(platform)?;
+        let feedback = fixed_feedback_label(feedback)?;
+        Some(Self {
+            platform,
+            capabilities,
+            feedback,
+            error_code,
+            settings,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SanitizedDiagnosticReport {
+pub struct SanitizedDiagnosticReport {
     platform: &'static str,
     capabilities: [(&'static str, bool); 5],
     feedback: &'static str,
@@ -61,28 +92,23 @@ pub(crate) struct SanitizedDiagnosticReport {
 }
 
 impl SanitizedDiagnosticReport {
-    pub(crate) fn from_runtime(
-        capabilities: &CapabilitySnapshot,
-        panel: &DiagnosticsPanel,
-        settings: AppSettings,
-    ) -> Self {
-        let rows = panel.capability_rows();
+    pub const fn from_input(input: DiagnosticReportInput) -> Self {
         Self {
-            platform: panel.platform(),
+            platform: input.platform,
             capabilities: [
-                (rows[0].0, capabilities.capture_available),
-                (rows[1].0, rows[1].1),
-                (rows[2].0, capabilities.clipboard_image_available),
-                (rows[3].0, capabilities.always_on_top_available),
-                (rows[4].0, rows[4].1),
+                ("CAPTURE", input.capabilities[0]),
+                ("GLOBAL HOTKEY", input.capabilities[1]),
+                ("IMAGE CLIPBOARD", input.capabilities[2]),
+                ("ALWAYS ON TOP", input.capabilities[3]),
+                ("LOCAL OCR", input.capabilities[4]),
             ],
-            feedback: panel.feedback_label(),
-            error_code: panel.error_code(),
-            settings: SanitizedSettings::from_settings(settings),
+            feedback: input.feedback,
+            error_code: input.error_code,
+            settings: SanitizedSettings::from_settings(input.settings),
         }
     }
 
-    pub(crate) fn render(&self) -> String {
+    pub fn render(&self) -> String {
         let mut report = String::with_capacity(1_600);
         report.push_str("PINORA_DIAGNOSTICS_V1\n");
         push_line(&mut report, "version", env!("CARGO_PKG_VERSION"));
@@ -156,7 +182,7 @@ impl SanitizedDiagnosticReport {
     }
 }
 
-pub(crate) fn write_report(
+pub fn write_report(
     directory: &Path,
     report: &SanitizedDiagnosticReport,
 ) -> Result<PathBuf, &'static str> {
@@ -221,41 +247,75 @@ fn capability_key(label: &str) -> &'static str {
     }
 }
 
-const fn theme_label(theme: pinora_core::ThemeMode) -> &'static str {
-    match theme {
-        pinora_core::ThemeMode::System => "system",
-        pinora_core::ThemeMode::Light => "light",
-        pinora_core::ThemeMode::Dark => "dark",
+fn fixed_platform_label(platform: &str) -> Option<&'static str> {
+    match platform {
+        "WINDOWS" => Some("WINDOWS"),
+        "MACOS" => Some("MACOS"),
+        "LINUX" => Some("LINUX"),
+        "OTHER" => Some("OTHER"),
+        _ => None,
     }
 }
 
-const fn export_format_label(format: pinora_core::ExportImageFormat) -> &'static str {
+fn fixed_feedback_label(feedback: &str) -> Option<&'static str> {
+    match feedback {
+        "READY" => Some("READY"),
+        "CAPTURE PREPARING" => Some("CAPTURE PREPARING"),
+        "CAPTURE READY" => Some("CAPTURE READY"),
+        "CAPTURE CANCELLED" => Some("CAPTURE CANCELLED"),
+        "CAPTURE FAILED" => Some("CAPTURE FAILED"),
+        "DELAYED CAPTURE ACTIVE" => Some("DELAYED CAPTURE ACTIVE"),
+        "DELAYED CAPTURE CANCELLED" => Some("DELAYED CAPTURE CANCELLED"),
+        "DELAYED CAPTURE FAILED" => Some("DELAYED CAPTURE FAILED"),
+        "OCR RUNNING" => Some("OCR RUNNING"),
+        "OCR COMPLETED" => Some("OCR COMPLETED"),
+        "OCR FAILED" => Some("OCR FAILED"),
+        "EXPORT RUNNING" => Some("EXPORT RUNNING"),
+        "EXPORT CANCELLING" => Some("EXPORT CANCELLING"),
+        "EXPORT CANCELLED" => Some("EXPORT CANCELLED"),
+        "EXPORT COMPLETED" => Some("EXPORT COMPLETED"),
+        "EXPORT FAILED" => Some("EXPORT FAILED"),
+        "PIN MOUSE PASSTHROUGH ENABLED" => Some("PIN MOUSE PASSTHROUGH ENABLED"),
+        "PIN MOUSE INTERACTION RESTORED" => Some("PIN MOUSE INTERACTION RESTORED"),
+        "PIN MOUSE PASSTHROUGH UNAVAILABLE" => Some("PIN MOUSE PASSTHROUGH UNAVAILABLE"),
+        "DIAGNOSTICS EXPORTED" => Some("DIAGNOSTICS EXPORTED"),
+        "DIAGNOSTICS EXPORT FAILED" => Some("DIAGNOSTICS EXPORT FAILED"),
+        _ => None,
+    }
+}
+
+const fn theme_label(theme: ThemeMode) -> &'static str {
+    match theme {
+        ThemeMode::System => "system",
+        ThemeMode::Light => "light",
+        ThemeMode::Dark => "dark",
+    }
+}
+
+const fn export_format_label(format: ExportImageFormat) -> &'static str {
     match format {
-        pinora_core::ExportImageFormat::Png => "png",
-        pinora_core::ExportImageFormat::Jpeg => "jpeg",
-        pinora_core::ExportImageFormat::WebP => "webp",
+        ExportImageFormat::Png => "png",
+        ExportImageFormat::Jpeg => "jpeg",
+        ExportImageFormat::WebP => "webp",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pinora_core::ThemeMode;
     use std::fs;
 
     fn report() -> SanitizedDiagnosticReport {
-        let capabilities = CapabilitySnapshot {
-            capture_available: true,
-            clipboard_image_available: true,
-            ..CapabilitySnapshot::default()
-        };
-        let panel = DiagnosticsPanel::from_runtime(
-            &capabilities,
-            true,
-            true,
-            crate::tray_feedback::TrayFeedback::Ready,
-        );
-        SanitizedDiagnosticReport::from_runtime(&capabilities, &panel, AppSettings::default())
+        SanitizedDiagnosticReport::from_input(
+            DiagnosticReportInput::new(
+                "LINUX",
+                [true, true, true, false, true],
+                "READY",
+                None,
+                AppSettings::default(),
+            )
+            .expect("fixed diagnostic input"),
+        )
     }
 
     #[test]
@@ -269,6 +329,66 @@ mod tests {
         assert!(rendered.contains("capability.image_clipboard=true\n"));
         assert!(!rendered.contains("clipboard_content"));
         assert!(!rendered.contains("token"));
+    }
+
+    #[test]
+    fn input_rejects_unreviewed_platform_and_feedback_labels() {
+        assert!(
+            DiagnosticReportInput::new(
+                "SECRET PLATFORM",
+                [false; 5],
+                "READY",
+                None,
+                AppSettings::default(),
+            )
+            .is_none()
+        );
+        assert!(
+            DiagnosticReportInput::new(
+                "LINUX",
+                [false; 5],
+                "RAW PLATFORM ERROR",
+                None,
+                AppSettings::default(),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn rendered_report_keeps_the_stable_field_order() {
+        let rendered = report().render();
+        let keys: Vec<_> = rendered
+            .lines()
+            .map(|line| line.split_once('=').map_or(line, |(key, _)| key))
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                "PINORA_DIAGNOSTICS_V1",
+                "version",
+                "platform",
+                "capability.capture",
+                "capability.global_hotkey",
+                "capability.image_clipboard",
+                "capability.always_on_top",
+                "capability.local_ocr",
+                "feedback",
+                "error_code",
+                "settings.schema_version",
+                "settings.theme",
+                "settings.start_on_login",
+                "settings.history_limit",
+                "settings.history_retention_days",
+                "settings.history_max_bytes",
+                "settings.pin_limit",
+                "settings.default_pin_opacity_percent",
+                "settings.default_pin_always_on_top",
+                "settings.ocr_confidence_threshold",
+                "settings.export_format",
+                "settings.jpeg_quality",
+            ]
+        );
     }
 
     #[test]
@@ -302,14 +422,10 @@ mod tests {
         assert_eq!(summary.theme, "dark");
         assert_eq!(summary.export_format, "png");
         assert!(summary.start_on_login);
-        let capabilities = CapabilitySnapshot::default();
-        let panel = DiagnosticsPanel::from_runtime(
-            &capabilities,
-            false,
-            false,
-            crate::tray_feedback::TrayFeedback::Ready,
+        let report = SanitizedDiagnosticReport::from_input(
+            DiagnosticReportInput::new("LINUX", [false; 5], "READY", None, settings)
+                .expect("fixed diagnostic input"),
         );
-        let report = SanitizedDiagnosticReport::from_runtime(&capabilities, &panel, settings);
         assert!(report.render().contains("settings.start_on_login=true\n"));
     }
 }

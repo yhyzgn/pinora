@@ -703,6 +703,15 @@
 - 回滚或隔离动作：恢复 app 内截止时间函数并移除 `pinora-history::retention` 导出；不改变设置 schema、历史索引、tombstone、文件格式、窗口策略或托盘生命周期。
 - 负责人和状态：Neo；离线时间契约、crate 边界、完整 workspace 门禁、Windows target、版本探针、格式、差异和上下文校验已通过，真实时钟、文件系统、GUI、窗口管理器与性能证据开放。
 
+## R-078：诊断报告 crate 已迁移，但真实文件系统与托盘交互仍未验证（中）
+
+- 证据和影响范围：127 将 `diagnostics_export` 的固定 `PINORA_DIAGNOSTICS_V1` 报告头、字段顺序、平台/反馈白名单、设置脱敏、原子临时文件发布和可读性校验迁入 `pinora-diagnostics`；app 只从既有 `DiagnosticsPanel` 和 runtime 组装输入，并保留 `ExportDiagnostics` 托盘动作、成功/失败固定反馈。新 crate 只依赖 `pinora-core`，5 项离线测试与 app 22 项回归通过。
+- 触发条件：用户主动导出时目录只读、空间不足、文件占用、进程在 `sync_all`/rename 前后退出，或 Windows/macOS/Linux tray 对菜单点击、反馈刷新和辅助窗口隔离的处理不同。
+- 失败模式：报告无法发布、临时文件残留、报告格式被误改，或托盘短暂显示旧状态；离线测试不能证明真实权限、断电持久性、原生菜单、任务栏/Dock/分页器或帧时间。
+- 缓解措施和必需验证：保持固定字段金样、未知平台/反馈标签拒绝、同目录 `create_new`/`sync_all`/rename/回读、失败清理和 app 固定反馈；在 Windows、macOS、Linux X11、KDE Wayland 验证重复点击、只读/空间不足、进程中断、报告脱敏、tray-only 和辅助窗口隔离。R-057 继续跟踪用户主动诊断包的原生目录与托盘行为。
+- 回滚或隔离动作：恢复 `pinora-app::diagnostics_export` 与 app 依赖，移除 `pinora-diagnostics` workspace 成员；不改变报告格式、诊断面板、能力探测、截图、OCR、历史或托盘生命周期。
+- 负责人和状态：Neo；离线白名单、报告顺序、原子发布、crate 边界、workspace 门禁、Windows target、格式、差异和上下文校验已验证，真实文件系统、托盘、窗口管理器与性能证据开放。
+
 ## 风险一：上下文漂移
 
 - 触发条件：代码、配置或工作流变化后，没有同步更新对应上下文文件。

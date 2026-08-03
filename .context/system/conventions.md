@@ -13,7 +13,7 @@
 - Pinora 空闲状态不创建控制窗口；托盘、已成功注册的全局热键与单实例 IPC 是后台入口。所有辅助 `WindowAttributes` 必须经 `window_policy::auxiliary_window_attributes`；新建事件循环必须使用 `window_policy::auxiliary_event_loop`，禁止绕开任务栏/Dock 策略。
 - KWin 特例仅允许在窗口映射后按 Pinora 自身标题调用 `kwin_place`；`busctl` 失败只能记录，不能阻塞事件循环或被当作其他 Wayland 合成器的支持证据。
 
-## 当前 crate 边界（任务 126 已验证）
+## 当前 crate 边界（任务 127 已验证）
 
 ```mermaid
 graph LR
@@ -24,6 +24,7 @@ graph LR
     App --> Capture["pinora-capture\n捕获请求/后端/预截帧"]
     App --> Export["pinora-export\n图像合成/导出/编码/剪贴板任务"]
     App --> History["pinora-history\n历史策略/截止时间/异步读取"]
+    App --> Diagnostics["pinora-diagnostics\n脱敏报告/原子发布"]
     App --> Tray["pinora-tray\n菜单/句柄/事件"]
     App --> Core["pinora-core\n领域模型"]
     Runtime --> Core
@@ -36,6 +37,7 @@ graph LR
     History --> Storage["pinora-storage\n本地索引"]
     History --> Capture
     History --> Jobs
+    Diagnostics --> Core
     Tray --> Core
     Tray --> Desktop
     Desktop --> Winit["winit\nSystemAppearance 映射"]
@@ -49,6 +51,10 @@ graph LR
 - `pinora-history` 现唯一拥有 `history_export`、`history_load_job` 与 `retention` 的历史索引、
   tombstone 策略、受管 PNG 校验、异步读取 worker、当前 Unix 毫秒读取及保留期截止时间
   计算；`pinora-app` 仅通过 crate re-export 使用历史服务，并独占策略调用时机与窗口反馈。
+- `pinora-diagnostics` 现唯一拥有固定白名单诊断报告、平台/反馈标签校验、字段顺序、设置脱敏
+  摘要、报告渲染和同目录原子文件发布；`pinora-app` 只组装 `DiagnosticsPanel`/runtime 的
+  稳定值并处理 `ExportDiagnostics` 托盘动作与固定反馈。该 crate 不依赖 desktop、tray、winit、
+  Window、EventLoop、线程或外部进程。
 - `pinora-tray` 现唯一拥有 `tray-icon` 的菜单、句柄、事件映射和动态贴图列表；`pinora-app` 仅消费 `TrayAction` 并编排业务操作。
 - `pinora-runtime` 现唯一拥有 `AppRuntime`、命令分发、单实例生命周期、领域事件发布和 `CapabilityProbe` 端口；`pinora-app` 仅实现真实能力探测。
 - `pinora-app` 当前仍拥有 OCR 触发与 UI 结果交付、历史窗口/选择、Overlay/贴图窗口和唯一 EventLoop；这些边界按后续任务逐一拆分。

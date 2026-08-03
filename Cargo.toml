@@ -10,6 +10,7 @@ members = [
     "crates/pinora-ocr",
     "crates/pinora-export",
     "crates/pinora-history",
+    "crates/pinora-diagnostics",
     "crates/pinora-tray",
     "crates/pinora-runtime",
     "crates/pinora-app",
@@ -31,6 +32,7 @@ pinora-desktop = { path = "crates/pinora-desktop" }
 pinora-ocr = { path = "crates/pinora-ocr" }
 pinora-export = { path = "crates/pinora-export" }
 pinora-history = { path = "crates/pinora-history" }
+pinora-diagnostics = { path = "crates/pinora-diagnostics" }
 pinora-tray = { path = "crates/pinora-tray" }
 pinora-runtime = { path = "crates/pinora-runtime" }
 pinora-app = { path = "crates/pinora-app" }

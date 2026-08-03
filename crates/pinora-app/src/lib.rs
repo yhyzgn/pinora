@@ -1,7 +1,6 @@
 //! Pinora 应用编排：生命周期、单实例与命令分发。
 
 mod desktop_shell;
-mod diagnostics_export;
 mod diagnostics_window;
 mod history_window;
 mod platform;

@@ -1,0 +1,10 @@
+[package]
+name = "pinora-diagnostics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pinora sanitized diagnostics report and atomic local publisher"
+
+[dependencies]
+pinora-core = { workspace = true }

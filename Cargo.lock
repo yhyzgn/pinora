@@ -2514,6 +2514,7 @@ dependencies = [
  "pinora-capture",
  "pinora-core",
  "pinora-desktop",
+ "pinora-diagnostics",
  "pinora-export",
  "pinora-history",
  "pinora-jobs",
@@ -2549,6 +2550,13 @@ version = "0.1.0"
 dependencies = [
  "pinora-core",
  "winit",
+]
+
+[[package]]
+name = "pinora-diagnostics"
+version = "0.1.0"
+dependencies = [
+ "pinora-core",
 ]
 
 [[package]]

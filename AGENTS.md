@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/126_history_retention_time_policy.md`
-- 任务：`.context/tasks/126_history_retention_time_policy.md`
+- 计划：`.context/plans/127_diagnostics_crate.md`
+- 任务：`.context/tasks/127_diagnostics_crate.md`
 
 ## 交付要求
 

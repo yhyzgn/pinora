@@ -15,7 +15,6 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::diagnostics_export::{SanitizedDiagnosticReport, write_report};
 use crate::diagnostics_panel::DiagnosticsPanel;
 use crate::diagnostics_window::DiagnosticsWindow;
 use crate::history_browser::{HistoryPanelAction, HistoryPanelKey};
@@ -62,6 +61,7 @@ use pinora_desktop::{
     selection_to_annotation_local, text_enter_action, toolbar_bounds, toolbar_hit,
     window_point_to_image, window_rect_from_points, window_selection_to_image, xrgb_pixel_count,
 };
+use pinora_diagnostics::{DiagnosticReportInput, SanitizedDiagnosticReport, write_report};
 use pinora_jobs::JobState;
 use pinora_ocr::{
     OcrJobCompletion, OcrJobService, OcrJobStart, tesseract_available, word_visual_state,
@@ -1593,7 +1593,24 @@ where
             self.set_tray_feedback(TrayFeedback::DiagnosticsExportFailed);
             return;
         };
-        let report = SanitizedDiagnosticReport::from_runtime(&capabilities, &panel, settings);
+        let rows = panel.capability_rows();
+        let Some(input) = DiagnosticReportInput::new(
+            panel.platform(),
+            [
+                capabilities.capture_available,
+                rows[1].1,
+                capabilities.clipboard_image_available,
+                capabilities.always_on_top_available,
+                rows[4].1,
+            ],
+            panel.feedback_label(),
+            panel.error_code(),
+            settings,
+        ) else {
+            self.set_tray_feedback(TrayFeedback::DiagnosticsExportFailed);
+            return;
+        };
+        let report = SanitizedDiagnosticReport::from_input(input);
         match write_report(&export_dir, &report) {
             Ok(_) => self.set_tray_feedback(TrayFeedback::DiagnosticsExported),
             Err(_) => self.set_tray_feedback(TrayFeedback::DiagnosticsExportFailed),
