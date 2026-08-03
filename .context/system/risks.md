@@ -540,6 +540,15 @@
 - 回滚或隔离动作：移除 `wayland_portal`、Linux target-only 依赖和 `GlobalHotkeyHub` Portal 接线，恢复纯 Wayland 的 tray/IPC 降级；不改变 X11/Windows/macOS 热键、设置 schema、截图、贴图、OCR、导出或窗口策略。
 - 负责人和状态：Neo；离线契约与静态门禁已验证，真实 Wayland backend、授权、触发、窗口管理器和性能证据开放。
 
+## R-060：KDE 指定显示器全屏的多屏映射与性能尚未验证（高）
+
+- 证据和影响范围：101 已将 KDE/Spectacle 的 `-m` 快速路径收窄到唯一显示器拓扑；多显示器 `FullDisplay { display }` 改为一次 `-f` 全桌面 PNG，按开始时的目标 `DisplayInfo.bounds` 裁剪。离线决策、全桌面尺寸校验、workspace 严格门禁和 Windows target 编译证明不会再把“当前鼠标所在屏”误报为 tray 选定显示器。
+- 触发条件：KDE Plasma/Spectacle 版本、异构缩放、旋转、负坐标、显示器热插拔、屏幕排列空洞、`kscreen-doctor` 拓扑与 `spectacle -f` 像素尺寸/原点不同，或大分辨率全桌面 PNG 的解码/裁剪造成可感知延迟。
+- 失败模式：后端可能受控拒绝尺寸不匹配，也可能因真实缩放映射差异裁剪错误区域；多屏指定全屏相比单屏 `-m` 需要更多像素、内存和时间。离线路径测试、CI 和 target 编译不能证明真实 KDE 截图准确性、首帧、tray、焦点、任务栏/Dock/分页器或 Snipaste 级流畅度。
+- 缓解措施和必需验证：保持一次原子全桌面快照、严格尺寸验证、目标 bounds 裁剪和失败不产生资产；在 KDE Wayland 与 KDE X11 真实双屏/三屏会话分别验证同分辨率/异构缩放、正负 origin、旋转、热插拔、每个 tray 指定屏、区域/AllDisplays、取消、失败恢复、100%/200% HiDPI、连续截图帧时间、tray-only 与任务栏/Dock/分页器。若不一致，禁用指定显示器入口，不以另一屏或 fake 像素回退。
+- 回滚或隔离动作：保留唯一显示器 `-m` 快路径，隐藏 KDE 多显示器指定全屏入口或让其返回 `CapabilityUnavailable`；不改变区域截图、AllDisplays、窗口截图、tray/IPC、热键、设置或数据格式。
+- 负责人和状态：Neo；离线决策与静态门禁已验证，真实 KDE 多显示器/性能/窗口管理器证据开放。
+
 ## 风险一：上下文漂移
 
 - 触发条件：代码、配置或工作流变化后，没有同步更新对应上下文文件。

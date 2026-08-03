@@ -157,9 +157,9 @@ impl CaptureProvider for KdeSpectacleCaptureProvider {
         }
         let (info, rect) = resolve_capture_rect(&displays, &request)?;
 
-        // 单屏 FullDisplay：用 -m 快路径；区域或需全桌面坐标系时用 -f。
-        let want_monitor_only =
-            matches!(request, CaptureRequest::FullDisplay { .. }) && rect == info.bounds;
+        // `spectacle -m` 只代表当前鼠标所在显示器，不接受目标 DisplayId。
+        // 因此多显示器下必须捕获一次完整桌面再按拓扑裁剪，不能把当前屏误当成目标屏。
+        let want_monitor_only = can_use_monitor_fast_path(&request, &displays, &info, rect);
 
         let png_path = if want_monitor_only {
             self.capture_monitor_png()?
@@ -234,6 +234,17 @@ fn validate_workspace_image_size(
         ErrorCode::RetryablePlatform,
         "workspace capture dimensions do not match the display topology snapshot",
     ))
+}
+
+fn can_use_monitor_fast_path(
+    request: &CaptureRequest,
+    displays: &[DisplayInfo],
+    info: &DisplayInfo,
+    rect: PixelRect,
+) -> bool {
+    displays.len() == 1
+        && matches!(request, CaptureRequest::FullDisplay { .. })
+        && rect == info.bounds
 }
 
 fn is_kde_session() -> bool {
@@ -523,5 +534,49 @@ Scale: 1
                 .code,
             ErrorCode::RetryablePlatform
         );
+    }
+
+    #[test]
+    fn targeted_full_display_uses_workspace_path_for_multiple_displays() {
+        let first = DisplayInfo {
+            id: DisplayId::new("first"),
+            name: "First".into(),
+            bounds: PixelRect::new(0, 0, 1920, 1080),
+            scale: 1.0,
+        };
+        let second = DisplayInfo {
+            id: DisplayId::new("second"),
+            name: "Second".into(),
+            bounds: PixelRect::new(1920, 0, 1920, 1080),
+            scale: 1.0,
+        };
+        let request = CaptureRequest::FullDisplay {
+            display: second.id.clone(),
+        };
+        assert!(!can_use_monitor_fast_path(
+            &request,
+            &[first, second.clone()],
+            &second,
+            second.bounds,
+        ));
+    }
+
+    #[test]
+    fn single_display_full_capture_keeps_monitor_fast_path() {
+        let display = DisplayInfo {
+            id: DisplayId::new("only"),
+            name: "Only".into(),
+            bounds: PixelRect::new(0, 0, 1920, 1080),
+            scale: 1.0,
+        };
+        let request = CaptureRequest::FullDisplay {
+            display: display.id.clone(),
+        };
+        assert!(can_use_monitor_fast_path(
+            &request,
+            std::slice::from_ref(&display),
+            &display,
+            display.bounds,
+        ));
     }
 }
