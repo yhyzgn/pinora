@@ -235,7 +235,7 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    Main["pinora\nsrc/main.rs"] --> App["pinora-app\n当前：runtime + capture_session + desktop_shell + UI/业务模块"]
+    Main["pinora\nsrc/main.rs"] --> App["pinora-app\n当前：runtime + capture_session + export_session + desktop_shell + UI/业务模块"]
     Main --> Platform["pinora-platform\n已实现：启动项、单实例/IPC、热键、Wayland Portal"]
     App --> Platform
     App --> Core["pinora-core\n纯领域模型"]
@@ -246,6 +246,11 @@ flowchart LR
     App --> CaptureSession["pinora-app::capture_session\n已实现：模式/失败范围/延时状态/Overlay 目标映射"]
     CaptureSession --> CaptureNow
     CaptureSession --> Core
+    App --> ExportSession["pinora-app::export_session\n已实现：导出完成动作/待处理状态/取消筛选/tray 映射"]
+    ExportSession --> Core
+    ExportSession --> HistoryNow
+    ExportSession --> Desktop
+    ExportSession --> JobsNow
     App --> JobsNow["pinora-jobs\n已实现：监督、取消、worker 回收"]
     JobsNow --> Core
     App --> StorageNow["pinora-storage\n已实现：设置/历史 codec + 原子文件 + 命名"]
@@ -742,6 +747,26 @@ flowchart LR
     Session --> Capture
     Session --> Core
     Session -. 不创建或操作 .-> Window
+```
+
+#### 当前导出会话模块边界
+
+```mermaid
+flowchart LR
+    Shell["desktop_shell\n运行时/文件名/任务提交/结果/tray/Window/Surface/EventLoop"]
+    Session["export_session\nOverlayFinish、PendingExport、冻结参数、取消筛选和映射"]
+    Core["pinora-core\nJobOwner、AssetRef、导出格式"]
+    History["pinora-history\nHistoryExportCandidate"]
+    Desktop["pinora-desktop\nTrayExportOperation"]
+    Jobs["pinora-jobs\nJobState"]
+    Effects["文件/剪贴板/worker/tray/Window"]
+
+    Shell --> Session
+    Session --> Core
+    Session --> History
+    Session --> Desktop
+    Session --> Jobs
+    Session -. 不执行 .-> Effects
 ```
 
 ### 4.3 贴图窗口与多贴图管理（P0）
@@ -1275,7 +1300,7 @@ pinora/
 │   ├── pinora-platform/       # 已存在：启动项、单实例/IPC、热键、Wayland Portal
 │   ├── pinora-capture/        # 已存在：请求契约、KDE/xcap/fake 选择、显示器快照、FrameCache、CapturePreview
 │   ├── pinora-jobs/           # 已存在：任务监督、取消、结果门禁、worker 回收
-│   ├── pinora-app/            # 已存在：runtime、capture_session、desktop_shell 与当前编排模块
+│   ├── pinora-app/            # 已存在：runtime、capture_session、export_session、desktop_shell 与当前编排模块
 │   ├── pinora-storage/        # 已存在：设置、历史 codec、原子文件和受管文件名
 │   ├── pinora-desktop/        # 已存在：交互/XRGB 渲染/Overlay 坐标/输入/窗口策略/呈现状态/面板/读数/菜单
 │   ├── pinora-ocr/            # 已存在：Tesseract/TSV/受监督 OCR 服务/词框视觉状态

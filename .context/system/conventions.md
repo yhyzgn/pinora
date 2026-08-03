@@ -174,6 +174,15 @@ Window/Surface、Panel 状态、主题刷新、输入转发与绘制适配；三
 `cargo check --workspace`、严格 Clippy、Windows target、`--version`、fmt、diff 与 `ctx validate` 均通过。
 这些离线门禁不证明真实截图权限、窗口管理器、焦点、HiDPI、tray-only 或性能，风险由 R-080 跟踪。
 
+130 导出会话状态模块已完成：`pinora-app::export_session` 唯一拥有 `OverlayFinish`、
+`PendingExportAction`、`FrozenExportTarget`、`PendingExport`、导出来源、文件保存取消筛选、
+owner/资产匹配和 tray 操作映射；该模块不依赖 winit，不读取 runtime、不分配文件名、不提交任务、
+不访问文件/剪贴板或调用 tray。`desktop_shell` 继续独占运行时、路径、任务、结果、Window/Surface、
+EventLoop 和所有导出副作用。`cargo test -p pinora-app export_session -- --nocapture`（5 项）、
+`cargo test -p pinora-app --lib -- --nocapture`（24 项）、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`、
+`cargo check --workspace`、严格 Clippy、Windows target、`--version`、fmt、diff 与 `ctx validate` 均通过。
+这些离线门禁不证明真实文件系统、系统剪贴板、tray、窗口管理器、焦点、HiDPI 或性能，风险由 R-081 跟踪。
+
 ## 跨平台构建与打包
 
 - Linux CI/打包依赖：`libasound2-dev libgbm-dev libgtk-3-dev libpipewire-0.3-dev libwayland-dev libx11-dev libxkbcommon-dev libxkbcommon-x11-dev pkg-config rpm`。

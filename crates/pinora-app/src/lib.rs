@@ -2,6 +2,7 @@
 
 mod capture_session;
 mod desktop_shell;
+mod export_session;
 mod platform;
 
 pub(crate) use pinora_desktop::{
@@ -9,8 +10,8 @@ pub(crate) use pinora_desktop::{
     settings_panel, tray_capabilities, tray_feedback,
 };
 pub(crate) use pinora_history::{
-    HistoryExportCandidate, HistoryLoadCompletion, HistoryLoadInput, HistoryLoadJobService,
-    HistoryLoadPayload, HistoryLoadPreparation, clear_history_entries, delete_history_entry,
+    HistoryLoadCompletion, HistoryLoadInput, HistoryLoadJobService, HistoryLoadPayload,
+    HistoryLoadPreparation, clear_history_entries, delete_history_entry,
     history_candidate_for_export, history_retention_cutoff_ms, load_history_index,
     reconcile_history_policy, record_history_candidate,
 };

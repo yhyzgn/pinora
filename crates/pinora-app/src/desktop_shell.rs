@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 use std::num::NonZeroU32;
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{
     OnceLock,
@@ -21,6 +20,11 @@ use crate::capture_session::{
     snapshot_visible_ids, virtual_desktop_overlay_target, window_capture_overlay_target,
 };
 use crate::diagnostics_panel::DiagnosticsPanel;
+use crate::export_session::{
+    FrozenExportTarget, OverlayFinish, PendingExport, PendingExportAction,
+    export_source_for_overlay_finish, pending_asset_for_owner, running_file_export_ids,
+    tray_export_operation,
+};
 use crate::history_browser::{HistoryPanelAction, HistoryPanelKey};
 use crate::overlay_selection_readout::{
     SelectionReadout, layout_selection_readout, paint_selection_readout,
@@ -30,11 +34,11 @@ use crate::tray_capabilities::TrayCapabilitySummary;
 use crate::tray_feedback::{TrayExportOperation, TrayFeedback};
 use crate::{
     AppTray, CaptureExportSource, ExportJobCompletion, ExportJobInput, ExportJobService,
-    HistoryExportCandidate, HistoryLoadCompletion, HistoryLoadInput, HistoryLoadJobService,
-    HistoryLoadPayload, HistoryLoadPreparation, TrayAction, TrayPinListEntry,
-    clear_history_entries, compose_capture_export_image, delete_history_entry,
-    history_candidate_for_export, history_retention_cutoff_ms, load_history_index,
-    reconcile_history_policy, record_history_candidate,
+    HistoryLoadCompletion, HistoryLoadInput, HistoryLoadJobService, HistoryLoadPayload,
+    HistoryLoadPreparation, TrayAction, TrayPinListEntry, clear_history_entries,
+    compose_capture_export_image, delete_history_entry, history_candidate_for_export,
+    history_retention_cutoff_ms, load_history_index, reconcile_history_policy,
+    record_history_candidate,
 };
 use pinora_capture::{
     CaptureMode, CapturePreview, CaptureTarget, FrameCache, apply_initial_selection,
@@ -44,10 +48,10 @@ use pinora_core::{
     ActionId, AnnotateSession, AnnotateTool, Annotation, AnnotationRevision, AssetGeneration,
     AssetRef, CaptureImage, CaptureProvider, CaptureRequest, CaptureWindowInfo, Command,
     CorrelationId, DEFAULT_OCR_CONFIDENCE_THRESHOLD, DisplayId, DomainEventKind, ErrorCode,
-    ExportImageFormat, HistoryEntry, HistoryIndex, ImageId, ImageSink, JobId, JobKind, JobOwner,
-    JobSpec, JobTerminalState, OcrLanguage, OcrResult, OcrTextSelection, OcrWordRef, PinId,
-    PinTransform, PinoraError, PixelPoint, PixelRect, PixelSize, SelectionHandle, SelectionSession,
-    SessionId, ThemeMode, color_to_hex, resolve_all_displays_rect, sample_rgba_at,
+    HistoryEntry, HistoryIndex, ImageId, ImageSink, JobId, JobKind, JobOwner, JobSpec,
+    JobTerminalState, OcrLanguage, OcrResult, OcrTextSelection, OcrWordRef, PinId, PinTransform,
+    PinoraError, PixelPoint, PixelRect, PixelSize, SelectionHandle, SelectionSession, SessionId,
+    ThemeMode, color_to_hex, resolve_all_displays_rect, sample_rgba_at,
 };
 use pinora_desktop::window_policy::{self, AuxiliaryWindowKind};
 use pinora_desktop::{
@@ -104,16 +108,6 @@ fn persisted_auxiliary_panel_theme(
     draft_theme: ThemeMode,
 ) -> Option<ThemeMode> {
     persistence.as_ref().ok().map(|()| draft_theme)
-}
-
-fn pending_asset_for_owner(
-    pending_assets: &HashMap<JobId, (JobOwner, AssetRef)>,
-    job_id: JobId,
-    owner: JobOwner,
-) -> Option<AssetRef> {
-    pending_assets
-        .get(&job_id)
-        .and_then(|(pending_owner, asset)| (*pending_owner == owner).then_some(*asset))
 }
 
 /// 已确认 Overlay 选区的派生图像身份。
@@ -349,74 +343,6 @@ where
 enum OverlayPhase {
     Selecting,
     Ready,
-}
-
-/// 选区完成后的收尾动作。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OverlayFinish {
-    Copy,
-    Pin,
-    Save,
-}
-
-const fn export_source_for_overlay_finish(
-    action: OverlayFinish,
-    selected: CaptureExportSource,
-) -> CaptureExportSource {
-    match action {
-        OverlayFinish::Copy | OverlayFinish::Save => selected,
-        OverlayFinish::Pin => CaptureExportSource::Annotated,
-    }
-}
-
-#[derive(Debug)]
-enum PendingExportAction {
-    SaveImage(PathBuf),
-    CopyImage,
-    CopyText,
-}
-
-fn tray_export_operation(action: &PendingExportAction) -> TrayExportOperation {
-    match action {
-        PendingExportAction::SaveImage(_) => TrayExportOperation::SaveFile,
-        PendingExportAction::CopyImage => TrayExportOperation::CopyImage,
-        PendingExportAction::CopyText => TrayExportOperation::CopyText,
-    }
-}
-
-/// tray 只能取消仍由导出监督器标记为运行中的文件保存。待收敛的终态和所有
-/// clipboard 任务继续留在 pending 映射中，直到 worker 结果被消费。
-fn running_file_export_ids<F>(
-    pending_exports: &HashMap<JobId, PendingExport>,
-    mut state: F,
-) -> Vec<JobId>
-where
-    F: FnMut(JobId) -> Option<JobState>,
-{
-    pending_exports
-        .iter()
-        .filter_map(|(job_id, pending)| {
-            (matches!(&pending.action, PendingExportAction::SaveImage(_))
-                && matches!(state(*job_id), Some(JobState::Running)))
-            .then_some(*job_id)
-        })
-        .collect()
-}
-
-/// 保存任务提交前冻结的输出参数。worker 绝不读取随后变化的运行时设置。
-#[derive(Debug, Clone)]
-struct FrozenExportTarget {
-    path: PathBuf,
-    format: ExportImageFormat,
-    jpeg_quality: u8,
-}
-
-#[derive(Debug)]
-struct PendingExport {
-    owner: JobOwner,
-    asset: AssetRef,
-    action: PendingExportAction,
-    history: Option<HistoryExportCandidate>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1095,11 +1021,7 @@ where
                     PinoraError::new(ErrorCode::Internal, "managed export path check failed")
                 })
             })?;
-        Ok(FrozenExportTarget {
-            path,
-            format,
-            jpeg_quality,
-        })
+        Ok(FrozenExportTarget::new(path, format, jpeg_quality))
     }
 
     fn restore_delayed_pins(&mut self) -> bool {
@@ -3445,15 +3367,8 @@ where
                 return Err(error);
             }
         };
-        self.pending_exports.insert(
-            ticket.id,
-            PendingExport {
-                owner,
-                asset,
-                action,
-                history,
-            },
-        );
+        self.pending_exports
+            .insert(ticket.id, PendingExport::new(owner, asset, action, history));
         self.refresh_file_export_cancellation();
         println!(
             "pinora: export job {} started owner={owner:?} kind={kind:?}",
@@ -6031,75 +5946,6 @@ mod overlay_scale_tests {
     }
 
     #[test]
-    fn pending_export_asset_requires_matching_owner() {
-        let job_id = JobId::from_raw(7);
-        let owner = JobOwner::Session(SessionId::from_raw(8));
-        let asset = AssetRef::initial(pinora_core::ImageId::from_raw(9));
-        let mut pending = HashMap::new();
-        pending.insert(job_id, (owner, asset));
-
-        assert_eq!(
-            pending_asset_for_owner(&pending, job_id, owner),
-            Some(asset)
-        );
-        assert_eq!(
-            pending_asset_for_owner(&pending, job_id, JobOwner::Session(SessionId::from_raw(10))),
-            None
-        );
-    }
-
-    #[test]
-    fn file_export_cancellation_selects_only_running_save_jobs() {
-        let asset = AssetRef::initial(ImageId::from_raw(93));
-        let owner = JobOwner::Session(SessionId::from_raw(93));
-        let mut pending = HashMap::new();
-        pending.insert(
-            JobId::from_raw(1),
-            PendingExport {
-                owner,
-                asset,
-                action: PendingExportAction::SaveImage(PathBuf::from("/tmp/a.png")),
-                history: None,
-            },
-        );
-        pending.insert(
-            JobId::from_raw(2),
-            PendingExport {
-                owner,
-                asset,
-                action: PendingExportAction::CopyImage,
-                history: None,
-            },
-        );
-        pending.insert(
-            JobId::from_raw(3),
-            PendingExport {
-                owner,
-                asset,
-                action: PendingExportAction::CopyText,
-                history: None,
-            },
-        );
-        pending.insert(
-            JobId::from_raw(4),
-            PendingExport {
-                owner,
-                asset,
-                action: PendingExportAction::SaveImage(PathBuf::from("/tmp/b.png")),
-                history: None,
-            },
-        );
-
-        let selected = running_file_export_ids(&pending, |job_id| match job_id.raw() {
-            1..=3 => Some(JobState::Running),
-            4 => Some(JobState::Finished(JobTerminalState::Cancelled)),
-            _ => None,
-        });
-
-        assert_eq!(selected, vec![JobId::from_raw(1)]);
-    }
-
-    #[test]
     fn history_load_result_requires_current_selected_entry() {
         let entry = history_entry(31);
         let active = ActiveHistoryLoad {
@@ -6295,21 +6141,5 @@ mod overlay_scale_tests {
         .expect("derived test image");
         first.stamp(&mut image);
         assert_eq!(image.id, first.current(revision).image_id);
-    }
-
-    #[test]
-    fn pin_finish_always_uses_annotated_export_source() {
-        assert_eq!(
-            export_source_for_overlay_finish(OverlayFinish::Copy, CaptureExportSource::Original),
-            CaptureExportSource::Original
-        );
-        assert_eq!(
-            export_source_for_overlay_finish(OverlayFinish::Save, CaptureExportSource::Original),
-            CaptureExportSource::Original
-        );
-        assert_eq!(
-            export_source_for_overlay_finish(OverlayFinish::Pin, CaptureExportSource::Original),
-            CaptureExportSource::Annotated
-        );
     }
 }
