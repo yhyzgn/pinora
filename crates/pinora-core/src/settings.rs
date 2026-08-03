@@ -1,11 +1,12 @@
 //! 版本化本地设置的纯领域模型。
 
 /// 当前设置 schema 版本。
-pub const SETTINGS_SCHEMA_VERSION: u16 = 4;
+pub const SETTINGS_SCHEMA_VERSION: u16 = 5;
 pub const DEFAULT_HISTORY_LIMIT: u32 = 100;
 pub const DEFAULT_PIN_LIMIT: u16 = 10;
 pub const DEFAULT_PIN_OPACITY_PERCENT: u8 = 100;
 pub const DEFAULT_PIN_ALWAYS_ON_TOP: bool = true;
+pub const DEFAULT_OCR_CONFIDENCE_THRESHOLD: u8 = 60;
 
 /// 被设置持久化支持的跨平台物理键。
 ///
@@ -362,6 +363,8 @@ pub struct AppSettings {
     pub default_pin_opacity_percent: u8,
     pub default_pin_always_on_top: bool,
     pub ocr_language: OcrLanguage,
+    /// 低于此百分比的已知 OCR 词仅在文字层中使用告警样式呈现。
+    pub ocr_confidence_threshold: u8,
     pub region_hotkey: HotkeyBinding,
     pub full_display_hotkey: HotkeyBinding,
 }
@@ -376,6 +379,7 @@ impl Default for AppSettings {
             default_pin_opacity_percent: DEFAULT_PIN_OPACITY_PERCENT,
             default_pin_always_on_top: DEFAULT_PIN_ALWAYS_ON_TOP,
             ocr_language: OcrLanguage::Auto,
+            ocr_confidence_threshold: DEFAULT_OCR_CONFIDENCE_THRESHOLD,
             region_hotkey: DEFAULT_REGION_HOTKEY,
             full_display_hotkey: DEFAULT_FULL_DISPLAY_HOTKEY,
         }
@@ -391,9 +395,12 @@ pub struct SettingsRepairs {
     pub migrated_from_v2: bool,
     /// v3 设置成功按默认新增贴图默认置顶字段；下次保存会原子替换为当前记录。
     pub migrated_from_v3: bool,
+    /// v4 设置成功按默认新增 OCR 置信度阈值字段；下次保存会原子替换为当前记录。
+    pub migrated_from_v4: bool,
     pub history_limit: bool,
     pub pin_limit: bool,
     pub default_pin_opacity_percent: bool,
+    pub ocr_confidence_threshold: bool,
     pub region_hotkey: bool,
     pub full_display_hotkey: bool,
 }
@@ -403,9 +410,11 @@ impl SettingsRepairs {
         !self.migrated_from_v1
             && !self.migrated_from_v2
             && !self.migrated_from_v3
+            && !self.migrated_from_v4
             && !self.history_limit
             && !self.pin_limit
             && !self.default_pin_opacity_percent
+            && !self.ocr_confidence_threshold
             && !self.region_hotkey
             && !self.full_display_hotkey
     }
@@ -426,6 +435,10 @@ impl AppSettings {
         if !(15..=100).contains(&self.default_pin_opacity_percent) {
             self.default_pin_opacity_percent = DEFAULT_PIN_OPACITY_PERCENT;
             repairs.default_pin_opacity_percent = true;
+        }
+        if self.ocr_confidence_threshold > 100 {
+            self.ocr_confidence_threshold = DEFAULT_OCR_CONFIDENCE_THRESHOLD;
+            repairs.ocr_confidence_threshold = true;
         }
         if !self.region_hotkey.is_safe()
             || self.region_hotkey == REGION_SECONDARY_HOTKEY
@@ -469,6 +482,7 @@ mod tests {
             default_pin_opacity_percent: 14,
             default_pin_always_on_top: false,
             ocr_language: OcrLanguage::English,
+            ocr_confidence_threshold: u8::MAX,
             region_hotkey: HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::KeyA),
             full_display_hotkey: HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F2),
         }
@@ -483,6 +497,11 @@ mod tests {
         assert!(repairs.history_limit);
         assert!(repairs.pin_limit);
         assert!(repairs.default_pin_opacity_percent);
+        assert_eq!(
+            settings.ocr_confidence_threshold,
+            DEFAULT_OCR_CONFIDENCE_THRESHOLD
+        );
+        assert!(repairs.ocr_confidence_threshold);
     }
 
     #[test]

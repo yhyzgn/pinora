@@ -11,7 +11,7 @@ use pinora_core::{
 use crate::panel_theme::PanelTheme;
 
 pub const PANEL_WIDTH: u32 = 560;
-pub const PANEL_HEIGHT: u32 = 680;
+pub const PANEL_HEIGHT: u32 = 744;
 
 const ROW_X: i32 = 28;
 const ROW_W: u32 = PANEL_WIDTH - 56;
@@ -30,18 +30,20 @@ pub enum SettingField {
     PinOpacity,
     DefaultPinAlwaysOnTop,
     OcrLanguage,
+    OcrConfidenceThreshold,
     RegionHotkey,
     FullDisplayHotkey,
 }
 
 impl SettingField {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Theme,
         Self::HistoryLimit,
         Self::PinLimit,
         Self::PinOpacity,
         Self::DefaultPinAlwaysOnTop,
         Self::OcrLanguage,
+        Self::OcrConfidenceThreshold,
         Self::RegionHotkey,
         Self::FullDisplayHotkey,
     ];
@@ -54,8 +56,9 @@ impl SettingField {
             Self::PinOpacity => 3,
             Self::DefaultPinAlwaysOnTop => 4,
             Self::OcrLanguage => 5,
-            Self::RegionHotkey => 6,
-            Self::FullDisplayHotkey => 7,
+            Self::OcrConfidenceThreshold => 6,
+            Self::RegionHotkey => 7,
+            Self::FullDisplayHotkey => 8,
         }
     }
 
@@ -67,6 +70,7 @@ impl SettingField {
             Self::PinOpacity => "PIN OPACITY",
             Self::DefaultPinAlwaysOnTop => "PIN ALWAYS ON TOP",
             Self::OcrLanguage => "OCR LANGUAGE",
+            Self::OcrConfidenceThreshold => "OCR CONFIDENCE",
             Self::RegionHotkey => "REGION HOTKEY",
             Self::FullDisplayHotkey => "FULL DISPLAY HOTKEY",
         }
@@ -268,6 +272,10 @@ impl SettingsPanel {
                 let next = (current + direction).rem_euclid(LANGUAGES.len() as i32) as usize;
                 self.draft.ocr_language = LANGUAGES[next];
             }
+            SettingField::OcrConfidenceThreshold => {
+                self.draft.ocr_confidence_threshold =
+                    step_u8(self.draft.ocr_confidence_threshold, direction, 0, 100, 5);
+            }
             SettingField::RegionHotkey | SettingField::FullDisplayHotkey => {}
         }
         self.status = SettingsPanelStatus::Editing;
@@ -396,6 +404,9 @@ impl SettingsPanel {
                 OcrLanguage::English => "ENGLISH".into(),
                 OcrLanguage::SimplifiedChinese => "SIMPLIFIED CHINESE".into(),
             },
+            SettingField::OcrConfidenceThreshold => {
+                format!("{}%", self.draft.ocr_confidence_threshold)
+            }
             SettingField::RegionHotkey => self.draft.region_hotkey.to_string(),
             SettingField::FullDisplayHotkey => self.draft.full_display_hotkey.to_string(),
         }
@@ -904,6 +915,29 @@ mod tests {
     }
 
     #[test]
+    fn ocr_confidence_threshold_steps_across_the_full_valid_range() {
+        let mut panel = SettingsPanel::new(AppSettings::default());
+        panel.select(SettingField::OcrConfidenceThreshold);
+
+        panel.step(-1);
+        assert_eq!(panel.draft().ocr_confidence_threshold, 55);
+        assert_eq!(
+            panel.value_label(SettingField::OcrConfidenceThreshold),
+            "55%"
+        );
+
+        for _ in 0..20 {
+            panel.step(1);
+        }
+        assert_eq!(panel.draft().ocr_confidence_threshold, 100);
+
+        for _ in 0..25 {
+            panel.step(-1);
+        }
+        assert_eq!(panel.draft().ocr_confidence_threshold, 0);
+    }
+
+    #[test]
     fn default_pin_level_uses_explicit_on_off_controls_and_arrow_keys() {
         let mut panel = SettingsPanel::new(AppSettings::default());
         let row = SettingField::DefaultPinAlwaysOnTop.row_rect();
@@ -953,6 +987,7 @@ mod tests {
     #[test]
     fn expanded_panel_keeps_default_pin_level_row_above_the_action_buttons() {
         assert!(SettingField::DefaultPinAlwaysOnTop.row_rect().bottom() <= save_rect().origin.y);
+        assert!(SettingField::OcrConfidenceThreshold.row_rect().bottom() <= save_rect().origin.y);
         assert!(SettingField::FullDisplayHotkey.row_rect().bottom() <= save_rect().origin.y);
     }
 

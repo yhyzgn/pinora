@@ -21,6 +21,7 @@ mod job_supervisor;
 mod kwin_place;
 mod ocr;
 mod ocr_job;
+mod ocr_presentation;
 mod os_instance;
 mod overlay_preview_cache;
 mod overlay_selection_readout;

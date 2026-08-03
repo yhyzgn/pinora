@@ -428,6 +428,18 @@ mod tests {
     }
 
     #[test]
+    fn settings_apply_preserves_ocr_confidence_threshold() {
+        let settings = AppSettings {
+            ocr_confidence_threshold: 85,
+            ..AppSettings::default()
+        };
+
+        let rt = runtime().with_settings(settings);
+
+        assert_eq!(rt.settings().ocr_confidence_threshold, 85);
+    }
+
+    #[test]
     fn invalid_numeric_settings_are_repaired_before_runtime_application() {
         let settings = AppSettings {
             pin_limit: 0,

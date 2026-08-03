@@ -35,6 +35,7 @@ use crate::history_window::HistoryWindow;
 use crate::hotkey::{GlobalHotkeyHub, binding_from_winit};
 use crate::ocr::tesseract_available;
 use crate::ocr_job::{OcrJobCompletion, OcrJobService, OcrJobStart};
+use crate::ocr_presentation::word_visual_state;
 use crate::overlay_preview_cache::OverlayPreviewCache;
 use crate::overlay_selection_readout::{
     SelectionReadout, layout_selection_readout, paint_selection_readout,
@@ -52,11 +53,11 @@ use crate::window_policy::{self, AuxiliaryWindowKind};
 use pinora_core::{
     ActionId, AnnotateSession, AnnotateTool, Annotation, AnnotationRevision, AssetGeneration,
     AssetRef, CaptureImage, CaptureProvider, CaptureRequest, CaptureWindowInfo, Command,
-    CorrelationId, DisplayId, DisplayInfo, DomainEventKind, ErrorCode, HistoryEntry, HistoryIndex,
-    ImageId, ImageSink, JobId, JobKind, JobOwner, JobSpec, OcrLanguage, OcrResult,
-    OcrTextSelection, OcrWordRef, PinId, PinTransform, PinoraError, PixelPoint, PixelRect,
-    SelectionHandle, SelectionSession, SessionId, ThemeMode, bake_annotations, color_to_hex,
-    render_preview_rgba, resolve_all_displays_rect, sample_rgba_at,
+    CorrelationId, DEFAULT_OCR_CONFIDENCE_THRESHOLD, DisplayId, DisplayInfo, DomainEventKind,
+    ErrorCode, HistoryEntry, HistoryIndex, ImageId, ImageSink, JobId, JobKind, JobOwner, JobSpec,
+    OcrLanguage, OcrResult, OcrTextSelection, OcrWordRef, PinId, PinTransform, PinoraError,
+    PixelPoint, PixelRect, SelectionHandle, SelectionSession, SessionId, ThemeMode,
+    bake_annotations, color_to_hex, render_preview_rgba, resolve_all_displays_rect, sample_rgba_at,
 };
 use softbuffer::{Context, Rect as DamageRect, Surface};
 use winit::application::ApplicationHandler;
@@ -1850,6 +1851,8 @@ where
             .unwrap_or_default();
         let hotkeys_changed = draft.region_hotkey != previous.region_hotkey
             || draft.full_display_hotkey != previous.full_display_hotkey;
+        let ocr_confidence_threshold_changed =
+            draft.ocr_confidence_threshold != previous.ocr_confidence_threshold;
         let hotkeys_rebound = if hotkeys_changed {
             match self
                 .hotkeys
@@ -1882,6 +1885,11 @@ where
                 self.default_pin_opacity =
                     opacity_from_settings_percent(draft.default_pin_opacity_percent);
                 self.default_pin_always_on_top = draft.default_pin_always_on_top;
+                if ocr_confidence_threshold_changed {
+                    for pin in self.pins.values() {
+                        pin.window.request_redraw();
+                    }
+                }
                 let max_bytes = self.history_store.max_bytes();
                 self.history_store
                     .set_limits(draft.history_limit as usize, max_bytes);
@@ -5103,6 +5111,11 @@ where
     }
 
     fn paint_pin(&mut self, window_id: WindowId) -> Result<(), PinoraError> {
+        let ocr_confidence_threshold = self
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.settings().ocr_confidence_threshold)
+            .unwrap_or(DEFAULT_OCR_CONFIDENCE_THRESHOLD);
         let Some(pin) = self.pins.get_mut(&window_id) else {
             return Ok(());
         };
@@ -5129,7 +5142,7 @@ where
         let show_ocr = pin.ocr_show_boxes;
         let ocr_selection = pin.ocr_selection.clone();
         let ocr_drag = pin.ocr_drag_start.map(|start| (start, pin.cursor_position));
-        let ocr_boxes: Vec<(PixelRect, bool)> = if show_ocr {
+        let ocr_boxes = if show_ocr {
             let selection = &ocr_selection;
             pin.ocr
                 .as_ref()
@@ -5142,12 +5155,13 @@ where
                                 .iter()
                                 .enumerate()
                                 .map(move |(word_index, word)| {
+                                    let selected = selection.contains(OcrWordRef {
+                                        line_index,
+                                        word_index,
+                                    });
                                     (
                                         word.bbox,
-                                        selection.contains(OcrWordRef {
-                                            line_index,
-                                            word_index,
-                                        }),
+                                        word_visual_state(word, ocr_confidence_threshold, selected),
                                     )
                                 })
                         })
@@ -5180,7 +5194,7 @@ where
         if !ocr_boxes.is_empty() && sw > 0 && sh > 0 {
             let sx = bw as f64 / sw as f64;
             let sy = bh as f64 / sh as f64;
-            for (rect, selected) in ocr_boxes {
+            for (rect, state) in ocr_boxes {
                 let x0 = (rect.origin.x as f64 * sx).round() as i32;
                 let y0 = (rect.origin.y as f64 * sy).round() as i32;
                 let x1 = (rect.right() as f64 * sx).round() as i32;
@@ -5191,11 +5205,7 @@ where
                     bh,
                     PixelPoint::new(x0, y0),
                     PixelPoint::new(x1.max(x0 + 1), y1.max(y0 + 1)),
-                    if selected {
-                        0x00_FF_B0_20
-                    } else {
-                        0x00_22_EE_66
-                    },
+                    state.color(),
                 );
             }
         }

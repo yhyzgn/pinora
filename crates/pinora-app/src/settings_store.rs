@@ -6,16 +6,17 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use pinora_core::{
-    AppSettings, DEFAULT_FULL_DISPLAY_HOTKEY, DEFAULT_PIN_ALWAYS_ON_TOP, DEFAULT_REGION_HOTKEY,
-    HotkeyBinding, HotkeyCode, HotkeyModifiers, OcrLanguage, SETTINGS_SCHEMA_VERSION,
-    SettingsRepairs, ThemeMode,
+    AppSettings, DEFAULT_FULL_DISPLAY_HOTKEY, DEFAULT_OCR_CONFIDENCE_THRESHOLD,
+    DEFAULT_PIN_ALWAYS_ON_TOP, DEFAULT_REGION_HOTKEY, HotkeyBinding, HotkeyCode, HotkeyModifiers,
+    OcrLanguage, SETTINGS_SCHEMA_VERSION, SettingsRepairs, ThemeMode,
 };
 
 const MAGIC: [u8; 8] = *b"PINORA\0\0";
 const V1_RECORD_LEN: usize = 18;
 const V2_RECORD_LEN: usize = 19;
 const V3_RECORD_LEN: usize = 23;
-const RECORD_LEN: usize = 24;
+const V4_RECORD_LEN: usize = 24;
+const RECORD_LEN: usize = 25;
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +118,7 @@ fn encode(settings: AppSettings) -> Result<[u8; RECORD_LEN], String> {
     bytes[21] = repaired.full_display_hotkey.modifiers.to_wire();
     bytes[22] = repaired.full_display_hotkey.code.to_wire();
     bytes[23] = u8::from(repaired.default_pin_always_on_top);
+    bytes[24] = repaired.ocr_confidence_threshold;
     Ok(bytes)
 }
 
@@ -125,7 +127,8 @@ fn decode(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         V1_RECORD_LEN => decode_v1(bytes),
         V2_RECORD_LEN => decode_v2(bytes),
         V3_RECORD_LEN => decode_v3(bytes),
-        RECORD_LEN => decode_v4(bytes),
+        V4_RECORD_LEN => decode_v4(bytes),
+        RECORD_LEN => decode_v5(bytes),
         _ => Err("settings record length is invalid".into()),
     }
 }
@@ -144,6 +147,7 @@ fn decode_v1(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         default_pin_opacity_percent: bytes[17],
         default_pin_always_on_top: DEFAULT_PIN_ALWAYS_ON_TOP,
         ocr_language: OcrLanguage::Auto,
+        ocr_confidence_threshold: DEFAULT_OCR_CONFIDENCE_THRESHOLD,
         region_hotkey: DEFAULT_REGION_HOTKEY,
         full_display_hotkey: DEFAULT_FULL_DISPLAY_HOTKEY,
     }
@@ -168,6 +172,7 @@ fn decode_v2(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         default_pin_opacity_percent: bytes[17],
         default_pin_always_on_top: DEFAULT_PIN_ALWAYS_ON_TOP,
         ocr_language,
+        ocr_confidence_threshold: DEFAULT_OCR_CONFIDENCE_THRESHOLD,
         region_hotkey: DEFAULT_REGION_HOTKEY,
         full_display_hotkey: DEFAULT_FULL_DISPLAY_HOTKEY,
     }
@@ -196,6 +201,7 @@ fn decode_v3(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         default_pin_opacity_percent: bytes[17],
         default_pin_always_on_top: DEFAULT_PIN_ALWAYS_ON_TOP,
         ocr_language,
+        ocr_confidence_threshold: DEFAULT_OCR_CONFIDENCE_THRESHOLD,
         region_hotkey,
         full_display_hotkey,
     }
@@ -207,6 +213,38 @@ fn decode_v3(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
 }
 
 fn decode_v4(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
+    validate_magic_and_schema(bytes, 4)?;
+    let theme =
+        ThemeMode::from_wire(bytes[10]).ok_or_else(|| "settings theme is invalid".to_string())?;
+    let ocr_language = OcrLanguage::from_wire(bytes[18])
+        .ok_or_else(|| "settings OCR language is invalid".to_string())?;
+    let default_pin_always_on_top = decode_bool(bytes[23])?;
+    let history_limit = u32::from_le_bytes([bytes[11], bytes[12], bytes[13], bytes[14]]);
+    let pin_limit = u16::from_le_bytes([bytes[15], bytes[16]]);
+    let (region_hotkey, region_invalid) =
+        decode_hotkey(bytes[19], bytes[20], DEFAULT_REGION_HOTKEY);
+    let (full_display_hotkey, full_invalid) =
+        decode_hotkey(bytes[21], bytes[22], DEFAULT_FULL_DISPLAY_HOTKEY);
+    let (settings, mut repairs) = AppSettings {
+        schema_version: SETTINGS_SCHEMA_VERSION,
+        theme,
+        history_limit,
+        pin_limit,
+        default_pin_opacity_percent: bytes[17],
+        default_pin_always_on_top,
+        ocr_language,
+        ocr_confidence_threshold: DEFAULT_OCR_CONFIDENCE_THRESHOLD,
+        region_hotkey,
+        full_display_hotkey,
+    }
+    .with_repaired_values();
+    repairs.region_hotkey |= region_invalid;
+    repairs.full_display_hotkey |= full_invalid;
+    repairs.migrated_from_v4 = true;
+    Ok((settings, repairs))
+}
+
+fn decode_v5(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
     validate_magic_and_schema(bytes, SETTINGS_SCHEMA_VERSION)?;
     let theme =
         ThemeMode::from_wire(bytes[10]).ok_or_else(|| "settings theme is invalid".to_string())?;
@@ -227,6 +265,7 @@ fn decode_v4(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         default_pin_opacity_percent: bytes[17],
         default_pin_always_on_top,
         ocr_language,
+        ocr_confidence_threshold: bytes[24],
         region_hotkey,
         full_display_hotkey,
     }
@@ -362,7 +401,7 @@ mod tests {
     #[test]
     fn unknown_schema_is_rejected() {
         let mut bytes = encode(AppSettings::default()).expect("encode");
-        bytes[8] = 5;
+        bytes[8] = 6;
         assert_eq!(
             decode(&bytes),
             Err("settings schema version is unsupported".into())
@@ -385,27 +424,32 @@ mod tests {
             DEFAULT_PIN_ALWAYS_ON_TOP
         );
         assert_eq!(settings.ocr_language, OcrLanguage::Auto);
+        assert_eq!(
+            settings.ocr_confidence_threshold,
+            DEFAULT_OCR_CONFIDENCE_THRESHOLD
+        );
         assert!(repairs.migrated_from_v1);
     }
 
     #[test]
-    fn v4_round_trip_preserves_ocr_language_hotkeys_and_default_pin_level() {
+    fn v5_round_trip_preserves_ocr_settings_hotkeys_and_default_pin_level() {
         let settings = AppSettings {
             default_pin_always_on_top: false,
             ocr_language: OcrLanguage::SimplifiedChinese,
+            ocr_confidence_threshold: 85,
             region_hotkey: HotkeyBinding::new(HotkeyModifiers::CONTROL, HotkeyCode::KeyR),
             full_display_hotkey: HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4),
             ..AppSettings::default()
         };
 
-        let (decoded, repairs) = decode(&encode(settings).expect("encode v4")).expect("decode v4");
+        let (decoded, repairs) = decode(&encode(settings).expect("encode v5")).expect("decode v5");
 
         assert_eq!(decoded, settings);
         assert!(repairs.is_empty());
     }
 
     #[test]
-    fn invalid_v4_ocr_language_is_rejected() {
+    fn invalid_v5_ocr_language_is_rejected() {
         let mut bytes = encode(AppSettings::default()).expect("encode");
         bytes[18] = u8::MAX;
 
@@ -425,6 +469,10 @@ mod tests {
         assert_eq!(settings.ocr_language, OcrLanguage::English);
         assert_eq!(settings.region_hotkey, DEFAULT_REGION_HOTKEY);
         assert_eq!(settings.full_display_hotkey, DEFAULT_FULL_DISPLAY_HOTKEY);
+        assert_eq!(
+            settings.ocr_confidence_threshold,
+            DEFAULT_OCR_CONFIDENCE_THRESHOLD
+        );
         assert_eq!(
             settings.default_pin_always_on_top,
             DEFAULT_PIN_ALWAYS_ON_TOP
@@ -459,11 +507,46 @@ mod tests {
             settings.default_pin_always_on_top,
             DEFAULT_PIN_ALWAYS_ON_TOP
         );
+        assert_eq!(
+            settings.ocr_confidence_threshold,
+            DEFAULT_OCR_CONFIDENCE_THRESHOLD
+        );
         assert!(repairs.migrated_from_v3);
     }
 
     #[test]
-    fn invalid_v4_hotkey_field_repairs_without_losing_other_field() {
+    fn v4_settings_migrate_with_default_ocr_confidence_threshold() {
+        let region = HotkeyBinding::new(HotkeyModifiers::CONTROL, HotkeyCode::KeyR);
+        let full_display = HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4);
+        let mut bytes = [0u8; V4_RECORD_LEN];
+        bytes[..8].copy_from_slice(&MAGIC);
+        bytes[8..10].copy_from_slice(&4u16.to_le_bytes());
+        bytes[10] = ThemeMode::Dark.to_wire();
+        bytes[11..15].copy_from_slice(&91u32.to_le_bytes());
+        bytes[15..17].copy_from_slice(&9u16.to_le_bytes());
+        bytes[17] = 85;
+        bytes[18] = OcrLanguage::SimplifiedChinese.to_wire();
+        bytes[19] = region.modifiers.to_wire();
+        bytes[20] = region.code.to_wire();
+        bytes[21] = full_display.modifiers.to_wire();
+        bytes[22] = full_display.code.to_wire();
+        bytes[23] = 0;
+
+        let (settings, repairs) = decode(&bytes).expect("migrate v4");
+
+        assert_eq!(settings.theme, ThemeMode::Dark);
+        assert_eq!(settings.ocr_language, OcrLanguage::SimplifiedChinese);
+        assert_eq!(
+            settings.ocr_confidence_threshold,
+            DEFAULT_OCR_CONFIDENCE_THRESHOLD
+        );
+        assert_eq!(settings.region_hotkey, region);
+        assert_eq!(settings.full_display_hotkey, full_display);
+        assert!(repairs.migrated_from_v4);
+    }
+
+    #[test]
+    fn invalid_v5_hotkey_field_repairs_without_losing_other_field() {
         let settings = AppSettings {
             region_hotkey: HotkeyBinding::new(HotkeyModifiers::CONTROL, HotkeyCode::KeyR),
             full_display_hotkey: HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4),
@@ -472,7 +555,7 @@ mod tests {
         let mut bytes = encode(settings).expect("encode");
         bytes[20] = u8::MAX;
 
-        let (decoded, repairs) = decode(&bytes).expect("repair v4 hotkey");
+        let (decoded, repairs) = decode(&bytes).expect("repair v5 hotkey");
 
         assert_eq!(decoded.region_hotkey, DEFAULT_REGION_HOTKEY);
         assert_eq!(decoded.full_display_hotkey, settings.full_display_hotkey);
@@ -481,20 +564,41 @@ mod tests {
     }
 
     #[test]
-    fn invalid_v4_default_pin_level_is_rejected_without_replacing_the_source_file() {
-        let path = path("invalid-v4-default-pin-level.bin");
+    fn invalid_v5_default_pin_level_is_rejected_without_replacing_the_source_file() {
+        let path = path("invalid-v5-default-pin-level.bin");
         let store = SettingsStore::new(path.clone());
         let _ = std::fs::remove_file(&path);
         let mut bytes = encode(AppSettings::default()).expect("encode");
         bytes[23] = 2;
-        std::fs::write(&path, bytes).expect("write invalid v4");
+        std::fs::write(&path, bytes).expect("write invalid v5");
 
         assert!(
             matches!(store.load(), SettingsLoad::Invalid(error) if error == "settings default pin always on top is invalid")
         );
-        assert_eq!(std::fs::read(&path).expect("read invalid v4"), bytes);
+        assert_eq!(std::fs::read(&path).expect("read invalid v5"), bytes);
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn invalid_v5_ocr_confidence_threshold_repairs_without_losing_other_fields() {
+        let settings = AppSettings {
+            ocr_confidence_threshold: 85,
+            region_hotkey: HotkeyBinding::new(HotkeyModifiers::CONTROL, HotkeyCode::KeyR),
+            ..AppSettings::default()
+        };
+        let mut bytes = encode(settings).expect("encode");
+        bytes[24] = 101;
+
+        let (decoded, repairs) = decode(&bytes).expect("repair threshold");
+
+        assert_eq!(
+            decoded.ocr_confidence_threshold,
+            DEFAULT_OCR_CONFIDENCE_THRESHOLD
+        );
+        assert_eq!(decoded.region_hotkey, settings.region_hotkey);
+        assert!(repairs.ocr_confidence_threshold);
+        assert!(!repairs.region_hotkey);
     }
 
     #[test]
