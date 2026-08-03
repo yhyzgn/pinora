@@ -38,6 +38,8 @@ sudo dnf install -y pipewire-devel mesa-libgbm-devel wayland-devel libxcb-devel
 
 098 发布链路已完成：`cargo run --quiet -- --version` 输出 `pinora 0.1.0`；当前 `main` CI `30783363209`、tag package/release `30783568639` 和 `runtime-verify` `30783727003` 均成功。Release `v0.1.0-preview.8` 已确认 `isPrerelease=true`，下载全部 11 个资产后按合并 `SHA256SUMS.txt` 执行 `sha256sum -c` 全部通过；Linux tarball 清单包含 `/usr/bin/pinora` 和 desktop entry，runtime 报告已回写 Release body。该门禁不证明真实桌面 GUI、tray、热键、权限、签名/公证或性能。
 
+099 脱敏诊断包增量已通过：`cargo test -p pinora-app --lib -- --nocapture`（294 通过、2 忽略）、`cargo check --workspace`、`cargo clippy --workspace --all-targets -- -D warnings` 和 `PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace` 均成功。报告字段为固定白名单，写入使用同目录临时文件、`sync_all`、原子 rename 和可读性校验；测试不证明真实托盘点击、跨平台目录权限或文件系统断电语义。
+
 ## 跨平台构建与打包
 
 - Linux CI/打包依赖：`libasound2-dev libgbm-dev libgtk-3-dev libpipewire-0.3-dev libwayland-dev libx11-dev libxkbcommon-dev libxkbcommon-x11-dev pkg-config rpm`。

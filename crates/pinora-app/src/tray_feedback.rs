@@ -35,6 +35,8 @@ pub(crate) enum TrayFeedback {
     PinMousePassthroughEnabled,
     PinMouseInteractionRestored,
     PinMousePassthroughUnavailable,
+    DiagnosticsExported,
+    DiagnosticsExportFailed,
 }
 
 impl TrayFeedback {
@@ -60,6 +62,8 @@ impl TrayFeedback {
             Self::PinMousePassthroughEnabled => "Pinora - 贴图已启用鼠标穿透",
             Self::PinMouseInteractionRestored => "Pinora - 贴图鼠标交互已恢复",
             Self::PinMousePassthroughUnavailable => "Pinora - 贴图鼠标穿透不可用",
+            Self::DiagnosticsExported => "Pinora - 诊断包已导出",
+            Self::DiagnosticsExportFailed => "Pinora - 诊断包导出未完成，请重试",
         }
     }
 
@@ -86,6 +90,8 @@ impl TrayFeedback {
             Self::PinMousePassthroughEnabled => "PIN MOUSE PASSTHROUGH ENABLED",
             Self::PinMouseInteractionRestored => "PIN MOUSE INTERACTION RESTORED",
             Self::PinMousePassthroughUnavailable => "PIN MOUSE PASSTHROUGH UNAVAILABLE",
+            Self::DiagnosticsExported => "DIAGNOSTICS EXPORTED",
+            Self::DiagnosticsExportFailed => "DIAGNOSTICS EXPORT FAILED",
         }
     }
 
@@ -110,7 +116,9 @@ impl TrayFeedback {
             | Self::ExportCancelled(_)
             | Self::ExportCompleted(_)
             | Self::PinMousePassthroughEnabled
-            | Self::PinMouseInteractionRestored => None,
+            | Self::PinMouseInteractionRestored
+            | Self::DiagnosticsExported => None,
+            Self::DiagnosticsExportFailed => Some(ErrorCode::Internal),
         }
     }
 }
@@ -223,6 +231,8 @@ mod tests {
             TrayFeedback::PinMousePassthroughEnabled,
             TrayFeedback::PinMouseInteractionRestored,
             TrayFeedback::PinMousePassthroughUnavailable,
+            TrayFeedback::DiagnosticsExported,
+            TrayFeedback::DiagnosticsExportFailed,
         ];
 
         for status in feedback {

@@ -15,6 +15,7 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::diagnostics_export::{SanitizedDiagnosticReport, write_report};
 use crate::diagnostics_panel::DiagnosticsPanel;
 use crate::diagnostics_window::DiagnosticsWindow;
 use crate::export_job::{ExportJobCompletion, ExportJobInput, ExportJobService};
@@ -1127,6 +1128,10 @@ where
                         self.error = Some(error);
                     }
                 }
+                TrayAction::ExportDiagnostics => {
+                    println!("pinora: tray → export diagnostics");
+                    self.export_diagnostics();
+                }
                 TrayAction::ShowAllPins => {
                     println!("pinora: tray → show all pins");
                     self.set_all_pins_visible(true);
@@ -1780,6 +1785,28 @@ where
             tesseract_available(),
             self.tray_feedback,
         ))
+    }
+
+    fn export_diagnostics(&mut self) {
+        let Some((capabilities, settings, export_dir)) = self.runtime.as_ref().map(|runtime| {
+            (
+                runtime.state().capabilities.clone(),
+                runtime.settings(),
+                runtime.export_dir().clone(),
+            )
+        }) else {
+            self.set_tray_feedback(TrayFeedback::DiagnosticsExportFailed);
+            return;
+        };
+        let Ok(panel) = self.diagnostics_panel() else {
+            self.set_tray_feedback(TrayFeedback::DiagnosticsExportFailed);
+            return;
+        };
+        let report = SanitizedDiagnosticReport::from_runtime(&capabilities, &panel, settings);
+        match write_report(&export_dir, &report) {
+            Ok(_) => self.set_tray_feedback(TrayFeedback::DiagnosticsExported),
+            Err(_) => self.set_tray_feedback(TrayFeedback::DiagnosticsExportFailed),
+        }
     }
 
     fn refresh_diagnostics(&mut self) {

@@ -40,6 +40,7 @@ pub enum TrayAction {
     Settings,
     History,
     Diagnostics,
+    ExportDiagnostics,
     ShowAllPins,
     HideAllPins,
     CloseAllPins,
@@ -68,6 +69,7 @@ pub struct AppTray {
     settings_id: tray_icon::menu::MenuId,
     history_id: tray_icon::menu::MenuId,
     diagnostics_id: tray_icon::menu::MenuId,
+    diagnostics_export_id: tray_icon::menu::MenuId,
     pin_list_menu: Submenu,
     pin_list_items: Vec<MenuItem>,
     pin_list_ids: Vec<(MenuId, PinId)>,
@@ -151,6 +153,9 @@ impl AppTray {
                 return Some(TrayAction::History);
             }
             if let Some(action) = diagnostics_action(&ev.id, &self.diagnostics_id) {
+                return Some(action);
+            }
+            if let Some(action) = diagnostics_export_action(&ev.id, &self.diagnostics_export_id) {
                 return Some(action);
             }
             if let Some(action) = pin_list_action(&ev.id, &self.pin_list_ids) {
@@ -288,6 +293,7 @@ fn try_new_inner(
     let settings = MenuItem::new("设置", true, None);
     let history = MenuItem::new("历史", true, None);
     let diagnostics = MenuItem::new("诊断", true, None);
+    let diagnostics_export = MenuItem::new("导出诊断包", true, None);
     let pin_list_menu = Submenu::new("贴图列表", true);
     let empty_pin_list = MenuItem::new(EMPTY_PIN_LIST_LABEL, false, None);
     let show_all_pins = MenuItem::new("显示全部贴图", true, None);
@@ -354,6 +360,8 @@ fn try_new_inner(
         .map_err(|e| format!("menu append history: {e}"))?;
     menu.append(&diagnostics)
         .map_err(|e| format!("menu append diagnostics: {e}"))?;
+    menu.append(&diagnostics_export)
+        .map_err(|e| format!("menu append diagnostics export: {e}"))?;
     menu.append(&PredefinedMenuItem::separator())
         .map_err(|e| format!("menu sep pins: {e}"))?;
     pin_list_menu
@@ -387,6 +395,7 @@ fn try_new_inner(
     let settings_id = settings.id().clone();
     let history_id = history.id().clone();
     let diagnostics_id = diagnostics.id().clone();
+    let diagnostics_export_id = diagnostics_export.id().clone();
     let show_all_pins_id = show_all_pins.id().clone();
     let hide_all_pins_id = hide_all_pins.id().clone();
     let close_all_pins_id = close_all_pins.id().clone();
@@ -419,6 +428,7 @@ fn try_new_inner(
         settings_id,
         history_id,
         diagnostics_id,
+        diagnostics_export_id,
         pin_list_menu,
         pin_list_items: vec![empty_pin_list],
         pin_list_ids: Vec::new(),
@@ -486,6 +496,10 @@ fn window_capture_action(
 
 fn diagnostics_action(menu_id: &MenuId, diagnostics_id: &MenuId) -> Option<TrayAction> {
     (menu_id == diagnostics_id).then_some(TrayAction::Diagnostics)
+}
+
+fn diagnostics_export_action(menu_id: &MenuId, export_id: &MenuId) -> Option<TrayAction> {
+    (menu_id == export_id).then_some(TrayAction::ExportDiagnostics)
 }
 
 fn pin_list_action(menu_id: &MenuId, pin_list_ids: &[(MenuId, PinId)]) -> Option<TrayAction> {
@@ -723,6 +737,20 @@ mod tests {
         );
         assert_eq!(
             diagnostics_action(&MenuId::new("other"), &diagnostics_id),
+            None
+        );
+    }
+
+    #[test]
+    fn diagnostics_export_menu_id_maps_only_to_export_action() {
+        let export_id = MenuId::new("diagnostics-export");
+
+        assert_eq!(
+            diagnostics_export_action(&export_id, &export_id),
+            Some(TrayAction::ExportDiagnostics)
+        );
+        assert_eq!(
+            diagnostics_export_action(&MenuId::new("other"), &export_id),
             None
         );
     }

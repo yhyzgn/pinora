@@ -35,6 +35,7 @@
 - 当前依赖树把 `gtk`/`tray-icon`、`xcap`/PipeWire、`winit`/`softbuffer` 和 Linux CLI 后端直接放入 `pinora-app`；没有 Windows/macOS/Linux 适配器边界。
 - `cargo fmt --check`、`cargo check --workspace` 和 `cargo clippy --workspace --all-targets -- -D warnings` 已于 2026-08-02 通过；当前 `PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace` 通过 app 240 个、core 88 个单元测试，另有 2 个真实桌面测试被忽略；仍没有 GUI 端到端测试。
 - 2026-08-03 的 098 发布链路已完成：当前 `main` CI run `30783363209` 成功；tag `v0.1.0-preview.8` 的 package/release run `30783568639` 在 Linux/macOS/Windows 原生 runner 全部成功；Release 已确认为 pre-release，含 11 个跨平台资产和合并 `SHA256SUMS.txt`，本机下载后逐项校验通过；`runtime-verify` workflow_run `30783727003` 三平台成功并将 runner-safe 报告写入 Release body。该证据只覆盖构建、资产、安装/卸载与 `--version`，不涵盖真实 GUI、tray、热键、权限、任务栏/Dock/分页器、签名/公证或性能。
+- 2026-08-03 的 099 新增用户主动脱敏诊断包导出：`diagnostics_export` 只接受固定平台/能力/反馈标签、稳定 `ErrorCode`、枚举和数值设置摘要；报告通过同目录临时文件、`sync_all`、原子 rename 和可读性校验发布到现有 Pinora 导出目录。托盘新增“导出诊断包”动作，成功/失败只显示固定反馈，不创建额外窗口、不联网、不写入截图、OCR、剪贴板、绝对路径或原始后端错误。离线测试与 workspace 门禁已通过，真实托盘点击和跨平台目录权限仍待原生探针。
 - 接管早期 Windows target 曾被 GTK 的 `gdk-pixbuf-sys`/`glib-sys` pkg-config 阻塞；GTK 已改为 Linux target 依赖，2026-08-02 的 `cargo check --workspace --target x86_64-pc-windows-msvc` 已通过。该事实只证明交叉编译，不证明 GUI 能力。
 - OCR 通过 `tesseract` 子进程和临时 PNG 工作；适配器已持有自身 `Child`，支持协作式取消、30 秒截止时间、16 MiB 输出上限和 RAII 临时文件清理，不再调用外部 `kill`。贴图与 Overlay UI 已经通过 `OcrJobService` 提交到 `JobSupervisor`，结果交付受 owner、终态和 `AssetRef` generation 门禁保护；worker 不触碰窗口或剪贴板。
 - 截图后端自动选择 KDE `spectacle` → xcap → `Unavailable`；两者不可用时保留后端失败摘要并由 provider 返回 `CapabilityUnavailable`，`fake` 只能通过显式测试/开发注入使用。
