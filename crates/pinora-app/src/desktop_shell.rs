@@ -48,9 +48,10 @@ use pinora_core::{
 use pinora_desktop::window_policy::{self, AuxiliaryWindowKind};
 use pinora_desktop::{
     OverlayPreviewCache, PinRenderCache, PinResizeHandle, PinResizeTarget, ToolbarAction,
-    ToolbarButton, ToolbarPaintState, XRGB_SELECTION_HANDLE_RENDER_RADIUS, blit_xrgb_rect,
-    buffer_rect_to_source, build_pin_render_cache, default_pin_position, draw_xrgb_border,
-    draw_xrgb_outline, draw_xrgb_rect_border, draw_xrgb_selection_handles, fit_to_image_target,
+    ToolbarButton, ToolbarPaintState, XRGB_SELECTION_HANDLE_RENDER_RADIUS,
+    annotation_bounds_to_display, blit_xrgb_block, blit_xrgb_rect, buffer_rect_to_source,
+    build_pin_render_cache, default_pin_position, draw_xrgb_border, draw_xrgb_outline,
+    draw_xrgb_rect_border, draw_xrgb_selection_handles, expand_damage_rect, fit_to_image_target,
     layout_toolbar, paint_toolbar, pin_resize_anchor_position, pin_resize_handle_at,
     pin_resize_target_from_drag, proportional_resize_target, scale_xrgb_nearest,
     scaled_window_size, selection_handle_at, selection_resize_allowed,
@@ -6018,7 +6019,11 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
         || !ov.buffer_synced
     {
         if let Some(old) = ov.last_drawn_rect {
-            let expanded = expand_rect(old, selection_chrome_padding, ov.buf_w, ov.buf_h);
+            let expanded = expand_damage_rect(
+                old,
+                selection_chrome_padding,
+                PixelSize::new(ov.buf_w, ov.buf_h),
+            );
             blit_xrgb_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, expanded);
             damage.push(expanded);
         }
@@ -6073,11 +6078,10 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
             if overlay_can_resize_selection(ov) {
                 draw_xrgb_selection_handles(&mut ov.frame, img_w, img_h, rect);
             }
-            damage.push(expand_rect(
+            damage.push(expand_damage_rect(
                 rect,
                 selection_chrome_padding,
-                ov.buf_w,
-                ov.buf_h,
+                PixelSize::new(ov.buf_w, ov.buf_h),
             ));
         }
 
@@ -6198,41 +6202,12 @@ fn selected_annotation_display_bounds(
         .as_ref()
         .filter(|drag| drag.index == index)
         .map(|drag| drag.preview.selection_bounds())
-        .or_else(|| ov.annotate.doc.selection_bounds(index))?
-        .clamp_to(PixelRect::new(
-            0,
-            0,
-            ov.annotate.image_w,
-            ov.annotate.image_h,
-        ))?;
-    let source_width = u64::from(ov.annotate.image_w);
-    let source_height = u64::from(ov.annotate.image_h);
-    let display_width = u64::from(display_rect.size.width);
-    let display_height = u64::from(display_rect.size.height);
-    if source_width == 0 || source_height == 0 || display_width == 0 || display_height == 0 {
-        return None;
-    }
-
-    let x0 = (u64::try_from(local.origin.x).ok()? * display_width / source_width) as i32;
-    let y0 = (u64::try_from(local.origin.y).ok()? * display_height / source_height) as i32;
-    let x1 = (u64::try_from(local.right()).ok()? * display_width).div_ceil(source_width) as i32;
-    let y1 = (u64::try_from(local.bottom()).ok()? * display_height).div_ceil(source_height) as i32;
-    let width = x1.saturating_sub(x0).max(1) as u32;
-    let height = y1.saturating_sub(y0).max(1) as u32;
-    Some(PixelRect::new(
-        display_rect.origin.x.saturating_add(x0),
-        display_rect.origin.y.saturating_add(y0),
-        width,
-        height,
-    ))
-}
-
-fn expand_rect(r: PixelRect, pad: i32, img_w: u32, img_h: u32) -> PixelRect {
-    let x0 = (r.origin.x - pad).max(0);
-    let y0 = (r.origin.y - pad).max(0);
-    let x1 = (r.right() + pad).min(img_w as i32);
-    let y1 = (r.bottom() + pad).min(img_h as i32);
-    PixelRect::new(x0, y0, (x1 - x0).max(0) as u32, (y1 - y0).max(0) as u32)
+        .or_else(|| ov.annotate.doc.selection_bounds(index))?;
+    annotation_bounds_to_display(
+        local,
+        PixelSize::new(ov.annotate.image_w, ov.annotate.image_h),
+        display_rect,
+    )
 }
 
 /// 在选区变化/标注变化时合成局部预览（已提交层缓存 → 草稿叠加 → 显示缩放）。
@@ -6312,37 +6287,6 @@ fn sample_overlay_source_color(
         source_rect.origin.y.checked_add(local.y)?,
     );
     sample_rgba_at(image, source)
-}
-
-fn blit_xrgb_block(
-    frame: &mut [u32],
-    stride: usize,
-    height: usize,
-    rect: PixelRect,
-    src: &[u32],
-    sw: usize,
-    sh: usize,
-) {
-    let x0 = rect.origin.x.max(0) as usize;
-    let y0 = rect.origin.y.max(0) as usize;
-    let rw = rect.size.width as usize;
-    let rh = rect.size.height as usize;
-    if sw == 0 || sh == 0 || src.len() < sw * sh {
-        return;
-    }
-    for row in 0..rh.min(sh) {
-        let dy = y0 + row;
-        if dy >= height {
-            break;
-        }
-        let copy_w = rw.min(sw).min(stride.saturating_sub(x0));
-        if copy_w == 0 {
-            continue;
-        }
-        let dst = dy * stride + x0;
-        let src_i = row * sw;
-        frame[dst..dst + copy_w].copy_from_slice(&src[src_i..src_i + copy_w]);
-    }
 }
 
 fn ensure_pin_render_cache(pin: &mut PinWin, width: u32, height: u32) -> Result<(), PinoraError> {

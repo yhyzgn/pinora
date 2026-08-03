@@ -102,6 +102,45 @@ pub fn blit_xrgb_rect(
     }
 }
 
+/// 将独立的 XRGB 块复制到目标帧指定位置，复制范围会裁剪到双方缓冲区边界。
+pub fn blit_xrgb_block(
+    frame: &mut [u32],
+    stride: usize,
+    height: usize,
+    rect: PixelRect,
+    source: &[u32],
+    source_width: usize,
+    source_height: usize,
+) {
+    if stride == 0 || source_width == 0 || source_height == 0 {
+        return;
+    }
+    let Some(source_len) = source_width.checked_mul(source_height) else {
+        return;
+    };
+    if source.len() < source_len {
+        return;
+    }
+    let frame_height = height.min(frame.len() / stride);
+    let x0 = rect.origin.x.max(0) as usize;
+    let y0 = rect.origin.y.max(0) as usize;
+    if x0 >= stride || y0 >= frame_height {
+        return;
+    }
+    let copy_width = (rect.size.width as usize)
+        .min(source_width)
+        .min(stride.saturating_sub(x0));
+    let copy_height = (rect.size.height as usize)
+        .min(source_height)
+        .min(frame_height.saturating_sub(y0));
+    for row in 0..copy_height {
+        let destination_start = (y0 + row) * stride + x0;
+        let source_start = row * source_width;
+        frame[destination_start..destination_start + copy_width]
+            .copy_from_slice(&source[source_start..source_start + copy_width]);
+    }
+}
+
 /// 最近邻缩放完整 XRGB 缓冲。调用方必须提供非零且长度匹配的尺寸。
 pub fn scale_xrgb_nearest(
     source: &[u32],
@@ -373,6 +412,24 @@ mod tests {
             9,
         );
         assert_eq!(frame, vec![9; 4]);
+    }
+
+    #[test]
+    fn block_blit_clips_to_the_destination_and_rejects_short_sources() {
+        let mut frame = vec![0; 12];
+        blit_xrgb_block(
+            &mut frame,
+            4,
+            3,
+            PixelRect::new(2, 1, 4, 3),
+            &[1, 2, 3, 4],
+            2,
+            2,
+        );
+        assert_eq!(frame, vec![0, 0, 0, 0, 0, 0, 1, 2, 0, 0, 3, 4]);
+
+        blit_xrgb_block(&mut frame, 4, 3, PixelRect::new(0, 0, 2, 2), &[7], 2, 2);
+        assert_eq!(frame, vec![0, 0, 0, 0, 0, 0, 1, 2, 0, 0, 3, 4]);
     }
 
     #[test]

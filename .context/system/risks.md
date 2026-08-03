@@ -649,6 +649,15 @@
 - 回滚或隔离动作：恢复 app 内纯映射/命中函数，移除 `pinora-desktop::overlay_geometry` 导出；不改变截图、标注、OCR、窗口策略、托盘或数据格式。
 - 负责人和状态：Neo；离线几何语义与 crate 边界已验证，真实原生缩放、窗口管理器和性能证据开放。
 
+## R-072：Overlay 标注投影与脏区原语已迁移，但真实 present 行为仍未验证（高）
+
+- 证据和影响范围：121 将标注局部框显示投影、脏区裁剪和受界 XRGB 块拷贝迁入 `pinora-desktop`；app 保留标注文档查询、缓存生命周期、softbuffer damage 适配和 present。desktop 91 项、app 36 项离线测试通过。
+- 触发条件：缩放选区、细小/越界标注、连续拖动、快速重绘、4K/HiDPI、多显示器和不同 softbuffer/合成器后端。
+- 失败模式：离线投影与拷贝正确但真实 present 的 damage 区、GPU/合成器调度仍可能出现残影、闪烁、掉帧、输入延迟、焦点或任务栏/Dock 异常。
+- 缓解措施和必需验证：保持 app 独占 Surface 上传与 `window_policy`；在 Windows/macOS/X11/KDE Wayland 验证细小标注框、缩放/拖动、连续帧时间、焦点、tray-only 和任务栏/Dock/分页器。
+- 回滚或隔离动作：恢复 app 内投影、裁剪和块拷贝函数，移除 desktop 导出；不改变标注文档、截图、OCR、导出或窗口策略。
+- 负责人和状态：Neo；离线像素与模块边界已验证，真实 surface/窗口管理器和性能证据开放。
+
 ## 风险一：上下文漂移
 
 - 触发条件：代码、配置或工作流变化后，没有同步更新对应上下文文件。

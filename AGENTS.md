@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/120_desktop_overlay_geometry.md`
-- 任务：`.context/tasks/120_desktop_overlay_geometry.md`
+- 计划：`.context/plans/121_desktop_overlay_damage.md`
+- 任务：`.context/tasks/121_desktop_overlay_damage.md`
 
 ## 交付要求
 

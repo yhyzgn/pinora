@@ -6,6 +6,7 @@
 pub mod diagnostics_panel;
 pub mod history_browser;
 pub mod kwin_place;
+mod overlay_annotation;
 mod overlay_geometry;
 mod overlay_preview_cache;
 pub mod overlay_selection_readout;
@@ -19,6 +20,7 @@ pub mod tray_feedback;
 pub mod window_policy;
 mod xrgb;
 
+pub use overlay_annotation::{annotation_bounds_to_display, expand_damage_rect};
 pub use overlay_geometry::{
     SELECTION_HANDLE_HIT_RADIUS, buffer_rect_to_source, selection_handle_at,
     selection_resize_allowed, selection_to_annotation_local, window_point_to_image,
@@ -36,7 +38,7 @@ pub use pin_layout::{
     scaled_window_size,
 };
 pub use xrgb::{
-    PinRenderCache, XRGB_SELECTION_HANDLE_RENDER_RADIUS, blit_xrgb_rect, build_pin_render_cache,
-    draw_xrgb_border, draw_xrgb_outline, draw_xrgb_rect_border, draw_xrgb_selection_handles,
-    scale_xrgb_nearest, xrgb_pixel_count,
+    PinRenderCache, XRGB_SELECTION_HANDLE_RENDER_RADIUS, blit_xrgb_block, blit_xrgb_rect,
+    build_pin_render_cache, draw_xrgb_border, draw_xrgb_outline, draw_xrgb_rect_border,
+    draw_xrgb_selection_handles, scale_xrgb_nearest, xrgb_pixel_count,
 };
