@@ -1,0 +1,12 @@
+[package]
+name = "pinora-ocr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pinora local tesseract OCR adapter and word presentation state"
+
+[dependencies]
+pinora-core = { workspace = true }
+pinora-jobs = { workspace = true }
+png = "0.17"

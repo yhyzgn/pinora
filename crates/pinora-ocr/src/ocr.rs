@@ -44,7 +44,7 @@ pub fn recognize_image_with_cancellation(
 }
 
 /// 可被任务监督器取消且已冻结语言预设的 OCR 入口。
-pub(crate) fn recognize_image_with_language(
+pub fn recognize_image_with_language(
     image: &CaptureImage,
     language: OcrLanguage,
     cancellation: &JobCancellation,

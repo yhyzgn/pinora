@@ -5,19 +5,19 @@
 
 use pinora_core::OcrWord;
 
-pub(crate) const OCR_WORD_NORMAL_COLOR: u32 = 0x00_22_EE_66;
-pub(crate) const OCR_WORD_LOW_CONFIDENCE_COLOR: u32 = 0x00_FF_5A_36;
-pub(crate) const OCR_WORD_SELECTED_COLOR: u32 = 0x00_FF_B0_20;
+const OCR_WORD_NORMAL_COLOR: u32 = 0x00_22_EE_66;
+const OCR_WORD_LOW_CONFIDENCE_COLOR: u32 = 0x00_FF_5A_36;
+const OCR_WORD_SELECTED_COLOR: u32 = 0x00_FF_B0_20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OcrWordVisualState {
+pub enum OcrWordVisualState {
     Normal,
     LowConfidence,
     Selected,
 }
 
 impl OcrWordVisualState {
-    pub(crate) const fn color(self) -> u32 {
+    pub const fn color(self) -> u32 {
         match self {
             Self::Normal => OCR_WORD_NORMAL_COLOR,
             Self::LowConfidence => OCR_WORD_LOW_CONFIDENCE_COLOR,
@@ -28,7 +28,7 @@ impl OcrWordVisualState {
 
 /// 返回与 OCR 原始数据无关的绘制状态。`-1`、NaN、无穷和范围外数值表示未知或
 /// 非规范结果，不能被伪装成低置信；选中状态优先，保证拖选反馈稳定。
-pub(crate) fn word_visual_state(
+pub fn word_visual_state(
     word: &OcrWord,
     confidence_threshold: u8,
     selected: bool,

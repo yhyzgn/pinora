@@ -17,11 +17,11 @@ use pinora_core::{
     JobTerminalState, OcrLanguage, OcrResult, PinoraError,
 };
 
-use crate::ocr::recognize_image_with_cancellation;
 use pinora_jobs::{
     AcceptedJobResult, JobCancellation, JobResultDisposition, JobState, JobSupervisor, JobTicket,
 };
 use pinora_jobs::{WorkerWaitOutcome, reap_finished_workers, wait_for_workers};
+use pinora_ocr::{recognize_image_with_cancellation, recognize_image_with_language};
 
 const OCR_CACHE_MAX_ENTRIES: usize = 8;
 const OCR_CACHE_MAX_ESTIMATED_BYTES: usize = 2 * 1024 * 1024;
@@ -150,7 +150,7 @@ impl OcrRunner for LocalOcrRunner {
         language: OcrLanguage,
         cancellation: &JobCancellation,
     ) -> Result<OcrResult, PinoraError> {
-        crate::ocr::recognize_image_with_language(image, language, cancellation)
+        recognize_image_with_language(image, language, cancellation)
     }
 }
 

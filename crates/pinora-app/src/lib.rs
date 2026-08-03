@@ -11,9 +11,7 @@ mod history_load_job;
 mod history_window;
 mod image_sink;
 mod kwin_place;
-mod ocr;
 mod ocr_job;
-mod ocr_presentation;
 mod overlay_selection_readout;
 mod panel_theme;
 mod pin_context_menu;
@@ -34,7 +32,6 @@ pub use history_browser::{HistoryPanel, HistoryPanelAction, HistoryPanelKey, His
 pub use image_sink::{
     LocalImageSink, copy_text_to_system_clipboard, detect_system_clipboard_backend,
 };
-pub use ocr::{recognize_image, recognize_image_with_cancellation, tesseract_available};
 pub use ocr_job::{LocalOcrRunner, OcrJobCompletion, OcrJobService, OcrJobStart, OcrRunner};
 pub use pinora_capture::{
     CachedFrame, CaptureBackendKind, FakeCaptureProvider, FrameCache, KdeSpectacleCaptureProvider,
@@ -44,6 +41,7 @@ pub use pinora_desktop::scaled_window_size;
 pub use pinora_jobs::{
     AcceptedJobResult, JobCancellation, JobResultDisposition, JobState, JobSupervisor, JobTicket,
 };
+pub use pinora_ocr::{recognize_image, recognize_image_with_cancellation, tesseract_available};
 pub use pinora_storage::{
     ExportNameAllocator, HistoryLoad, HistoryStore, SettingsLoad, SettingsStore,
     default_history_path, default_settings_path,

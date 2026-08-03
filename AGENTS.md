@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/109_desktop_primitives.md`
-- 任务：`.context/tasks/109_desktop_primitives.md`
+- 计划：`.context/plans/110_ocr_crate.md`
+- 任务：`.context/tasks/110_ocr_crate.md`
 
 ## 交付要求
 

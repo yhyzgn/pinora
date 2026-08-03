@@ -2517,6 +2517,7 @@ dependencies = [
  "pinora-core",
  "pinora-desktop",
  "pinora-jobs",
+ "pinora-ocr",
  "pinora-platform",
  "pinora-storage",
  "png 0.17.16",
@@ -2554,6 +2555,15 @@ name = "pinora-jobs"
 version = "0.1.0"
 dependencies = [
  "pinora-core",
+]
+
+[[package]]
+name = "pinora-ocr"
+version = "0.1.0"
+dependencies = [
+ "pinora-core",
+ "pinora-jobs",
+ "png 0.17.16",
 ]
 
 [[package]]
