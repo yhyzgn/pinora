@@ -3,7 +3,7 @@
 ## 技术与运行基线
 
 - Rust 2024 workspace：`pinora`（`src/main.rs`）+ `pinora-core` + `pinora-app`。
-- 依赖：`ctrlc`、`fs2`、`png`、`xcap`、`winit`、`softbuffer`、`fontdue`（标注文本）、`tray-icon`/`gtk`（托盘）。
+- 依赖：`ctrlc`、`fs2`、`png`、`image`（仅 JPEG/WebP 编码特性）、`xcap`、`winit`、`softbuffer`、`fontdue`（标注文本）、`tray-icon`/`gtk`（托盘）。
 - Linux xcap 需 `pipewire-devel`、`mesa-libgbm-devel`（**仅 xcap/portal 兜底路径**）。
 - **当前截图后端（Linux/KDE 实验路径）**：`kde-spectacle`（KWin，~0.5s）→ `xcap`/portal（慢）→ 受限能力状态；`FakeCaptureProvider` 仅由显式测试/开发注入使用，不能是生产截图成功的降级结果。
 - **不要默认 portal**：portal/PipeWire 是通用 Wayland 兜底，不是 Snipaste 级体验。
@@ -17,7 +17,7 @@
 | 截屏尝试 | KDE 优先 spectacle/KWin；否则 xcap；两者不可用时返回 `CapabilityUnavailable`，不生成 fake 图像 |
 | 区域与全屏 Overlay | F2/Ctrl+N 拖选；选区实时显示源图物理像素宽高与全局左上坐标；已确认且未标注的选区可拖四边/四角精确调整；F3/托盘默认全屏自动确认当前完整图像；多显示器 tray 可指定目标全屏；双击复制、中键/Enter 贴图；选区内标注/OCR |
 | 贴图窗口 | 无边框置顶、拖动、滚轮及四边/四角等比缩放、双击或客户区 `100%` 恢复原图、Esc 关闭；普通 Overlay 新贴图优先在当前捕获范围的右/左/下/上避开来源选区，无空间时稳定回退；tray 可撤销最近关闭一次（恢复为新 PinId）并通过无内容泄露的动态贴图列表唤起既有贴图；客户区右键菜单、锁定/压暗/置顶、原位编辑；多贴图 |
-| 导出 | PNG 文件 + 内存剪贴板 + 系统剪贴板（wl-copy/xclip） |
+| 导出 | PNG（默认）、JPEG（可配置质量）和无损 WebP 文件；内存与系统剪贴板固定 PNG（wl-copy/xclip） |
 | 全局热键 | `GlobalHotkeyHub` 在 GUI 事件循环线程持有 `global-hotkey` manager；设置窗口可录制区域和全屏主键，保存时先预注册新组合、再撤销旧组合，默认 F2/F3；Ctrl+N/Ctrl+Shift+S 保持区域备用键。tray 菜单在创建及设置成功时显示已保存主键，但实际注册仍以能力摘要/诊断为准。Windows/macOS 为原生后端、Linux 仅 X11；纯 Wayland 仍使用 tray 或 `pinora capture` IPC 降级 |
 | 单实例 | Unix 使用 `flock` + Unix socket；非 Unix 使用文件锁 + 本地回环 TCP 端口文件，均支持 Activate/CAPTURE/QUIT；真实 Windows/macOS 进程行为仍待探针 |
 | 帧缓存 | 空闲预截；热键命中以所有权移交预处理帧，避免复制全屏图像与双 XRGB 缓冲；暂停以代际拒绝晚到帧 |
@@ -73,6 +73,7 @@
 - 2026-08-02 的 089 增加 tray 动态“贴图列表”子菜单：条目按内部 `PinId` 稳定排序，但菜单只显示“贴图 N”和可见/隐藏状态，不保留或显示标题、图像、OCR、路径、坐标或内部 ID。空列表为禁用占位；用户选择条目时只在当前 GUI 线程找到既有 `PinWin`，再经 `window_policy::show_auxiliary_window` 显示、聚焦和重绘。创建、关闭、批量显示/隐藏、延时截图隐藏/恢复、编辑隐藏/恢复及编辑替换显示后均刷新列表；批量关闭只刷新一次。没有新增窗口、事件循环、线程、截图、持久化、依赖或展示入口。离线 tray 映射/标签/排序、桌面壳和窗口策略门禁已验证；真实原生 tray 更新、单贴图焦点、任务栏/Dock/分页器和 HiDPI 仍需桌面会话验收。
 - 2026-08-03 的 090 将 tray 贴图列表排序改为最近使用优先：`PinWin` 与桌面壳只保留进程内饱和 recency 计数，新建、`Focused(true)` 和 tray 唤起更新该值；tray 以 recency 降序、PinId 升序处理并列。该值不进入领域、设置、历史、菜单标签或日志；焦点更新仅重建既有子菜单，既有 `window_policy` 展示入口不变。离线排序、饱和计数、桌面壳和窗口策略门禁已验证；真实原生焦点事件、tray 刷新、任务栏/Dock/分页器和 HiDPI 仍需桌面会话验收。
 - 2026-08-03 的 091 将设置 schema 升级为 v5：25 字节记录在 v4 字段后追加 0..=100 的 OCR 置信度阈值，默认 60；v1-v4 读取均保留原字段并以默认阈值迁移，v5 数值越界逐字段修复，保存仍采用临时文件、同步、原子替换和回读。`ocr_presentation` 仅从既有 `OcrWord.confidence` 派生普通、低置信、选中三种词框状态；未知/非有限/越界置信度不伪装为低置信，选中状态优先，OCR 原始词、全文和框选复制、缓存、任务不改变。桌面壳仅在保存成功后更新 runtime 并请求已有贴图重绘，不重跑 OCR、不创建窗口或 worker。core/codec/面板/呈现测试、严格 workspace 门禁和 Windows target 编译已验证；真实 Tesseract 模型的阈值可用性、HiDPI 视觉、连续重绘帧时间与任务栏/Dock/分页器仍需原生桌面会话验收。
+- 2026-08-03 的 092 将设置 schema 升级为 v6：27 字节记录在 v5 字段后追加导出格式（PNG/JPEG/无损 WebP）和 1..=100 的 JPEG 质量，默认 PNG/90；v1-v5 保留既有字段并以默认格式/质量迁移，未知格式保留源文件并拒绝读取，非法质量逐字段修复。桌面壳在提交既有 `ExportJobService` 前冻结路径、格式和质量，文件名由格式唯一生成扩展名；PNG/WebP 保留 RGBA，JPEG 在 worker 内以确定性白底合成为 RGB。所有格式沿用同目录临时文件、同步、原子替换与结果门禁；系统剪贴板仍只编码 PNG。只有受管 PNG 成功结果写入 PNG-only 历史，JPEG/WebP 不伪造索引记录；tray 反馈泛化为文件保存。没有新增窗口、事件循环、外部进程、权限或网络路径。离线编码/codec/面板/命名/任务/历史/反馈测试、workspace 严格门禁与 Windows target 编译均已通过；真实文件查看器兼容性、色彩、性能、HiDPI 与任务栏/Dock/分页器仍需原生桌面会话验收。
 - 2026-08-02 的 086 使 tray 区域/全屏截图菜单使用当前已保存的受限 `HotkeyBinding`，初始化及设置原子写入成功后都会原地更新两个既有 `MenuItem`。热键重绑失败或设置保存失败发生在更新前，因此保留旧菜单文字与旧运行时映射；菜单文字不表示 OS 注册成功，能力摘要和诊断仍读取 `GlobalHotkeyHub` 实际状态。未新增 tray、窗口、事件循环、线程、进程、网络或依赖；真实原生 tray 文本刷新与桌面行为仍未验证。
 - 2026-08-02 的 083 为 `OcrJobService` 增加进程内结果复用：只有通过 owner、终态和 `AssetRef` generation 门禁的成功 OCR 才以完整 asset 与冻结语言进入缓存。缓存为最多 8 条、2 MiB 估算总量、512 KiB 单条上限的内存 LRU 风格队列；命中由 service 保证不创建新 worker，桌面壳仍走原有词框、全文复制与 tray 成功交付。缓存不持久化、不感知外部模型文件变化；离线缓存、服务和 workspace 门禁已通过，真实连续操作、内存峰值和桌面体验仍未验证。
 - GitHub Actions CI `30732620836`、`30732765136`、`30732906042`、`30733684203`、`30734154282`、`30734583848`、`30734867309` 与 `30735354166` 已于 2026-08-02 在 Linux、macOS、Windows 原生 runner 通过格式、workspace 编译、严格 Clippy 和单元测试；这些运行未创建 GUI 会话，不能作为任务栏、Dock、窗口交互、KWin 行为、真实多显示器或渲染延迟的证据。

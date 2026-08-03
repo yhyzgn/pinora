@@ -14,13 +14,13 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use pinora_core::{
-    AssetRef, CaptureImage, ErrorCode, JobId, JobKind, JobOwner, JobResultRef, JobSpec,
-    JobTerminalState, PinoraError,
+    AssetRef, CaptureImage, ErrorCode, ExportImageFormat, JobId, JobKind, JobOwner, JobResultRef,
+    JobSpec, JobTerminalState, PinoraError,
 };
 
 use crate::image_sink::{
     copy_png_to_system_clipboard_with_cancellation,
-    copy_text_to_system_clipboard_with_cancellation, encode_png_bytes, save_png_file,
+    copy_text_to_system_clipboard_with_cancellation, encode_png_bytes, save_image_file,
 };
 use crate::job_supervisor::{
     AcceptedJobResult, JobCancellation, JobResultDisposition, JobState, JobSupervisor, JobTicket,
@@ -30,24 +30,60 @@ use crate::worker_lifecycle::{WorkerWaitOutcome, reap_finished_workers, wait_for
 /// 导出/剪贴板 worker 的输入。图像和文本只在进程内传递，不进入 `JobSpec`。
 #[derive(Debug)]
 pub enum ExportJobInput {
-    SavePng { image: CaptureImage, path: PathBuf },
-    CopyImage { image: CaptureImage },
-    CopyText { text: String },
+    SaveImage {
+        image: CaptureImage,
+        path: PathBuf,
+        format: ExportImageFormat,
+        jpeg_quality: u8,
+    },
+    CopyImage {
+        image: CaptureImage,
+    },
+    CopyText {
+        text: String,
+    },
 }
 
 impl ExportJobInput {
     pub fn kind(&self) -> JobKind {
         match self {
-            Self::SavePng { .. } => JobKind::Export,
+            Self::SaveImage { .. } => JobKind::Export,
             Self::CopyImage { .. } | Self::CopyText { .. } => JobKind::Clipboard,
         }
     }
 
     fn image_id(&self) -> Option<pinora_core::ImageId> {
         match self {
-            Self::SavePng { image, .. } | Self::CopyImage { image } => Some(image.id),
+            Self::SaveImage { image, .. } | Self::CopyImage { image } => Some(image.id),
             Self::CopyText { .. } => None,
         }
+    }
+
+    fn validate_file_target(&self) -> Result<(), PinoraError> {
+        let Self::SaveImage {
+            path,
+            format,
+            jpeg_quality,
+            ..
+        } = self
+        else {
+            return Ok(());
+        };
+        if path.extension().and_then(|extension| extension.to_str())
+            != Some(format.file_extension())
+        {
+            return Err(PinoraError::new(
+                ErrorCode::CommandRejected,
+                "export path extension does not match frozen format",
+            ));
+        }
+        if *format == ExportImageFormat::Jpeg && !(1..=100).contains(jpeg_quality) {
+            return Err(PinoraError::new(
+                ErrorCode::CommandRejected,
+                "JPEG quality is outside the supported range",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -60,7 +96,7 @@ pub trait ExportRunner: Send + Sync + 'static {
     ) -> Result<(), PinoraError>;
 }
 
-/// 使用本地 PNG 编码和 Linux 系统剪贴板适配器的生产 runner。
+/// 使用本地文件编码和 Linux 系统剪贴板适配器的生产 runner。
 #[derive(Debug, Default)]
 pub struct LocalExportRunner;
 
@@ -72,8 +108,13 @@ impl ExportRunner for LocalExportRunner {
     ) -> Result<(), PinoraError> {
         ensure_not_cancelled(cancellation)?;
         match input {
-            ExportJobInput::SavePng { image, path } => {
-                save_png_file(image, path)?;
+            ExportJobInput::SaveImage {
+                image,
+                path,
+                format,
+                jpeg_quality,
+            } => {
+                save_image_file(image, path, *format, *jpeg_quality)?;
             }
             ExportJobInput::CopyImage { image } => {
                 let png = encode_png_bytes(image)?;
@@ -167,6 +208,7 @@ where
         spec: JobSpec,
         input: ExportJobInput,
     ) -> Result<JobTicket, PinoraError> {
+        input.validate_file_target()?;
         if spec.kind != input.kind() {
             return Err(PinoraError::new(
                 ErrorCode::CommandRejected,
@@ -328,6 +370,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use super::*;
@@ -345,6 +388,33 @@ mod tests {
             _input: &ExportJobInput,
             _cancellation: &JobCancellation,
         ) -> Result<(), PinoraError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct FrozenFileInputRunner {
+        seen: Arc<Mutex<Option<(ExportImageFormat, u8)>>>,
+    }
+
+    impl ExportRunner for FrozenFileInputRunner {
+        fn execute(
+            &self,
+            input: &ExportJobInput,
+            _cancellation: &JobCancellation,
+        ) -> Result<(), PinoraError> {
+            let ExportJobInput::SaveImage {
+                format,
+                jpeg_quality,
+                ..
+            } = input
+            else {
+                return Err(PinoraError::new(
+                    ErrorCode::InvalidState,
+                    "expected frozen file export input",
+                ));
+            };
+            *self.seen.lock().expect("runner lock") = Some((*format, *jpeg_quality));
             Ok(())
         }
     }
@@ -422,16 +492,18 @@ mod tests {
     }
 
     #[test]
-    fn accepts_png_image_and_text_inputs_for_matching_kinds() {
+    fn accepts_file_image_and_text_inputs_for_matching_kinds() {
         let image = sample_image(1);
         let asset = AssetRef::initial(image.id);
         let mut service = ExportJobService::with_runner(SuccessRunner);
         let save = service
             .start(
                 spec(1, asset, JobKind::Export, 100),
-                ExportJobInput::SavePng {
+                ExportJobInput::SaveImage {
                     image: image.clone(),
                     path: PathBuf::from("/tmp/pinora-test.png"),
+                    format: ExportImageFormat::Png,
+                    jpeg_quality: 90,
                 },
             )
             .expect("save start");
@@ -479,6 +551,37 @@ mod tests {
     }
 
     #[test]
+    fn worker_receives_the_format_and_quality_frozen_at_submission() {
+        let image = sample_image(11);
+        let asset = AssetRef::initial(image.id);
+        let seen = Arc::new(Mutex::new(None));
+        let mut service =
+            ExportJobService::with_runner(FrozenFileInputRunner { seen: seen.clone() });
+
+        let ticket = service
+            .start(
+                spec(11, asset, JobKind::Export, 100),
+                ExportJobInput::SaveImage {
+                    image,
+                    path: PathBuf::from("/tmp/pinora-test.webp"),
+                    format: ExportImageFormat::WebP,
+                    jpeg_quality: 37,
+                },
+            )
+            .expect("start frozen file export");
+        let completions = poll_until(&mut service, 1, |_, _| Some(asset));
+
+        assert!(matches!(
+            completions.as_slice(),
+            [ExportJobCompletion::Completed { job }] if job.id == ticket.id
+        ));
+        assert_eq!(
+            *seen.lock().expect("runner lock"),
+            Some((ExportImageFormat::WebP, 37))
+        );
+    }
+
+    #[test]
     fn rejects_kind_or_image_mismatch_before_worker_starts() {
         let image = sample_image(2);
         let asset = AssetRef::initial(image.id);
@@ -487,9 +590,11 @@ mod tests {
             service
                 .start(
                     spec(2, asset, JobKind::Clipboard, 100),
-                    ExportJobInput::SavePng {
+                    ExportJobInput::SaveImage {
                         image: image.clone(),
                         path: PathBuf::from("/tmp/pinora-test.png"),
+                        format: ExportImageFormat::Png,
+                        jpeg_quality: 90,
                     },
                 )
                 .unwrap_err()
@@ -501,15 +606,50 @@ mod tests {
             service
                 .start(
                     spec(3, asset, JobKind::Export, 100),
-                    ExportJobInput::SavePng {
+                    ExportJobInput::SaveImage {
                         image: other,
                         path: PathBuf::from("/tmp/pinora-test.png"),
+                        format: ExportImageFormat::Png,
+                        jpeg_quality: 90,
                     },
                 )
                 .unwrap_err()
                 .code,
             ErrorCode::InvalidState
         );
+    }
+
+    #[test]
+    fn rejects_mismatched_file_extension_or_invalid_jpeg_quality_before_worker_starts() {
+        let image = sample_image(12);
+        let asset = AssetRef::initial(image.id);
+        let mut service = ExportJobService::with_runner(SuccessRunner);
+
+        let extension_error = service
+            .start(
+                spec(12, asset, JobKind::Export, 100),
+                ExportJobInput::SaveImage {
+                    image: image.clone(),
+                    path: PathBuf::from("/tmp/pinora-test.png"),
+                    format: ExportImageFormat::WebP,
+                    jpeg_quality: 90,
+                },
+            )
+            .expect_err("mismatched extension must be rejected");
+        assert_eq!(extension_error.code, ErrorCode::CommandRejected);
+
+        let quality_error = service
+            .start(
+                spec(13, asset, JobKind::Export, 100),
+                ExportJobInput::SaveImage {
+                    image,
+                    path: PathBuf::from("/tmp/pinora-test.jpg"),
+                    format: ExportImageFormat::Jpeg,
+                    jpeg_quality: 0,
+                },
+            )
+            .expect_err("invalid JPEG quality must be rejected");
+        assert_eq!(quality_error.code, ErrorCode::CommandRejected);
     }
 
     #[test]
@@ -545,9 +685,11 @@ mod tests {
         let ticket = service
             .start(
                 job,
-                ExportJobInput::SavePng {
+                ExportJobInput::SaveImage {
                     image,
                     path: PathBuf::from("/tmp/pinora-test.png"),
+                    format: ExportImageFormat::Png,
+                    jpeg_quality: 90,
                 },
             )
             .expect("start");
@@ -616,9 +758,11 @@ mod tests {
         let ticket = service
             .start(
                 spec(7, submitted, JobKind::Export, 100),
-                ExportJobInput::SavePng {
+                ExportJobInput::SaveImage {
                     image,
                     path: PathBuf::from("/tmp/pinora-test.png"),
+                    format: ExportImageFormat::Png,
+                    jpeg_quality: 90,
                 },
             )
             .expect("start");

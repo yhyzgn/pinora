@@ -54,9 +54,9 @@ use pinora_core::{
     ActionId, AnnotateSession, AnnotateTool, Annotation, AnnotationRevision, AssetGeneration,
     AssetRef, CaptureImage, CaptureProvider, CaptureRequest, CaptureWindowInfo, Command,
     CorrelationId, DEFAULT_OCR_CONFIDENCE_THRESHOLD, DisplayId, DisplayInfo, DomainEventKind,
-    ErrorCode, HistoryEntry, HistoryIndex, ImageId, ImageSink, JobId, JobKind, JobOwner, JobSpec,
-    OcrLanguage, OcrResult, OcrTextSelection, OcrWordRef, PinId, PinTransform, PinoraError,
-    PixelPoint, PixelRect, SelectionHandle, SelectionSession, SessionId, ThemeMode,
+    ErrorCode, ExportImageFormat, HistoryEntry, HistoryIndex, ImageId, ImageSink, JobId, JobKind,
+    JobOwner, JobSpec, OcrLanguage, OcrResult, OcrTextSelection, OcrWordRef, PinId, PinTransform,
+    PinoraError, PixelPoint, PixelRect, SelectionHandle, SelectionSession, SessionId, ThemeMode,
     bake_annotations, color_to_hex, render_preview_rgba, resolve_all_displays_rect, sample_rgba_at,
 };
 use softbuffer::{Context, Rect as DamageRect, Surface};
@@ -615,17 +615,25 @@ fn text_enter_action(modifiers: ModifiersState, text_editing: bool) -> Option<Te
 
 #[derive(Debug)]
 enum PendingExportAction {
-    SavePng(PathBuf),
+    SaveImage(PathBuf),
     CopyImage,
     CopyText,
 }
 
 fn tray_export_operation(action: &PendingExportAction) -> TrayExportOperation {
     match action {
-        PendingExportAction::SavePng(_) => TrayExportOperation::SavePng,
+        PendingExportAction::SaveImage(_) => TrayExportOperation::SaveFile,
         PendingExportAction::CopyImage => TrayExportOperation::CopyImage,
         PendingExportAction::CopyText => TrayExportOperation::CopyText,
     }
+}
+
+/// 保存任务提交前冻结的输出参数。worker 绝不读取随后变化的运行时设置。
+#[derive(Debug, Clone)]
+struct FrozenExportTarget {
+    path: PathBuf,
+    format: ExportImageFormat,
+    jpeg_quality: u8,
 }
 
 #[derive(Debug)]
@@ -1213,18 +1221,31 @@ where
         }
     }
 
-    fn allocate_export_path(&mut self) -> Result<PathBuf, PinoraError> {
-        let export_dir = self
+    fn allocate_export_target(&mut self) -> Result<FrozenExportTarget, PinoraError> {
+        let (export_dir, format, jpeg_quality) = self
             .runtime
             .as_ref()
-            .map(|runtime| runtime.export_dir().clone())
+            .map(|runtime| {
+                let settings = runtime.settings();
+                (
+                    runtime.export_dir().clone(),
+                    settings.export_format,
+                    settings.jpeg_quality,
+                )
+            })
             .ok_or_else(|| PinoraError::new(ErrorCode::Internal, "runtime missing"))?;
-        self.export_names
-            .allocate(&export_dir, SystemTime::now(), |path| {
+        let path = self
+            .export_names
+            .allocate(&export_dir, SystemTime::now(), format, |path| {
                 path.try_exists().map_err(|_| {
                     PinoraError::new(ErrorCode::Internal, "managed export path check failed")
                 })
-            })
+            })?;
+        Ok(FrozenExportTarget {
+            path,
+            format,
+            jpeg_quality,
+        })
     }
 
     fn restore_delayed_pins(&mut self) -> bool {
@@ -3589,11 +3610,11 @@ where
                         Some(PendingExport {
                             owner,
                             asset,
-                            action: PendingExportAction::SavePng(path),
+                            action: PendingExportAction::SaveImage(path),
                             history,
                         }) => {
                             self.set_tray_feedback(TrayFeedback::ExportCompleted(
-                                TrayExportOperation::SavePng,
+                                TrayExportOperation::SaveFile,
                             ));
                             println!("pinora: saved {} -> {}", job.asset.image_id, path.display());
                             if let Some(candidate) = history
@@ -3891,15 +3912,17 @@ where
                     )?;
                 }
                 OverlayFinish::Save => {
-                    let path = self.allocate_export_path()?;
+                    let target = self.allocate_export_target()?;
                     self.submit_export_job(
                         JobOwner::Pin(pin_id),
                         pin_asset,
-                        ExportJobInput::SavePng {
+                        ExportJobInput::SaveImage {
                             image,
-                            path: path.clone(),
+                            path: target.path.clone(),
+                            format: target.format,
+                            jpeg_quality: target.jpeg_quality,
                         },
-                        PendingExportAction::SavePng(path),
+                        PendingExportAction::SaveImage(target.path),
                     )?;
                 }
                 // 贴图编辑中的“贴图”就是应用改动，保留同一 PinId，不创建新窗口。
@@ -3916,15 +3939,17 @@ where
                     )?;
                 }
                 OverlayFinish::Save => {
-                    let path = self.allocate_export_path()?;
+                    let target = self.allocate_export_target()?;
                     self.submit_export_job(
                         session_owner,
                         asset,
-                        ExportJobInput::SavePng {
+                        ExportJobInput::SaveImage {
                             image,
-                            path: path.clone(),
+                            path: target.path.clone(),
+                            format: target.format,
+                            jpeg_quality: target.jpeg_quality,
                         },
-                        PendingExportAction::SavePng(path),
+                        PendingExportAction::SaveImage(target.path),
                     )?;
                 }
                 OverlayFinish::Pin => {
@@ -4025,16 +4050,18 @@ where
         }
 
         let owner = JobOwner::Pin(pin_id);
-        match self.allocate_export_path() {
-            Ok(path) => {
+        match self.allocate_export_target() {
+            Ok(target) => {
                 if let Err(error) = self.submit_export_job(
                     owner,
                     asset,
-                    ExportJobInput::SavePng {
+                    ExportJobInput::SaveImage {
                         image: export_image.clone(),
-                        path: path.clone(),
+                        path: target.path.clone(),
+                        format: target.format,
+                        jpeg_quality: target.jpeg_quality,
                     },
-                    PendingExportAction::SavePng(path),
+                    PendingExportAction::SaveImage(target.path),
                 ) {
                     eprintln!("pinora: save submit failed: {error}");
                 }
@@ -4754,8 +4781,8 @@ where
         let owner = JobOwner::Pin(pin.pin_id);
         let asset = pin.asset;
         let image = pin.image.clone();
-        let path = match self.allocate_export_path() {
-            Ok(path) => path,
+        let target = match self.allocate_export_target() {
+            Ok(target) => target,
             Err(error) => {
                 eprintln!("pinora: pin save path allocation failed: {}", error.code);
                 return;
@@ -4764,11 +4791,13 @@ where
         if let Err(error) = self.submit_export_job(
             owner,
             asset,
-            ExportJobInput::SavePng {
+            ExportJobInput::SaveImage {
                 image,
-                path: path.clone(),
+                path: target.path.clone(),
+                format: target.format,
+                jpeg_quality: target.jpeg_quality,
             },
-            PendingExportAction::SavePng(path),
+            PendingExportAction::SaveImage(target.path),
         ) {
             eprintln!("pinora: pin save submit failed: {error}");
         }

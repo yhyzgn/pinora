@@ -4,8 +4,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use pinora_core::{
-    AssetRef, CaptureImage, CaptureMetadata, ContentDigest, HistoryEntry, HistoryEntrySpec,
-    HistoryIndex, HistoryInsert, HistoryOcrState, ImageId, JobOwner, RgbaBuffer,
+    AssetRef, CaptureImage, CaptureMetadata, ContentDigest, ExportImageFormat, HistoryEntry,
+    HistoryEntrySpec, HistoryIndex, HistoryInsert, HistoryOcrState, ImageId, JobOwner, RgbaBuffer,
 };
 
 use crate::export_job::ExportJobInput;
@@ -47,7 +47,13 @@ pub(crate) fn history_candidate_for_export(
     asset: AssetRef,
     input: &ExportJobInput,
 ) -> Option<HistoryExportCandidate> {
-    let ExportJobInput::SavePng { image, path } = input else {
+    let ExportJobInput::SaveImage {
+        image,
+        path,
+        format: ExportImageFormat::Png,
+        ..
+    } = input
+    else {
         return None;
     };
     if image.id != asset.image_id {
@@ -368,9 +374,11 @@ mod tests {
         let asset = AssetRef::initial(image.id);
         let path = export_dir.join("img-41.png");
         fs::write(&path, b"png payload").expect("write export");
-        let input = ExportJobInput::SavePng {
+        let input = ExportJobInput::SaveImage {
             image: image.clone(),
             path,
+            format: ExportImageFormat::Png,
+            jpeg_quality: 90,
         };
         let candidate = history_candidate_for_export(&export_dir, session_owner(), asset, &input)
             .expect("managed candidate");
@@ -400,23 +408,29 @@ mod tests {
         let image = sample_image(ImageId::from_raw(42));
         let asset = AssetRef::initial(image.id);
 
-        let external = ExportJobInput::SavePng {
+        let external = ExportJobInput::SaveImage {
             image: image.clone(),
             path: root.join("external.png"),
+            format: ExportImageFormat::Png,
+            jpeg_quality: 90,
         };
         assert!(
             history_candidate_for_export(&export_dir, session_owner(), asset, &external).is_none()
         );
-        let nested = ExportJobInput::SavePng {
+        let nested = ExportJobInput::SaveImage {
             image: image.clone(),
             path: export_dir.join("nested/img-42.png"),
+            format: ExportImageFormat::Png,
+            jpeg_quality: 90,
         };
         assert!(
             history_candidate_for_export(&export_dir, session_owner(), asset, &nested).is_none()
         );
-        let non_png = ExportJobInput::SavePng {
+        let non_png = ExportJobInput::SaveImage {
             image: image.clone(),
             path: export_dir.join("img-42.jpg"),
+            format: ExportImageFormat::Jpeg,
+            jpeg_quality: 90,
         };
         assert!(
             history_candidate_for_export(&export_dir, session_owner(), asset, &non_png).is_none()
@@ -459,7 +473,12 @@ mod tests {
             &export_dir,
             session_owner(),
             asset,
-            &ExportJobInput::SavePng { image, path },
+            &ExportJobInput::SaveImage {
+                image,
+                path,
+                format: ExportImageFormat::Png,
+                jpeg_quality: 90,
+            },
         )
         .expect("managed candidate");
         let blocked_parent = root.join("blocked-parent");

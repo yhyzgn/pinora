@@ -10,7 +10,7 @@ use pinora_core::ErrorCode;
 pub(crate) enum TrayExportOperation {
     CopyImage,
     CopyText,
-    SavePng,
+    SaveFile,
 }
 
 /// 当前 tray 中可展示的最近用户操作状态。
@@ -128,7 +128,7 @@ const fn export_running_label(operation: TrayExportOperation) -> &'static str {
     match operation {
         TrayExportOperation::CopyImage => "Pinora - 正在复制图像",
         TrayExportOperation::CopyText => "Pinora - 正在复制文字",
-        TrayExportOperation::SavePng => "Pinora - 正在保存 PNG",
+        TrayExportOperation::SaveFile => "Pinora - 正在保存文件",
     }
 }
 
@@ -136,7 +136,7 @@ const fn export_completed_label(operation: TrayExportOperation) -> &'static str 
     match operation {
         TrayExportOperation::CopyImage => "Pinora - 图像已复制到系统剪贴板",
         TrayExportOperation::CopyText => "Pinora - 文字已复制到系统剪贴板",
-        TrayExportOperation::SavePng => "Pinora - PNG 已保存",
+        TrayExportOperation::SaveFile => "Pinora - 文件已保存",
     }
 }
 
@@ -150,10 +150,10 @@ const fn export_failed_label(operation: TrayExportOperation, error: ErrorCode) -
         }
         (TrayExportOperation::CopyImage, ErrorCode::TimedOut) => "Pinora - 图像复制未完成：已超时",
         (TrayExportOperation::CopyText, ErrorCode::TimedOut) => "Pinora - 文字复制未完成：已超时",
-        (TrayExportOperation::SavePng, ErrorCode::TimedOut) => "Pinora - PNG 保存未完成：已超时",
+        (TrayExportOperation::SaveFile, ErrorCode::TimedOut) => "Pinora - 文件保存未完成：已超时",
         (TrayExportOperation::CopyImage, _) => "Pinora - 图像复制未完成，请重试",
         (TrayExportOperation::CopyText, _) => "Pinora - 文字复制未完成，请重试",
-        (TrayExportOperation::SavePng, _) => "Pinora - PNG 保存未完成，请重试",
+        (TrayExportOperation::SaveFile, _) => "Pinora - 文件保存未完成，请重试",
     }
 }
 
@@ -180,7 +180,7 @@ mod tests {
             TrayFeedback::OcrFailed(ErrorCode::CapabilityUnavailable),
             TrayFeedback::ExportRunning(TrayExportOperation::CopyImage),
             TrayFeedback::ExportCompleted(TrayExportOperation::CopyText),
-            TrayFeedback::ExportFailed(TrayExportOperation::SavePng, ErrorCode::Internal),
+            TrayFeedback::ExportFailed(TrayExportOperation::SaveFile, ErrorCode::Internal),
             TrayFeedback::ExportFailed(TrayExportOperation::CopyImage, ErrorCode::ClipboardFailed),
         ];
 

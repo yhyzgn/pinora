@@ -4,14 +4,14 @@
 //! [`SettingsPanelAction`]，并在确认保存后调用 `SettingsStore`。
 
 use pinora_core::{
-    AppSettings, HotkeyBinding, OcrLanguage, PixelPoint, PixelRect, REGION_ALTERNATE_HOTKEY,
-    REGION_SECONDARY_HOTKEY, ThemeMode,
+    AppSettings, ExportImageFormat, HotkeyBinding, OcrLanguage, PixelPoint, PixelRect,
+    REGION_ALTERNATE_HOTKEY, REGION_SECONDARY_HOTKEY, ThemeMode,
 };
 
 use crate::panel_theme::PanelTheme;
 
 pub const PANEL_WIDTH: u32 = 560;
-pub const PANEL_HEIGHT: u32 = 744;
+pub const PANEL_HEIGHT: u32 = 888;
 
 const ROW_X: i32 = 28;
 const ROW_W: u32 = PANEL_WIDTH - 56;
@@ -31,12 +31,14 @@ pub enum SettingField {
     DefaultPinAlwaysOnTop,
     OcrLanguage,
     OcrConfidenceThreshold,
+    ExportFormat,
+    JpegQuality,
     RegionHotkey,
     FullDisplayHotkey,
 }
 
 impl SettingField {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 11] = [
         Self::Theme,
         Self::HistoryLimit,
         Self::PinLimit,
@@ -44,6 +46,8 @@ impl SettingField {
         Self::DefaultPinAlwaysOnTop,
         Self::OcrLanguage,
         Self::OcrConfidenceThreshold,
+        Self::ExportFormat,
+        Self::JpegQuality,
         Self::RegionHotkey,
         Self::FullDisplayHotkey,
     ];
@@ -57,8 +61,10 @@ impl SettingField {
             Self::DefaultPinAlwaysOnTop => 4,
             Self::OcrLanguage => 5,
             Self::OcrConfidenceThreshold => 6,
-            Self::RegionHotkey => 7,
-            Self::FullDisplayHotkey => 8,
+            Self::ExportFormat => 7,
+            Self::JpegQuality => 8,
+            Self::RegionHotkey => 9,
+            Self::FullDisplayHotkey => 10,
         }
     }
 
@@ -71,6 +77,8 @@ impl SettingField {
             Self::DefaultPinAlwaysOnTop => "PIN ALWAYS ON TOP",
             Self::OcrLanguage => "OCR LANGUAGE",
             Self::OcrConfidenceThreshold => "OCR CONFIDENCE",
+            Self::ExportFormat => "EXPORT FORMAT",
+            Self::JpegQuality => "JPEG QUALITY",
             Self::RegionHotkey => "REGION HOTKEY",
             Self::FullDisplayHotkey => "FULL DISPLAY HOTKEY",
         }
@@ -276,6 +284,22 @@ impl SettingsPanel {
                 self.draft.ocr_confidence_threshold =
                     step_u8(self.draft.ocr_confidence_threshold, direction, 0, 100, 5);
             }
+            SettingField::ExportFormat => {
+                const FORMATS: [ExportImageFormat; 3] = [
+                    ExportImageFormat::Png,
+                    ExportImageFormat::Jpeg,
+                    ExportImageFormat::WebP,
+                ];
+                let current = FORMATS
+                    .iter()
+                    .position(|format| *format == self.draft.export_format)
+                    .unwrap_or(0) as i32;
+                let next = (current + direction).rem_euclid(FORMATS.len() as i32) as usize;
+                self.draft.export_format = FORMATS[next];
+            }
+            SettingField::JpegQuality => {
+                self.draft.jpeg_quality = step_u8(self.draft.jpeg_quality, direction, 1, 100, 5);
+            }
             SettingField::RegionHotkey | SettingField::FullDisplayHotkey => {}
         }
         self.status = SettingsPanelStatus::Editing;
@@ -407,6 +431,12 @@ impl SettingsPanel {
             SettingField::OcrConfidenceThreshold => {
                 format!("{}%", self.draft.ocr_confidence_threshold)
             }
+            SettingField::ExportFormat => match self.draft.export_format {
+                ExportImageFormat::Png => "PNG".into(),
+                ExportImageFormat::Jpeg => "JPEG".into(),
+                ExportImageFormat::WebP => "LOSSLESS WEBP".into(),
+            },
+            SettingField::JpegQuality => format!("{}%", self.draft.jpeg_quality),
             SettingField::RegionHotkey => self.draft.region_hotkey.to_string(),
             SettingField::FullDisplayHotkey => self.draft.full_display_hotkey.to_string(),
         }
@@ -938,6 +968,35 @@ mod tests {
     }
 
     #[test]
+    fn export_format_cycles_and_jpeg_quality_stays_within_valid_range() {
+        let mut panel = SettingsPanel::new(AppSettings::default());
+        panel.select(SettingField::ExportFormat);
+
+        panel.step(1);
+        assert_eq!(panel.draft().export_format, ExportImageFormat::Jpeg);
+        assert_eq!(panel.value_label(SettingField::ExportFormat), "JPEG");
+        panel.step(1);
+        assert_eq!(panel.draft().export_format, ExportImageFormat::WebP);
+        assert_eq!(
+            panel.value_label(SettingField::ExportFormat),
+            "LOSSLESS WEBP"
+        );
+
+        panel.select(SettingField::JpegQuality);
+        panel.step(-1);
+        assert_eq!(panel.draft().jpeg_quality, 85);
+        assert_eq!(panel.value_label(SettingField::JpegQuality), "85%");
+        for _ in 0..30 {
+            panel.step(-1);
+        }
+        assert_eq!(panel.draft().jpeg_quality, 1);
+        for _ in 0..30 {
+            panel.step(1);
+        }
+        assert_eq!(panel.draft().jpeg_quality, 100);
+    }
+
+    #[test]
     fn default_pin_level_uses_explicit_on_off_controls_and_arrow_keys() {
         let mut panel = SettingsPanel::new(AppSettings::default());
         let row = SettingField::DefaultPinAlwaysOnTop.row_rect();
@@ -988,6 +1047,8 @@ mod tests {
     fn expanded_panel_keeps_default_pin_level_row_above_the_action_buttons() {
         assert!(SettingField::DefaultPinAlwaysOnTop.row_rect().bottom() <= save_rect().origin.y);
         assert!(SettingField::OcrConfidenceThreshold.row_rect().bottom() <= save_rect().origin.y);
+        assert!(SettingField::ExportFormat.row_rect().bottom() <= save_rect().origin.y);
+        assert!(SettingField::JpegQuality.row_rect().bottom() <= save_rect().origin.y);
         assert!(SettingField::FullDisplayHotkey.row_rect().bottom() <= save_rect().origin.y);
     }
 

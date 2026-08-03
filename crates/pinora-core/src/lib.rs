@@ -36,7 +36,7 @@ pub use capture::{
 pub use command::Command;
 pub use error::{ErrorCode, PinoraError};
 pub use event::{DomainEvent, DomainEventKind, EventEnvelope};
-pub use export::ImageSink;
+pub use export::{ExportImageFormat, ImageSink};
 pub use geometry::{PixelPoint, PixelRect, PixelSize};
 pub use history::{
     ContentDigest, HISTORY_MAX_DISPLAY_BYTES, HISTORY_MAX_ENTRIES, HISTORY_MAX_FILE_NAME_BYTES,
@@ -55,7 +55,7 @@ pub use selection::{
     normalize_rect, validate_min_size,
 };
 pub use settings::{
-    AppSettings, DEFAULT_FULL_DISPLAY_HOTKEY, DEFAULT_HISTORY_LIMIT,
+    AppSettings, DEFAULT_FULL_DISPLAY_HOTKEY, DEFAULT_HISTORY_LIMIT, DEFAULT_JPEG_QUALITY,
     DEFAULT_OCR_CONFIDENCE_THRESHOLD, DEFAULT_PIN_ALWAYS_ON_TOP, DEFAULT_PIN_LIMIT,
     DEFAULT_PIN_OPACITY_PERCENT, DEFAULT_REGION_HOTKEY, HotkeyBinding, HotkeyCode, HotkeyModifiers,
     OcrLanguage, REGION_ALTERNATE_HOTKEY, REGION_SECONDARY_HOTKEY, SETTINGS_SCHEMA_VERSION,

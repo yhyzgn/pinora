@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/091_ocr_confidence_presentation.md`
-- 任务：`.context/tasks/091_ocr_confidence_presentation.md`
+- 计划：`.context/plans/092_export_format_encoding.md`
+- 任务：`.context/tasks/092_export_format_encoding.md`
 
 ## 交付要求
 

@@ -1,12 +1,13 @@
 //! 版本化本地设置的纯领域模型。
 
 /// 当前设置 schema 版本。
-pub const SETTINGS_SCHEMA_VERSION: u16 = 5;
+pub const SETTINGS_SCHEMA_VERSION: u16 = 6;
 pub const DEFAULT_HISTORY_LIMIT: u32 = 100;
 pub const DEFAULT_PIN_LIMIT: u16 = 10;
 pub const DEFAULT_PIN_OPACITY_PERCENT: u8 = 100;
 pub const DEFAULT_PIN_ALWAYS_ON_TOP: bool = true;
 pub const DEFAULT_OCR_CONFIDENCE_THRESHOLD: u8 = 60;
+pub const DEFAULT_JPEG_QUALITY: u8 = 90;
 
 /// 被设置持久化支持的跨平台物理键。
 ///
@@ -365,6 +366,10 @@ pub struct AppSettings {
     pub ocr_language: OcrLanguage,
     /// 低于此百分比的已知 OCR 词仅在文字层中使用告警样式呈现。
     pub ocr_confidence_threshold: u8,
+    /// 文件导出使用的编码格式；系统剪贴板始终保持 PNG。
+    pub export_format: crate::export::ExportImageFormat,
+    /// JPEG 导出的质量，必须处于 1..=100；其他格式安全忽略该值。
+    pub jpeg_quality: u8,
     pub region_hotkey: HotkeyBinding,
     pub full_display_hotkey: HotkeyBinding,
 }
@@ -380,6 +385,8 @@ impl Default for AppSettings {
             default_pin_always_on_top: DEFAULT_PIN_ALWAYS_ON_TOP,
             ocr_language: OcrLanguage::Auto,
             ocr_confidence_threshold: DEFAULT_OCR_CONFIDENCE_THRESHOLD,
+            export_format: crate::export::ExportImageFormat::Png,
+            jpeg_quality: DEFAULT_JPEG_QUALITY,
             region_hotkey: DEFAULT_REGION_HOTKEY,
             full_display_hotkey: DEFAULT_FULL_DISPLAY_HOTKEY,
         }
@@ -397,10 +404,13 @@ pub struct SettingsRepairs {
     pub migrated_from_v3: bool,
     /// v4 设置成功按默认新增 OCR 置信度阈值字段；下次保存会原子替换为当前记录。
     pub migrated_from_v4: bool,
+    /// v5 设置成功按默认新增导出格式和 JPEG 质量字段；下次保存会原子替换为当前记录。
+    pub migrated_from_v5: bool,
     pub history_limit: bool,
     pub pin_limit: bool,
     pub default_pin_opacity_percent: bool,
     pub ocr_confidence_threshold: bool,
+    pub jpeg_quality: bool,
     pub region_hotkey: bool,
     pub full_display_hotkey: bool,
 }
@@ -411,10 +421,12 @@ impl SettingsRepairs {
             && !self.migrated_from_v2
             && !self.migrated_from_v3
             && !self.migrated_from_v4
+            && !self.migrated_from_v5
             && !self.history_limit
             && !self.pin_limit
             && !self.default_pin_opacity_percent
             && !self.ocr_confidence_threshold
+            && !self.jpeg_quality
             && !self.region_hotkey
             && !self.full_display_hotkey
     }
@@ -439,6 +451,10 @@ impl AppSettings {
         if self.ocr_confidence_threshold > 100 {
             self.ocr_confidence_threshold = DEFAULT_OCR_CONFIDENCE_THRESHOLD;
             repairs.ocr_confidence_threshold = true;
+        }
+        if !(1..=100).contains(&self.jpeg_quality) {
+            self.jpeg_quality = DEFAULT_JPEG_QUALITY;
+            repairs.jpeg_quality = true;
         }
         if !self.region_hotkey.is_safe()
             || self.region_hotkey == REGION_SECONDARY_HOTKEY
@@ -483,6 +499,8 @@ mod tests {
             default_pin_always_on_top: false,
             ocr_language: OcrLanguage::English,
             ocr_confidence_threshold: u8::MAX,
+            export_format: crate::export::ExportImageFormat::Png,
+            jpeg_quality: 0,
             region_hotkey: HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::KeyA),
             full_display_hotkey: HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F2),
         }
@@ -502,6 +520,8 @@ mod tests {
             DEFAULT_OCR_CONFIDENCE_THRESHOLD
         );
         assert!(repairs.ocr_confidence_threshold);
+        assert_eq!(settings.jpeg_quality, DEFAULT_JPEG_QUALITY);
+        assert!(repairs.jpeg_quality);
     }
 
     #[test]

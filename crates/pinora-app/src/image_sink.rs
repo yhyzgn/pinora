@@ -1,4 +1,4 @@
-//! 本地 PNG 导出 + 内存剪贴板 + 系统剪贴板（Linux：wl-copy / xclip）。
+//! 本地文件图像导出 + 内存剪贴板 + 系统剪贴板（Linux：wl-copy / xclip）。
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -7,7 +7,7 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Mutex, atomic::AtomicU64};
 use std::time::{Duration, Instant};
 
-use pinora_core::{CaptureImage, ErrorCode, ImageId, ImageSink, PinoraError};
+use pinora_core::{CaptureImage, ErrorCode, ExportImageFormat, ImageId, ImageSink, PinoraError};
 
 use crate::job_supervisor::JobCancellation;
 
@@ -115,29 +115,99 @@ pub(crate) fn encode_png_bytes(image: &CaptureImage) -> Result<Vec<u8>, PinoraEr
     Ok(buf)
 }
 
+/// 编码冻结后的文件导出输入。PNG/WebP 保留 RGBA；JPEG 先按白底合成为 RGB。
+pub(crate) fn encode_image_bytes(
+    image: &CaptureImage,
+    format: ExportImageFormat,
+    jpeg_quality: u8,
+) -> Result<Vec<u8>, PinoraError> {
+    match format {
+        ExportImageFormat::Png => encode_png_bytes(image),
+        ExportImageFormat::Jpeg => encode_jpeg_bytes(image, jpeg_quality),
+        ExportImageFormat::WebP => encode_webp_lossless_bytes(image),
+    }
+}
+
+fn encode_jpeg_bytes(image: &CaptureImage, quality: u8) -> Result<Vec<u8>, PinoraError> {
+    if !(1..=100).contains(&quality) {
+        return Err(PinoraError::new(
+            ErrorCode::InvalidState,
+            "JPEG quality is outside the supported range",
+        ));
+    }
+    let rgb = rgba_over_white(&image.pixels.bytes);
+    let mut bytes = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, quality)
+        .encode(
+            &rgb,
+            image.pixels.size.width,
+            image.pixels.size.height,
+            image::ExtendedColorType::Rgb8,
+        )
+        .map_err(|error| PinoraError::new(ErrorCode::Internal, format!("jpeg encode: {error}")))?;
+    Ok(bytes)
+}
+
+fn encode_webp_lossless_bytes(image: &CaptureImage) -> Result<Vec<u8>, PinoraError> {
+    let mut bytes = Vec::new();
+    image::codecs::webp::WebPEncoder::new_lossless(&mut bytes)
+        .encode(
+            &image.pixels.bytes,
+            image.pixels.size.width,
+            image.pixels.size.height,
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|error| PinoraError::new(ErrorCode::Internal, format!("webp encode: {error}")))?;
+    Ok(bytes)
+}
+
+/// JPEG 没有 alpha 通道。以整数四舍五入将 straight-alpha RGBA 叠加在白底上，
+/// 不依赖平台图形栈或色彩状态，确保同一输入得到同一 RGB 字节。
+fn rgba_over_white(rgba: &[u8]) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity(rgba.len().saturating_mul(3) / 4);
+    for pixel in rgba.chunks_exact(4) {
+        let alpha = u32::from(pixel[3]);
+        let inverse_alpha = 255 - alpha;
+        for channel in &pixel[..3] {
+            let composited = (u32::from(*channel) * alpha + 255 * inverse_alpha + 127) / 255;
+            rgb.push(composited as u8);
+        }
+    }
+    rgb
+}
+
 pub(crate) fn save_png_file(image: &CaptureImage, path: &Path) -> Result<(), PinoraError> {
-    let mut temporary = AtomicPngTemp::create(path)?;
-    let png = encode_png_bytes(image)?;
+    save_image_file(image, path, ExportImageFormat::Png, 90)
+}
+
+pub(crate) fn save_image_file(
+    image: &CaptureImage,
+    path: &Path,
+    format: ExportImageFormat,
+    jpeg_quality: u8,
+) -> Result<(), PinoraError> {
+    let mut temporary = AtomicExportTemp::create(path)?;
+    let encoded = encode_image_bytes(image, format, jpeg_quality)?;
     let mut file = temporary.take_file()?;
-    file.write_all(&png)
-        .map_err(|error| PinoraError::new(ErrorCode::Internal, format!("write png: {error}")))?;
+    file.write_all(&encoded)
+        .map_err(|error| PinoraError::new(ErrorCode::Internal, format!("write image: {error}")))?;
     file.sync_all()
-        .map_err(|error| PinoraError::new(ErrorCode::Internal, format!("sync png: {error}")))?;
+        .map_err(|error| PinoraError::new(ErrorCode::Internal, format!("sync image: {error}")))?;
     drop(file);
     temporary.commit(path)
 }
 
 static NEXT_EXPORT_TEMP_FILE_ID: AtomicU64 = AtomicU64::new(1);
 
-/// 同目录临时 PNG。只有 `commit` 成功后才向目标路径发布；其他路径由 Drop 清理。
+/// 同目录临时导出文件。只有 `commit` 成功后才向目标路径发布；其他路径由 Drop 清理。
 #[derive(Debug)]
-struct AtomicPngTemp {
+struct AtomicExportTemp {
     path: PathBuf,
     file: Option<File>,
     committed: bool,
 }
 
-impl AtomicPngTemp {
+impl AtomicExportTemp {
     fn create(target: &Path) -> Result<Self, PinoraError> {
         let directory = target
             .parent()
@@ -187,20 +257,20 @@ impl AtomicPngTemp {
             ));
         }
         std::fs::rename(&self.path, target).map_err(|error| {
-            PinoraError::new(ErrorCode::Internal, format!("publish png: {error}"))
+            PinoraError::new(ErrorCode::Internal, format!("publish image: {error}"))
         })?;
         self.committed = true;
         File::open(target).map_err(|error| {
             PinoraError::new(
                 ErrorCode::Internal,
-                format!("verify published png: {error}"),
+                format!("verify published image: {error}"),
             )
         })?;
         Ok(())
     }
 }
 
-impl Drop for AtomicPngTemp {
+impl Drop for AtomicExportTemp {
     fn drop(&mut self) {
         if !self.committed {
             let _ = std::fs::remove_file(&self.path);
@@ -531,6 +601,10 @@ mod tests {
         std::env::temp_dir().join(format!("pinora-{label}-{nanos}.png"))
     }
 
+    fn temporary_path_with_extension(label: &str, extension: &str) -> PathBuf {
+        temporary_path(label).with_extension(extension)
+    }
+
     #[test]
     fn save_png_writes_signature() {
         let sink = LocalImageSink::new();
@@ -557,15 +631,62 @@ mod tests {
     }
 
     #[test]
-    fn uncommitted_atomic_png_temp_is_removed() {
+    fn uncommitted_atomic_export_temp_is_removed() {
         let target = temporary_path("uncommitted");
-        let temp = AtomicPngTemp::create(&target).expect("create temp");
+        let temp = AtomicExportTemp::create(&target).expect("create temp");
         let temp_path = temp.path.clone();
         assert!(temp_path.exists());
 
         drop(temp);
 
         assert!(!temp_path.exists());
+    }
+
+    #[test]
+    fn file_encoders_emit_expected_signatures() {
+        let image = sample_image();
+        let png = encode_image_bytes(&image, ExportImageFormat::Png, 90).expect("encode PNG");
+        let jpeg = encode_image_bytes(&image, ExportImageFormat::Jpeg, 90).expect("encode JPEG");
+        let webp = encode_image_bytes(&image, ExportImageFormat::WebP, 90).expect("encode WebP");
+
+        assert!(png.starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']));
+        assert!(jpeg.starts_with(&[0xff, 0xd8]));
+        assert!(webp.starts_with(b"RIFF"));
+        assert_eq!(&webp[8..12], b"WEBP");
+    }
+
+    #[test]
+    fn jpeg_alpha_is_deterministically_composited_over_white() {
+        let rgb = rgba_over_white(&[
+            0, 0, 0, 0, // fully transparent becomes white
+            255, 0, 0, 128, // half-transparent red over white
+            10, 20, 30, 255, // opaque pixels are unchanged
+        ]);
+
+        assert_eq!(rgb, [255, 255, 255, 255, 127, 127, 10, 20, 30]);
+    }
+
+    #[test]
+    fn jpeg_rejects_invalid_quality_before_writing() {
+        let error = encode_image_bytes(&sample_image(), ExportImageFormat::Jpeg, 0)
+            .expect_err("invalid JPEG quality must not encode");
+
+        assert_eq!(error.code, ErrorCode::InvalidState);
+    }
+
+    #[test]
+    fn save_image_atomically_publishes_requested_format() {
+        let image = sample_image();
+        let path = temporary_path_with_extension("webp-export", "webp");
+        std::fs::write(&path, b"old export").expect("write old export");
+
+        save_image_file(&image, &path, ExportImageFormat::WebP, 90).expect("atomic save");
+
+        let bytes = std::fs::read(&path).expect("read published WebP");
+        assert!(bytes.starts_with(b"RIFF"));
+        assert_eq!(&bytes[8..12], b"WEBP");
+        assert_ne!(bytes, b"old export");
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
