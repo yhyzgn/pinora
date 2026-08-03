@@ -19,7 +19,8 @@ const REQUEST_INTERFACE: &str = "org.freedesktop.portal.Request";
 const SESSION_INTERFACE: &str = "org.freedesktop.portal.Session";
 const REGION_SHORTCUT_ID: &str = "capture-region";
 const FULL_DISPLAY_SHORTCUT_ID: &str = "capture-full-display";
-const PORTAL_MIN_VERSION: u32 = 1;
+// CreateSession/BindShortcuts/Activated are consumed according to the v2 contract.
+const PORTAL_MIN_VERSION: u32 = 2;
 const PORTAL_QUEUE_CAPACITY: usize = 16;
 
 static TOKEN_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -152,6 +153,10 @@ pub(crate) fn is_wayland_session() -> bool {
             .is_ok_and(|session_type| session_type.eq_ignore_ascii_case("wayland"))
 }
 
+const fn portal_version_supported(version: u32) -> bool {
+    version >= PORTAL_MIN_VERSION
+}
+
 async fn run_worker(
     commands: Receiver<PortalCommand>,
     events: Sender<PortalEvent>,
@@ -195,7 +200,7 @@ async fn run_worker_inner(
         .get_property("version")
         .await
         .map_err(|_| PortalFailure::InterfaceUnavailable)?;
-    if version < PORTAL_MIN_VERSION {
+    if !portal_version_supported(version) {
         return Err(PortalFailure::VersionUnsupported);
     }
 
@@ -579,5 +584,13 @@ mod tests {
             "portal_binding_rejected"
         );
         assert!(!PortalFailure::Disconnected.code().contains('/'));
+    }
+
+    #[test]
+    fn portal_requires_the_v2_global_shortcuts_contract() {
+        assert!(!portal_version_supported(0));
+        assert!(!portal_version_supported(1));
+        assert!(portal_version_supported(2));
+        assert!(portal_version_supported(99));
     }
 }

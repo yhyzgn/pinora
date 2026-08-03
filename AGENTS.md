@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/102_kde_real_display_probe.md`
-- 任务：`.context/tasks/102_kde_real_display_probe.md`
+- 计划：`.context/plans/103_wayland_portal_version_gate.md`
+- 任务：`.context/tasks/103_wayland_portal_version_gate.md`
 
 ## 交付要求
 

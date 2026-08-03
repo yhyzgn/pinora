@@ -558,6 +558,15 @@
 - 回滚或隔离动作：仅保留成功的 `kscreen-doctor` 路径，或完全禁用 KDE 后端并让 xcap/受控不可用接管；不恢复固定虚拟拓扑。
 - 负责人和状态：Neo；离线解析与静态门禁已验证，真实命令/驱动/Wayland 行为和桌面性能证据开放。
 
+## R-062：GlobalShortcuts Portal 版本属性与方法完整性尚未验证（高）
+
+- 证据和影响范围：103 将 Portal 最低版本设为 v2；worker 在读取 `version` 后，v1 及更低版本立即发布 `VersionUnsupported`，不执行 CreateSession/BindShortcuts，也不改变 tray/IPC。版本契约、Portal 定向测试、workspace 编译、严格 Clippy、Windows target 和全量离线测试已通过。
+- 触发条件：不同 xdg-desktop-portal/backend 可能报告 v2 但缺失某个方法或使用不同 options/signals；用户授权拒绝、backend 重启、升级/降级、信号延迟或桌面会话切换。
+- 失败模式：版本门槛通过后仍可能在请求阶段受控失败、只接受部分 shortcut 或失联；不得把版本属性视为真实热键注册。离线版本测试、CI、target 编译和当前机器缺失接口不能证明真实授权、触发、冲突、tray-only、任务栏/Dock 或性能。
+- 缓解措施和必需验证：保留方法调用失败的稳定错误码、固定 shortcut ID、后台 worker、GUI 非阻塞轮询和 tray/IPC 回退；在 KDE Wayland 与非 KDE Wayland 真实会话验证 v1/v2 backend、授权/拒绝、两项绑定、部分接受、重绑、Portal 重启、休眠恢复、退出清理、焦点、任务栏/Dock/分页器和帧时间。
+- 回滚或隔离动作：若官方/实机证据确认 v1 完整兼容，独立任务中降低版本门槛并补方法契约；否则维持 v2 或对不完整 backend 隐藏 Portal 入口，不引入同步 D-Bus 或后台键盘监听。
+- 负责人和状态：Neo；离线版本门槛与静态门禁已验证，真实 backend 方法/授权/桌面行为证据开放。
+
 ## 风险一：上下文漂移
 
 - 触发条件：代码、配置或工作流变化后，没有同步更新对应上下文文件。
