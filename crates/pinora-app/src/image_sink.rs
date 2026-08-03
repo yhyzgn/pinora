@@ -186,15 +186,60 @@ pub(crate) fn save_image_file(
     format: ExportImageFormat,
     jpeg_quality: u8,
 ) -> Result<(), PinoraError> {
+    save_image_file_with_optional_cancellation(image, path, format, jpeg_quality, None)
+}
+
+/// 在原子发布前协作式检查取消信号的图片保存。
+///
+/// 一旦 rename 成功，目标文件已成为可见外部副作用，调用方不得尝试删除它。
+pub(crate) fn save_image_file_with_cancellation(
+    image: &CaptureImage,
+    path: &Path,
+    format: ExportImageFormat,
+    jpeg_quality: u8,
+    cancellation: &JobCancellation,
+) -> Result<(), PinoraError> {
+    save_image_file_with_optional_cancellation(
+        image,
+        path,
+        format,
+        jpeg_quality,
+        Some(cancellation),
+    )
+}
+
+fn save_image_file_with_optional_cancellation(
+    image: &CaptureImage,
+    path: &Path,
+    format: ExportImageFormat,
+    jpeg_quality: u8,
+    cancellation: Option<&JobCancellation>,
+) -> Result<(), PinoraError> {
+    ensure_file_export_not_cancelled(cancellation)?;
     let mut temporary = AtomicExportTemp::create(path)?;
     let encoded = encode_image_bytes(image, format, jpeg_quality)?;
+    ensure_file_export_not_cancelled(cancellation)?;
     let mut file = temporary.take_file()?;
     file.write_all(&encoded)
         .map_err(|error| PinoraError::new(ErrorCode::Internal, format!("write image: {error}")))?;
     file.sync_all()
         .map_err(|error| PinoraError::new(ErrorCode::Internal, format!("sync image: {error}")))?;
     drop(file);
+    ensure_file_export_not_cancelled(cancellation)?;
     temporary.commit(path)
+}
+
+fn ensure_file_export_not_cancelled(
+    cancellation: Option<&JobCancellation>,
+) -> Result<(), PinoraError> {
+    if cancellation.is_some_and(JobCancellation::is_cancelled) {
+        Err(PinoraError::new(
+            ErrorCode::Cancelled,
+            "file export cancelled before publication",
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 static NEXT_EXPORT_TEMP_FILE_ID: AtomicU64 = AtomicU64::new(1);
@@ -577,7 +622,11 @@ fn copy_text_to_system_clipboard_with_optional_cancellation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pinora_core::{CaptureMetadata, DisplayId, ImageId, PixelRect, PixelSize, RgbaBuffer};
+    use crate::job_supervisor::JobSupervisor;
+    use pinora_core::{
+        AssetRef, CaptureMetadata, CorrelationId, DisplayId, ImageId, JobId, JobKind, JobOwner,
+        JobSpec, PixelRect, PixelSize, RgbaBuffer, SessionId,
+    };
     #[cfg(unix)]
     use std::time::Duration;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -687,6 +736,41 @@ mod tests {
         assert_eq!(&bytes[8..12], b"WEBP");
         assert_ne!(bytes, b"old export");
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn cancelled_save_does_not_create_a_target_or_temporary_directory() {
+        let image = sample_image();
+        let directory = temporary_path("cancelled-export").with_extension("dir");
+        let path = directory.join("image.png");
+        let asset = AssetRef::initial(image.id);
+        let spec = JobSpec::new(
+            JobId::from_raw(91),
+            CorrelationId::from_raw(91),
+            asset,
+            JobOwner::Session(SessionId::from_raw(91)),
+            JobKind::Export,
+            100,
+        );
+        let mut supervisor = JobSupervisor::new();
+        let ticket = supervisor.submit(spec).expect("submit cancellation job");
+        assert_eq!(
+            supervisor.cancel(ticket.id).expect("cancel job"),
+            crate::job_supervisor::JobState::Finished(pinora_core::JobTerminalState::Cancelled)
+        );
+
+        let error = save_image_file_with_cancellation(
+            &image,
+            &path,
+            ExportImageFormat::Png,
+            90,
+            &ticket.cancellation(),
+        )
+        .expect_err("cancelled save must not publish a file");
+
+        assert_eq!(error.code, ErrorCode::Cancelled);
+        assert!(!path.exists());
+        assert!(!directory.exists());
     }
 
     #[test]

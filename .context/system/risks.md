@@ -477,6 +477,15 @@
 - 回滚或隔离动作：移除来源枚举、工具栏控件和选择分支，使 Overlay Copy/Save 重新固定合成图；贴图、OCR、导出 worker、格式、历史、设置和窗口策略保持不变。
 - 负责人和状态：Neo；离线工具栏、像素、动作路由、严格 workspace 门禁与 Windows target 已验证，原生桌面证据开放。
 
+## R-052：可取消文件保存的慢盘响应、原子发布竞态与原生 tray 刷新未验证（中）
+
+- 证据和影响范围：094 在已有 `ExportJobService` 上提供单 `JobId` 协作式取消，DesktopApp 只从运行中的 `PendingExportAction::SaveImage` 收集取消目标。保存 worker 在编码前、编码后、`sync_all` 后且原子 `rename` 前检查 token；发布前取消依赖 `AtomicExportTemp` 的 Drop 清理当前临时文件。取消后 pending 映射保留至 worker terminal，tray 用固定“正在取消文件保存”/“文件保存已取消”反馈；CopyImage、CopyText、OCR、截图和其他 owner 不在此入口中。
+- 触发条件：4K 或更大图像的编码、慢速/满载/网络挂载磁盘、`sync_all` 阻塞、取消恰好落在最后检查和 `rename` 之间，或 Windows/macOS/X11/KDE Wayland 的原生 tray 菜单刷新比 GUI 事件循环慢。
+- 失败模式：取消响应只能等到下一个协作检查点；极窄发布竞态可能保留已经原子发布的目标文件，不能伪装为回滚。用户也可能短暂看到过期的 tray 菜单状态；离线测试和交叉编译不能证明真实文件系统原子性、查看器可见性、桌面流畅性或任务栏/Dock/分页器隔离。
+- 缓解措施和必需验证：保持取消范围仅为运行中的文件保存、发布前临时文件 RAII 清理、发布后不删除、pending 收敛后才移除和静态脱敏反馈；在 Windows、macOS、Linux X11、KDE Wayland 上以小图/大图、PNG/JPEG/WebP、快盘/慢盘、目标已存在、重复取消、同时复制/OCR、关闭 owner、tray 刷新、100%/200% 缩放、帧时间及任务栏/Dock/分页器进行原生验证。
+- 回滚或隔离动作：移除 tray 的“取消文件保存”入口、单任务取消代理和保存检查点，恢复既有 worker 完成或 owner 关闭时取消的行为；保留原子保存、格式/质量、历史、剪贴板、OCR、窗口策略和设置 schema。
+- 负责人和状态：Neo；离线保存、导出服务、tray、反馈和桌面壳筛选测试已验证，真实文件系统与原生桌面证据开放。
+
 ## 风险一：上下文漂移
 
 - 触发条件：代码、配置或工作流变化后，没有同步更新对应上下文文件。

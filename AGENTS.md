@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/093_export_source_selection.md`
-- 任务：`.context/tasks/093_export_source_selection.md`
+- 计划：`.context/plans/094_cancellable_file_exports.md`
+- 任务：`.context/tasks/094_cancellable_file_exports.md`
 
 ## 交付要求
 

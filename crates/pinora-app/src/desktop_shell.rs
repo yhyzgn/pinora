@@ -33,6 +33,7 @@ use crate::history_load_job::{
 use crate::history_store::{HistoryStore, default_history_path};
 use crate::history_window::HistoryWindow;
 use crate::hotkey::{GlobalHotkeyHub, binding_from_winit};
+use crate::job_supervisor::JobState;
 use crate::ocr::tesseract_available;
 use crate::ocr_job::{OcrJobCompletion, OcrJobService, OcrJobStart};
 use crate::ocr_presentation::word_visual_state;
@@ -55,9 +56,10 @@ use pinora_core::{
     AssetRef, CaptureImage, CaptureProvider, CaptureRequest, CaptureWindowInfo, Command,
     CorrelationId, DEFAULT_OCR_CONFIDENCE_THRESHOLD, DisplayId, DisplayInfo, DomainEventKind,
     ErrorCode, ExportImageFormat, HistoryEntry, HistoryIndex, ImageId, ImageSink, JobId, JobKind,
-    JobOwner, JobSpec, OcrLanguage, OcrResult, OcrTextSelection, OcrWordRef, PinId, PinTransform,
-    PinoraError, PixelPoint, PixelRect, SelectionHandle, SelectionSession, SessionId, ThemeMode,
-    bake_annotations, color_to_hex, render_preview_rgba, resolve_all_displays_rect, sample_rgba_at,
+    JobOwner, JobSpec, JobTerminalState, OcrLanguage, OcrResult, OcrTextSelection, OcrWordRef,
+    PinId, PinTransform, PinoraError, PixelPoint, PixelRect, SelectionHandle, SelectionSession,
+    SessionId, ThemeMode, bake_annotations, color_to_hex, render_preview_rgba,
+    resolve_all_displays_rect, sample_rgba_at,
 };
 use softbuffer::{Context, Rect as DamageRect, Surface};
 use winit::application::ApplicationHandler;
@@ -661,6 +663,25 @@ fn tray_export_operation(action: &PendingExportAction) -> TrayExportOperation {
     }
 }
 
+/// tray 只能取消仍由导出监督器标记为运行中的文件保存。待收敛的终态和所有
+/// clipboard 任务继续留在 pending 映射中，直到 worker 结果被消费。
+fn running_file_export_ids<F>(
+    pending_exports: &HashMap<JobId, PendingExport>,
+    mut state: F,
+) -> Vec<JobId>
+where
+    F: FnMut(JobId) -> Option<JobState>,
+{
+    pending_exports
+        .iter()
+        .filter_map(|(job_id, pending)| {
+            (matches!(&pending.action, PendingExportAction::SaveImage(_))
+                && matches!(state(*job_id), Some(JobState::Running)))
+            .then_some(*job_id)
+        })
+        .collect()
+}
+
 /// 保存任务提交前冻结的输出参数。worker 绝不读取随后变化的运行时设置。
 #[derive(Debug, Clone)]
 struct FrozenExportTarget {
@@ -973,7 +994,12 @@ where
         }
         for action in tray_actions {
             if self.delayed_capture.is_some()
-                && !matches!(action, TrayAction::CancelDelayedCapture | TrayAction::Quit)
+                && !matches!(
+                    action,
+                    TrayAction::CancelDelayedCapture
+                        | TrayAction::CancelFileExports
+                        | TrayAction::Quit
+                )
             {
                 println!("pinora: tray action ignored while delayed capture is active");
                 continue;
@@ -989,6 +1015,12 @@ where
                 TrayAction::CancelDelayedCapture => {
                     if self.cancel_delayed_capture() {
                         println!("pinora: tray → delayed capture cancelled");
+                    }
+                }
+                TrayAction::CancelFileExports => {
+                    let cancelled = self.cancel_running_file_exports();
+                    if cancelled > 0 {
+                        println!("pinora: tray → cancelling {cancelled} file export(s)");
                     }
                 }
                 TrayAction::CaptureFullDisplay => {
@@ -1254,6 +1286,38 @@ where
         if let Some(diagnostics) = self.diagnostics.as_mut() {
             diagnostics.set_feedback(feedback);
         }
+    }
+
+    fn refresh_file_export_cancellation(&self) {
+        let available = !running_file_export_ids(&self.pending_exports, |job_id| {
+            self.export_jobs.state(job_id)
+        })
+        .is_empty();
+        if let Some(tray) = self.tray.as_ref() {
+            tray.set_file_export_cancellation_available(available);
+        }
+    }
+
+    fn cancel_running_file_exports(&mut self) -> usize {
+        let job_ids = running_file_export_ids(&self.pending_exports, |job_id| {
+            self.export_jobs.state(job_id)
+        });
+        let mut cancelled = 0;
+        for job_id in job_ids {
+            if matches!(
+                self.export_jobs.cancel(job_id),
+                Ok(JobState::Finished(JobTerminalState::Cancelled))
+            ) {
+                cancelled += 1;
+            }
+        }
+        if cancelled > 0 {
+            self.set_tray_feedback(TrayFeedback::ExportCancelling(
+                TrayExportOperation::SaveFile,
+            ));
+        }
+        self.refresh_file_export_cancellation();
+        cancelled
     }
 
     fn allocate_export_target(&mut self) -> Result<FrozenExportTarget, PinoraError> {
@@ -3569,6 +3633,7 @@ where
                 history,
             },
         );
+        self.refresh_file_export_cancellation();
         println!(
             "pinora: export job {} started owner={owner:?} kind={kind:?}",
             ticket.id
@@ -3750,13 +3815,20 @@ where
                     owner,
                     terminal,
                 } => {
-                    self.pending_exports.remove(&job_id);
+                    if let Some(pending) = self.pending_exports.remove(&job_id)
+                        && terminal == JobTerminalState::Cancelled
+                    {
+                        self.set_tray_feedback(TrayFeedback::ExportCancelled(
+                            tray_export_operation(&pending.action),
+                        ));
+                    }
                     println!(
                         "pinora: export job {job_id} discarded owner={owner:?} ({terminal:?})"
                     );
                 }
             }
         }
+        self.refresh_file_export_cancellation();
     }
 
     fn overlay_ocr(&mut self) {
@@ -6824,6 +6896,57 @@ mod overlay_scale_tests {
             pending_asset_for_owner(&pending, job_id, JobOwner::Session(SessionId::from_raw(10))),
             None
         );
+    }
+
+    #[test]
+    fn file_export_cancellation_selects_only_running_save_jobs() {
+        let asset = AssetRef::initial(ImageId::from_raw(93));
+        let owner = JobOwner::Session(SessionId::from_raw(93));
+        let mut pending = HashMap::new();
+        pending.insert(
+            JobId::from_raw(1),
+            PendingExport {
+                owner,
+                asset,
+                action: PendingExportAction::SaveImage(PathBuf::from("/tmp/a.png")),
+                history: None,
+            },
+        );
+        pending.insert(
+            JobId::from_raw(2),
+            PendingExport {
+                owner,
+                asset,
+                action: PendingExportAction::CopyImage,
+                history: None,
+            },
+        );
+        pending.insert(
+            JobId::from_raw(3),
+            PendingExport {
+                owner,
+                asset,
+                action: PendingExportAction::CopyText,
+                history: None,
+            },
+        );
+        pending.insert(
+            JobId::from_raw(4),
+            PendingExport {
+                owner,
+                asset,
+                action: PendingExportAction::SaveImage(PathBuf::from("/tmp/b.png")),
+                history: None,
+            },
+        );
+
+        let selected = running_file_export_ids(&pending, |job_id| match job_id.raw() {
+            1..=3 => Some(JobState::Running),
+            4 => Some(JobState::Finished(JobTerminalState::Cancelled)),
+            _ => None,
+        });
+
+        assert_eq!(selected, vec![JobId::from_raw(1)]);
     }
 
     #[test]

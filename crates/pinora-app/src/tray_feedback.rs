@@ -28,6 +28,8 @@ pub(crate) enum TrayFeedback {
     OcrCompleted,
     OcrFailed(ErrorCode),
     ExportRunning(TrayExportOperation),
+    ExportCancelling(TrayExportOperation),
+    ExportCancelled(TrayExportOperation),
     ExportCompleted(TrayExportOperation),
     ExportFailed(TrayExportOperation, ErrorCode),
 }
@@ -48,6 +50,8 @@ impl TrayFeedback {
             Self::OcrCompleted => "Pinora - 文字识别已完成",
             Self::OcrFailed(error) => ocr_failed_label(error),
             Self::ExportRunning(operation) => export_running_label(operation),
+            Self::ExportCancelling(operation) => export_cancelling_label(operation),
+            Self::ExportCancelled(operation) => export_cancelled_label(operation),
             Self::ExportCompleted(operation) => export_completed_label(operation),
             Self::ExportFailed(operation, error) => export_failed_label(operation, error),
         }
@@ -69,6 +73,8 @@ impl TrayFeedback {
             Self::OcrCompleted => "OCR COMPLETED",
             Self::OcrFailed(_) => "OCR FAILED",
             Self::ExportRunning(_) => "EXPORT RUNNING",
+            Self::ExportCancelling(_) => "EXPORT CANCELLING",
+            Self::ExportCancelled(_) => "EXPORT CANCELLED",
             Self::ExportCompleted(_) => "EXPORT COMPLETED",
             Self::ExportFailed(_, _) => "EXPORT FAILED",
         }
@@ -90,6 +96,8 @@ impl TrayFeedback {
             | Self::OcrRunning
             | Self::OcrCompleted
             | Self::ExportRunning(_)
+            | Self::ExportCancelling(_)
+            | Self::ExportCancelled(_)
             | Self::ExportCompleted(_) => None,
         }
     }
@@ -140,6 +148,22 @@ const fn export_completed_label(operation: TrayExportOperation) -> &'static str 
     }
 }
 
+const fn export_cancelling_label(operation: TrayExportOperation) -> &'static str {
+    match operation {
+        TrayExportOperation::CopyImage => "Pinora - 正在取消图像复制",
+        TrayExportOperation::CopyText => "Pinora - 正在取消文字复制",
+        TrayExportOperation::SaveFile => "Pinora - 正在取消文件保存",
+    }
+}
+
+const fn export_cancelled_label(operation: TrayExportOperation) -> &'static str {
+    match operation {
+        TrayExportOperation::CopyImage => "Pinora - 图像复制已取消",
+        TrayExportOperation::CopyText => "Pinora - 文字复制已取消",
+        TrayExportOperation::SaveFile => "Pinora - 文件保存已取消",
+    }
+}
+
 const fn export_failed_label(operation: TrayExportOperation, error: ErrorCode) -> &'static str {
     match (operation, error) {
         (TrayExportOperation::CopyImage, ErrorCode::ClipboardFailed) => {
@@ -179,6 +203,8 @@ mod tests {
             TrayFeedback::OcrCompleted,
             TrayFeedback::OcrFailed(ErrorCode::CapabilityUnavailable),
             TrayFeedback::ExportRunning(TrayExportOperation::CopyImage),
+            TrayFeedback::ExportCancelling(TrayExportOperation::SaveFile),
+            TrayFeedback::ExportCancelled(TrayExportOperation::SaveFile),
             TrayFeedback::ExportCompleted(TrayExportOperation::CopyText),
             TrayFeedback::ExportFailed(TrayExportOperation::SaveFile, ErrorCode::Internal),
             TrayFeedback::ExportFailed(TrayExportOperation::CopyImage, ErrorCode::ClipboardFailed),
@@ -204,6 +230,18 @@ mod tests {
         assert!(label.contains("未完成"));
         assert!(label.contains("系统剪贴板不可用"));
         assert!(!label.contains("已复制"));
+    }
+
+    #[test]
+    fn file_export_cancellation_has_distinct_fixed_feedback() {
+        assert_eq!(
+            TrayFeedback::ExportCancelling(TrayExportOperation::SaveFile).label(),
+            "Pinora - 正在取消文件保存"
+        );
+        assert_eq!(
+            TrayFeedback::ExportCancelled(TrayExportOperation::SaveFile).label(),
+            "Pinora - 文件保存已取消"
+        );
     }
 
     #[test]

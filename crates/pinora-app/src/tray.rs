@@ -31,6 +31,7 @@ pub enum TrayAction {
     Capture,
     CaptureRegionAfter(Duration),
     CancelDelayedCapture,
+    CancelFileExports,
     CaptureFullDisplay,
     CaptureAllDisplays,
     CaptureDisplay(DisplayId),
@@ -56,6 +57,8 @@ pub struct AppTray {
     cancel_delayed_capture_id: tray_icon::menu::MenuId,
     delay_capture_items: [MenuItem; 3],
     cancel_delayed_capture_item: MenuItem,
+    cancel_file_exports_id: tray_icon::menu::MenuId,
+    cancel_file_exports_item: MenuItem,
     capture_full_display_item: MenuItem,
     capture_full_display_id: tray_icon::menu::MenuId,
     capture_all_displays_id: Option<MenuId>,
@@ -123,6 +126,9 @@ impl AppTray {
             if ev.id == self.cancel_delayed_capture_id {
                 return Some(TrayAction::CancelDelayedCapture);
             }
+            if let Some(action) = cancel_file_exports_action(&ev.id, &self.cancel_file_exports_id) {
+                return Some(action);
+            }
             if ev.id == self.capture_full_display_id {
                 return Some(TrayAction::CaptureFullDisplay);
             }
@@ -174,6 +180,11 @@ impl AppTray {
             item.set_enabled(!active);
         }
         self.cancel_delayed_capture_item.set_enabled(active);
+    }
+
+    /// 仅文件保存可从 tray 取消；clipboard 与 OCR 保持各自既有生命周期。
+    pub fn set_file_export_cancellation_available(&self, available: bool) {
+        self.cancel_file_exports_item.set_enabled(available);
     }
 
     pub fn set_undo_close_pin_available(&self, available: bool) {
@@ -262,6 +273,7 @@ fn try_new_inner(
     let delay_capture_three = MenuItem::new("延时截图 3 秒", true, None);
     let delay_capture_five = MenuItem::new("延时截图 5 秒", true, None);
     let cancel_delayed_capture = MenuItem::new("取消延时截图", false, None);
+    let cancel_file_exports = MenuItem::new("取消文件保存", false, None);
     let capture_full_display =
         MenuItem::new(full_display_menu_label(full_display_hotkey), true, None);
     let capture_all_displays =
@@ -300,6 +312,8 @@ fn try_new_inner(
         .map_err(|e| format!("menu append delayed capture 5: {e}"))?;
     menu.append(&cancel_delayed_capture)
         .map_err(|e| format!("menu append cancel delayed capture: {e}"))?;
+    menu.append(&cancel_file_exports)
+        .map_err(|e| format!("menu append cancel file exports: {e}"))?;
     menu.append(&PredefinedMenuItem::separator())
         .map_err(|e| format!("menu sep delayed capture: {e}"))?;
     menu.append(&capture_full_display)
@@ -362,6 +376,7 @@ fn try_new_inner(
         (delay_capture_five.id().clone(), Duration::from_secs(5)),
     ];
     let cancel_delayed_capture_id = cancel_delayed_capture.id().clone();
+    let cancel_file_exports_id = cancel_file_exports.id().clone();
     let capture_full_display_id = capture_full_display.id().clone();
     let capture_all_displays_id = capture_all_displays.as_ref().map(|item| item.id().clone());
     let settings_id = settings.id().clone();
@@ -389,6 +404,8 @@ fn try_new_inner(
         cancel_delayed_capture_id,
         delay_capture_items: [delay_capture_one, delay_capture_three, delay_capture_five],
         cancel_delayed_capture_item: cancel_delayed_capture,
+        cancel_file_exports_id,
+        cancel_file_exports_item: cancel_file_exports,
         capture_full_display_item: capture_full_display,
         capture_full_display_id,
         capture_all_displays_id,
@@ -497,6 +514,13 @@ fn delayed_capture_action(
         .iter()
         .find(|(id, _)| id == menu_id)
         .map(|(_, delay)| TrayAction::CaptureRegionAfter(*delay))
+}
+
+fn cancel_file_exports_action(
+    menu_id: &MenuId,
+    cancel_file_exports_id: &MenuId,
+) -> Option<TrayAction> {
+    (menu_id == cancel_file_exports_id).then_some(TrayAction::CancelFileExports)
 }
 
 fn window_capture_label(window: &CaptureWindowInfo) -> String {
@@ -663,6 +687,20 @@ mod tests {
             Some(TrayAction::CaptureRegionAfter(Duration::from_secs(3)))
         );
         assert!(delayed_capture_action(&MenuId::new("other"), &delays).is_none());
+    }
+
+    #[test]
+    fn cancel_file_exports_menu_id_maps_only_to_its_action() {
+        let cancel_file_exports_id = MenuId::new("cancel-file-exports");
+
+        assert_eq!(
+            cancel_file_exports_action(&cancel_file_exports_id, &cancel_file_exports_id),
+            Some(TrayAction::CancelFileExports)
+        );
+        assert_eq!(
+            cancel_file_exports_action(&MenuId::new("other"), &cancel_file_exports_id),
+            None
+        );
     }
 
     #[test]

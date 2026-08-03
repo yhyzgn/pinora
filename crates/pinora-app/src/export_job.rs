@@ -20,7 +20,8 @@ use pinora_core::{
 
 use crate::image_sink::{
     copy_png_to_system_clipboard_with_cancellation,
-    copy_text_to_system_clipboard_with_cancellation, encode_png_bytes, save_image_file,
+    copy_text_to_system_clipboard_with_cancellation, encode_png_bytes,
+    save_image_file_with_cancellation,
 };
 use crate::job_supervisor::{
     AcceptedJobResult, JobCancellation, JobResultDisposition, JobState, JobSupervisor, JobTicket,
@@ -114,7 +115,13 @@ impl ExportRunner for LocalExportRunner {
                 format,
                 jpeg_quality,
             } => {
-                save_image_file(image, path, *format, *jpeg_quality)?;
+                save_image_file_with_cancellation(
+                    image,
+                    path,
+                    *format,
+                    *jpeg_quality,
+                    cancellation,
+                )?;
             }
             ExportJobInput::CopyImage { image } => {
                 let png = encode_png_bytes(image)?;
@@ -253,6 +260,11 @@ where
 
     pub fn close_owner(&mut self, owner: JobOwner) -> usize {
         self.supervisor.close_owner(owner)
+    }
+
+    /// 取消单个仍在运行的导出或剪贴板任务；调用方负责限定可取消的用户意图。
+    pub fn cancel(&mut self, id: JobId) -> Result<JobState, PinoraError> {
+        self.supervisor.cancel(id)
     }
 
     pub fn cancel_all(&mut self) -> usize {
@@ -747,6 +759,41 @@ mod tests {
             service.state(ticket.id),
             Some(JobState::Finished(JobTerminalState::Cancelled))
         );
+    }
+
+    #[test]
+    fn single_cancellation_discards_only_that_workers_result() {
+        let image = sample_image(81);
+        let asset = AssetRef::initial(image.id);
+        let mut service = ExportJobService::with_runner(WaitForCancellationRunner);
+        let ticket = service
+            .start(
+                spec(81, asset, JobKind::Export, 100),
+                ExportJobInput::SaveImage {
+                    image,
+                    path: PathBuf::from("/tmp/pinora-test.png"),
+                    format: ExportImageFormat::Png,
+                    jpeg_quality: 90,
+                },
+            )
+            .expect("start");
+
+        assert_eq!(service.state(ticket.id), Some(JobState::Running));
+        assert_eq!(
+            service.cancel(ticket.id),
+            Ok(JobState::Finished(JobTerminalState::Cancelled))
+        );
+        assert_eq!(
+            service.cancel(ticket.id),
+            Ok(JobState::Finished(JobTerminalState::Cancelled))
+        );
+
+        let completions = poll_until(&mut service, 1, |_, _| Some(asset));
+        assert!(matches!(
+            completions.as_slice(),
+            [ExportJobCompletion::Discarded { job_id, terminal, .. }]
+                if *job_id == ticket.id && *terminal == JobTerminalState::Cancelled
+        ));
     }
 
     #[test]
