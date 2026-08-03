@@ -8,6 +8,7 @@ pub enum ToolbarAction {
     Copy,
     Pin,
     Save,
+    CycleExportSource,
     Ocr,
     Clear,
     ToggleFill,
@@ -20,6 +21,15 @@ pub struct ToolbarButton {
     pub action: ToolbarAction,
     pub label: &'static str,
     pub rect: PixelRect,
+}
+
+/// 一帧工具栏自绘所需的瞬态状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolbarPaintState {
+    pub active_tool: AnnotateTool,
+    pub current_color: [u8; 4],
+    pub fill_enabled: bool,
+    pub export_source_is_annotated: bool,
 }
 
 const BTN_W: u32 = 64;
@@ -36,6 +46,7 @@ pub fn layout_toolbar(selection: PixelRect, img_w: u32, img_h: u32) -> Vec<Toolb
         (ToolbarAction::Copy, "复制"),
         (ToolbarAction::Pin, "贴图"),
         (ToolbarAction::Save, "保存"),
+        (ToolbarAction::CycleExportSource, "来源"),
         (ToolbarAction::Ocr, "OCR"),
         (ToolbarAction::Clear, "清空"),
         (ToolbarAction::Tool(AnnotateTool::Select), "选择"),
@@ -141,9 +152,7 @@ pub fn paint_toolbar(
     stride: usize,
     height: usize,
     buttons: &[ToolbarButton],
-    active_tool: AnnotateTool,
-    current_color: [u8; 4],
-    fill_enabled: bool,
+    state: ToolbarPaintState,
 ) {
     let Some(bounds) = toolbar_bounds(buttons) else {
         return;
@@ -153,8 +162,8 @@ pub fn paint_toolbar(
     draw_rect_outline(frame, stride, height, bounds, 0x00_80_80_90);
 
     for b in buttons {
-        let selected = matches!(b.action, ToolbarAction::Tool(t) if t == active_tool)
-            || (b.action == ToolbarAction::ToggleFill && fill_enabled);
+        let selected = matches!(b.action, ToolbarAction::Tool(t) if t == state.active_tool)
+            || (b.action == ToolbarAction::ToggleFill && state.fill_enabled);
         let bg = if selected {
             0x00_2A_6A_E0
         } else {
@@ -162,6 +171,10 @@ pub fn paint_toolbar(
                 ToolbarAction::Copy => 0x00_1E_7A_4A,
                 ToolbarAction::Pin => 0x00_6A_3A_B0,
                 ToolbarAction::Save => 0x00_7A_5A_10,
+                ToolbarAction::CycleExportSource if state.export_source_is_annotated => {
+                    0x00_2A_6A_E0
+                }
+                ToolbarAction::CycleExportSource => 0x00_2A_6A_6A,
                 ToolbarAction::Ocr => 0x00_7A_2A_2A,
                 ToolbarAction::Clear => 0x009A3232,
                 ToolbarAction::ToggleFill => 0x00_1C_6A_6A,
@@ -171,20 +184,22 @@ pub fn paint_toolbar(
         fill_rect(frame, stride, height, b.rect, bg);
         draw_rect_outline(frame, stride, height, b.rect, 0x00_C0_C0_D0);
         if b.action == ToolbarAction::Tool(AnnotateTool::ColorPicker) {
-            draw_color_picker_icon(frame, stride, height, b.rect, current_color);
+            draw_color_picker_icon(frame, stride, height, b.rect, state.current_color);
         } else {
             // 简易点阵文字（首字/英文）
-            let mark = button_mark(b);
+            let mark = button_mark(b, state.export_source_is_annotated);
             draw_mark(frame, stride, height, b.rect, mark, 0x00_FF_FF_FF);
         }
     }
 }
 
-fn button_mark(b: &ToolbarButton) -> &'static str {
+fn button_mark(b: &ToolbarButton, export_source_is_annotated: bool) -> &'static str {
     match b.action {
         ToolbarAction::Copy => "Cpy",
         ToolbarAction::Pin => "Pin",
         ToolbarAction::Save => "Sav",
+        ToolbarAction::CycleExportSource if export_source_is_annotated => "ANN",
+        ToolbarAction::CycleExportSource => "RAW",
         ToolbarAction::Ocr => "OCR",
         ToolbarAction::Clear => "X",
         ToolbarAction::ToggleFill => "F",
@@ -329,6 +344,7 @@ fn draw_mark(
         ('L', [0b100, 0b100, 0b100, 0b100, 0b111]),
         ('N', [0b101, 0b111, 0b111, 0b111, 0b101]),
         ('T', [0b111, 0b010, 0b010, 0b010, 0b010]),
+        ('W', [0b101, 0b101, 0b111, 0b111, 0b101]),
         ('X', [0b101, 0b101, 0b010, 0b101, 0b101]),
     ];
     let chars: Vec<char> = mark.chars().take(3).collect();
@@ -432,9 +448,12 @@ mod tests {
             1000,
             800,
             &buttons,
-            AnnotateTool::Rect,
-            [255, 64, 64, 255],
-            true,
+            ToolbarPaintState {
+                active_tool: AnnotateTool::Rect,
+                current_color: [255, 64, 64, 255],
+                fill_enabled: true,
+                export_source_is_annotated: true,
+            },
         );
         let index = (button.rect.origin.y as usize + 3) * 1000 + button.rect.origin.x as usize + 3;
         assert_eq!(frame[index], 0x00_2A_6A_E0);
@@ -461,6 +480,22 @@ mod tests {
             let point = PixelPoint::new(button.rect.origin.x + 1, button.rect.origin.y + 1);
             assert_eq!(hit_test(&buttons, point), Some(button.action));
         }
+    }
+
+    #[test]
+    fn export_source_button_is_hittable_and_uses_distinct_source_marks() {
+        let buttons = layout_toolbar(PixelRect::new(50, 50, 400, 80), 1000, 800);
+        let button = buttons
+            .iter()
+            .find(|button| button.action == ToolbarAction::CycleExportSource)
+            .expect("export source button");
+        let point = PixelPoint::new(button.rect.origin.x + 1, button.rect.origin.y + 1);
+        assert_eq!(
+            hit_test(&buttons, point),
+            Some(ToolbarAction::CycleExportSource)
+        );
+        assert_eq!(button_mark(button, true), "ANN");
+        assert_eq!(button_mark(button, false), "RAW");
     }
 
     #[test]

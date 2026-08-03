@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/092_export_format_encoding.md`
-- 任务：`.context/tasks/092_export_format_encoding.md`
+- 计划：`.context/plans/093_export_source_selection.md`
+- 任务：`.context/tasks/093_export_source_selection.md`
 
 ## 交付要求
 

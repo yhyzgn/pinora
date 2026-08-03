@@ -41,8 +41,8 @@ use crate::overlay_selection_readout::{
     SelectionReadout, layout_selection_readout, paint_selection_readout,
 };
 use crate::overlay_toolbar::{
-    ToolbarAction, ToolbarButton, hit_test as toolbar_hit, layout_toolbar, paint_toolbar,
-    toolbar_bounds,
+    ToolbarAction, ToolbarButton, ToolbarPaintState, hit_test as toolbar_hit, layout_toolbar,
+    paint_toolbar, toolbar_bounds,
 };
 use crate::settings_panel::{SettingsPanelAction, SettingsPanelKey};
 use crate::settings_window::SettingsWindow;
@@ -574,6 +574,39 @@ enum OverlayFinish {
     Save,
 }
 
+/// 当前 Overlay 会话中图片复制/保存使用的像素来源。
+///
+/// 贴图和 OCR 不复用这个选择：它们始终需要标注合成图，避免改变既有行为。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum OverlayExportSource {
+    Original,
+    #[default]
+    Annotated,
+}
+
+impl OverlayExportSource {
+    const fn next(self) -> Self {
+        match self {
+            Self::Original => Self::Annotated,
+            Self::Annotated => Self::Original,
+        }
+    }
+
+    const fn bakes_annotations(self) -> bool {
+        matches!(self, Self::Annotated)
+    }
+}
+
+const fn export_source_for_overlay_finish(
+    action: OverlayFinish,
+    selected: OverlayExportSource,
+) -> OverlayExportSource {
+    match action {
+        OverlayFinish::Copy | OverlayFinish::Save => selected,
+        OverlayFinish::Pin => OverlayExportSource::Annotated,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AnnotationHistoryAction {
     Undo,
@@ -712,6 +745,8 @@ struct OverlayState {
     toolbar: Vec<ToolbarButton>,
     /// 按下工具栏按钮，抬起时若仍命中则触发。
     toolbar_pressed: Option<ToolbarAction>,
+    /// 仅影响本次 Overlay 的图片复制和文件保存；默认保持既有标注合成行为。
+    export_source: OverlayExportSource,
     last_toolbar_bounds: Option<PixelRect>,
     /// 上一帧选区物理像素读数；用于恢复变更前的像素区域。
     last_selection_readout: Option<SelectionReadout>,
@@ -2868,6 +2903,7 @@ where
             annotate_dirty: false,
             toolbar: Vec::new(),
             toolbar_pressed: None,
+            export_source: OverlayExportSource::default(),
             last_toolbar_bounds: None,
             last_selection_readout: None,
             last_selection_readout_bounds: None,
@@ -3388,6 +3424,14 @@ where
                     eprintln!("pinora: toolbar save: {e}");
                 }
             }
+            ToolbarAction::CycleExportSource => {
+                if let Some(ov) = self.overlay.as_mut() {
+                    ov.export_source = ov.export_source.next();
+                    ov.toolbar_chrome_dirty = true;
+                    ov.needs_redraw = true;
+                    println!("pinora: overlay export source = {:?}", ov.export_source);
+                }
+            }
             ToolbarAction::Ocr => {
                 self.overlay_ocr();
             }
@@ -3717,7 +3761,7 @@ where
 
     fn overlay_ocr(&mut self) {
         self.commit_overlay_draft();
-        let image = match self.crop_overlay_image(true) {
+        let image = match self.crop_overlay_image(OverlayExportSource::Annotated) {
             Ok(img) => img,
             Err(e) => {
                 eprintln!("pinora: OCR crop: {e}");
@@ -3782,8 +3826,8 @@ where
         )))
     }
 
-    /// 从当前 overlay 选区裁剪**原图像素**，可选烧录标注。
-    fn crop_overlay_image(&self, bake: bool) -> Result<CaptureImage, PinoraError> {
+    /// 从当前 Overlay 选区裁剪指定的导出像素来源。
+    fn crop_overlay_image(&self, source: OverlayExportSource) -> Result<CaptureImage, PinoraError> {
         let ov = self
             .overlay
             .as_ref()
@@ -3801,22 +3845,7 @@ where
             )
         })?;
         let crop = ov.full_image.crop_local(src_rect)?;
-        let mut output = if bake && !ov.annotate.doc.is_empty() {
-            bake_annotations(&crop, &ov.annotate.doc)
-        } else if bake {
-            if ov.annotate.draft.is_some() {
-                let rgba = render_preview_rgba(&crop, &ov.annotate);
-                let mut img = crop;
-                if rgba.len() == img.pixels.bytes.len() {
-                    img.pixels.bytes = rgba;
-                }
-                img
-            } else {
-                crop
-            }
-        } else {
-            crop
-        };
+        let mut output = render_overlay_export_image(crop, &ov.annotate, source);
         identity.stamp(&mut output);
         Ok(output)
     }
@@ -3833,7 +3862,16 @@ where
             refresh_overlay_ready(ov);
         }
         self.commit_overlay_draft();
-        let (src_rect, display_id, session_owner, asset, global, placement_bounds, edit_pin_id) = {
+        let (
+            src_rect,
+            display_id,
+            session_owner,
+            asset,
+            global,
+            placement_bounds,
+            edit_pin_id,
+            export_source,
+        ) = {
             let ov = self
                 .overlay
                 .as_ref()
@@ -3869,10 +3907,11 @@ where
                 global,
                 ov.full_image.source_rect,
                 ov.edit_pin_id,
+                export_source_for_overlay_finish(action, ov.export_source),
             )
         };
         // 先裁切（仍持有 overlay），再立刻关窗
-        let image = match self.crop_overlay_image(true) {
+        let image = match self.crop_overlay_image(export_source) {
             Ok(image) => image,
             Err(error) => {
                 // 贴图编辑的任何失败都恢复原窗口；普通截图仍按既有取消语义收尾。
@@ -4763,7 +4802,7 @@ where
         };
         let owner = JobOwner::Pin(pin.pin_id);
         let asset = pin.asset;
-        let image = pin.image.clone();
+        let image = pin_export_image(&pin.image);
         if let Err(error) = self.submit_export_job(
             owner,
             asset,
@@ -4780,7 +4819,7 @@ where
         };
         let owner = JobOwner::Pin(pin.pin_id);
         let asset = pin.asset;
-        let image = pin.image.clone();
+        let image = pin_export_image(&pin.image);
         let target = match self.allocate_export_target() {
             Ok(target) => target,
             Err(error) => {
@@ -5467,6 +5506,40 @@ fn overlay_click_finishes_copy(tool: AnnotateTool, is_double_click: bool) -> boo
     is_double_click && !matches!(tool, AnnotateTool::Number | AnnotateTool::Select)
 }
 
+/// 将当前贴图持有的图像交给导出 worker。
+///
+/// 此处刻意不读取窗口表面：缩放、透明度、OCR 词框和客户区菜单属于呈现层，不能
+/// 混入用户保存或复制的图片。
+fn pin_export_image(image: &CaptureImage) -> CaptureImage {
+    image.clone()
+}
+
+/// 根据已冻结的 Overlay 来源生成单一 RGBA 输出帧。
+///
+/// 来源为原图时，函数不访问标注文档或草稿；来源为合成图时，保留既有文档优先、
+/// 草稿预览回退的输出语义。
+fn render_overlay_export_image(
+    crop: CaptureImage,
+    annotate: &AnnotateSession,
+    source: OverlayExportSource,
+) -> CaptureImage {
+    if !source.bakes_annotations() {
+        return crop;
+    }
+    if !annotate.doc.is_empty() {
+        return bake_annotations(&crop, &annotate.doc);
+    }
+    if annotate.draft.is_some() {
+        let rgba = render_preview_rgba(&crop, annotate);
+        let mut image = crop;
+        if rgba.len() == image.pixels.bytes.len() {
+            image.pixels.bytes = rgba;
+        }
+        return image;
+    }
+    crop
+}
+
 fn set_overlay_tool(ov: &mut OverlayState, tool: AnnotateTool) {
     let had_text_draft = tool != ov.annotate.tool && ov.annotate.is_text_editing();
     if had_text_draft {
@@ -5675,9 +5748,12 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
                     img_w,
                     img_h,
                     &ov.toolbar,
-                    ov.annotate.tool,
-                    ov.annotate.color,
-                    ov.annotate.shape_fill_enabled(),
+                    ToolbarPaintState {
+                        active_tool: ov.annotate.tool,
+                        current_color: ov.annotate.color,
+                        fill_enabled: ov.annotate.shape_fill_enabled(),
+                        export_source_is_annotated: ov.export_source.bakes_annotations(),
+                    },
                 );
             }
             damage.push(tb);
@@ -5764,9 +5840,12 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
                 img_w,
                 img_h,
                 &ov.toolbar,
-                ov.annotate.tool,
-                ov.annotate.color,
-                ov.annotate.shape_fill_enabled(),
+                ToolbarPaintState {
+                    active_tool: ov.annotate.tool,
+                    current_color: ov.annotate.color,
+                    fill_enabled: ov.annotate.shape_fill_enabled(),
+                    export_source_is_annotated: ov.export_source.bakes_annotations(),
+                },
             );
             if let Some(tb) = new_tb {
                 damage.push(tb);
@@ -6972,5 +7051,65 @@ mod overlay_scale_tests {
         .expect("derived test image");
         first.stamp(&mut image);
         assert_eq!(image.id, first.current(revision).image_id);
+    }
+
+    #[test]
+    fn overlay_export_source_defaults_cycles_and_preserves_pin_composition() {
+        let default = OverlayExportSource::default();
+        assert_eq!(default, OverlayExportSource::Annotated);
+        assert_eq!(default.next(), OverlayExportSource::Original);
+        assert_eq!(default.next().next(), OverlayExportSource::Annotated);
+        assert_eq!(
+            export_source_for_overlay_finish(OverlayFinish::Copy, OverlayExportSource::Original),
+            OverlayExportSource::Original
+        );
+        assert_eq!(
+            export_source_for_overlay_finish(OverlayFinish::Save, OverlayExportSource::Original),
+            OverlayExportSource::Original
+        );
+        assert_eq!(
+            export_source_for_overlay_finish(OverlayFinish::Pin, OverlayExportSource::Original),
+            OverlayExportSource::Annotated
+        );
+    }
+
+    #[test]
+    fn overlay_export_source_keeps_original_pixels_or_bakes_annotations() {
+        let image = CaptureImage::new(
+            ImageId::from_raw(100),
+            RgbaBuffer::solid(pinora_core::PixelSize::new(8, 8), [12, 34, 56, 255]),
+            PixelRect::new(0, 0, 8, 8),
+            CaptureMetadata::new(DisplayId::new("export-source"), 1.0, 0),
+        )
+        .expect("test image");
+        let mut annotate = AnnotateSession::new(8, 8);
+        annotate.doc.push(Annotation::Rect {
+            a: PixelPoint::new(1, 1),
+            b: PixelPoint::new(6, 6),
+            color: [255, 0, 0, 255],
+            stroke: 1,
+            fill: None,
+        });
+
+        let original =
+            render_overlay_export_image(image.clone(), &annotate, OverlayExportSource::Original);
+        let annotated =
+            render_overlay_export_image(image.clone(), &annotate, OverlayExportSource::Annotated);
+
+        assert_eq!(original.pixels.bytes, image.pixels.bytes);
+        assert_ne!(annotated.pixels.bytes, image.pixels.bytes);
+    }
+
+    #[test]
+    fn pin_export_image_returns_current_image_pixels_without_rendering_chrome() {
+        let image = CaptureImage::new(
+            ImageId::from_raw(101),
+            RgbaBuffer::solid(pinora_core::PixelSize::new(2, 2), [3, 4, 5, 128]),
+            PixelRect::new(0, 0, 2, 2),
+            CaptureMetadata::new(DisplayId::new("pin-export"), 1.0, 0),
+        )
+        .expect("test image");
+
+        assert_eq!(pin_export_image(&image), image);
     }
 }
