@@ -2,30 +2,27 @@
 
 mod desktop_shell;
 mod diagnostics_export;
-mod diagnostics_panel;
 mod diagnostics_window;
 mod export_job;
-mod history_browser;
 mod history_export;
 mod history_load_job;
 mod history_window;
 mod image_sink;
 mod ocr_job;
-mod overlay_selection_readout;
-mod pin_context_menu;
 mod platform;
 mod runtime;
-mod settings_panel;
 mod settings_window;
 mod tray;
 
-pub(crate) use pinora_desktop::{panel_theme, tray_capabilities, tray_feedback};
+pub(crate) use pinora_desktop::{
+    diagnostics_panel, history_browser, overlay_selection_readout, panel_theme, pin_context_menu,
+    settings_panel, tray_capabilities, tray_feedback,
+};
 
 pub use desktop_shell::run_desktop_shell;
 pub use export_job::{
     ExportJobCompletion, ExportJobInput, ExportJobService, ExportRunner, LocalExportRunner,
 };
-pub use history_browser::{HistoryPanel, HistoryPanelAction, HistoryPanelKey, HistoryPanelStatus};
 pub use image_sink::{
     LocalImageSink, copy_text_to_system_clipboard, detect_system_clipboard_backend,
 };
@@ -34,7 +31,13 @@ pub use pinora_capture::{
     CachedFrame, CaptureBackendKind, FakeCaptureProvider, FrameCache, KdeSpectacleCaptureProvider,
     SelectedCaptureProvider, XcapCaptureProvider, fake_only, rgba_to_xrgb, rgba_to_xrgb_and_dim,
 };
+pub use pinora_desktop::history_browser::{
+    HistoryPanel, HistoryPanelAction, HistoryPanelKey, HistoryPanelStatus,
+};
 pub use pinora_desktop::scaled_window_size;
+pub use pinora_desktop::settings_panel::{
+    SettingField, SettingsPanel, SettingsPanelAction, SettingsPanelKey, SettingsPanelStatus,
+};
 pub use pinora_jobs::{
     AcceptedJobResult, JobCancellation, JobResultDisposition, JobState, JobSupervisor, JobTicket,
 };
@@ -45,6 +48,3 @@ pub use pinora_storage::{
 };
 pub use platform::{CapabilityProbe, FakeCapabilityProbe, RuntimeCapabilityProbe};
 pub use runtime::{AppRuntime, BootstrapOutcome, DispatchResult};
-pub use settings_panel::{
-    SettingField, SettingsPanel, SettingsPanelAction, SettingsPanelKey, SettingsPanelStatus,
-};

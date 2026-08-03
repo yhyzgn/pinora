@@ -9,8 +9,8 @@ use crate::panel_theme::PanelTheme;
 use crate::settings_panel::{draw_outline, draw_text, fill};
 use crate::tray_feedback::TrayFeedback;
 
-pub(crate) const PANEL_WIDTH: u32 = 540;
-pub(crate) const PANEL_HEIGHT: u32 = 390;
+pub const PANEL_WIDTH: u32 = 540;
+pub const PANEL_HEIGHT: u32 = 390;
 
 const CAPABILITY_LABELS: [&str; 5] = [
     "CAPTURE",
@@ -22,7 +22,7 @@ const CAPABILITY_LABELS: [&str; 5] = [
 
 /// 仅保存已经脱敏并受限的诊断状态；不保留运行时 notes 或原始错误字符串。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DiagnosticsPanel {
+pub struct DiagnosticsPanel {
     platform: &'static str,
     capabilities: [bool; 5],
     feedback: TrayFeedback,
@@ -31,7 +31,7 @@ pub(crate) struct DiagnosticsPanel {
 impl DiagnosticsPanel {
     /// 全局热键以 `GlobalHotkeyHub` 的实际注册结果为准，不能使用启动 probe 的
     /// 平台推测。其他值由能力快照的明确布尔字段提供。
-    pub(crate) const fn from_runtime(
+    pub const fn from_runtime(
         runtime: &CapabilitySnapshot,
         global_hotkey_registered: bool,
         ocr_available: bool,
@@ -50,11 +50,11 @@ impl DiagnosticsPanel {
         }
     }
 
-    pub(crate) const fn platform(&self) -> &'static str {
+    pub const fn platform(&self) -> &'static str {
         self.platform
     }
 
-    pub(crate) const fn capability_rows(&self) -> [(&'static str, bool); 5] {
+    pub const fn capability_rows(&self) -> [(&'static str, bool); 5] {
         [
             (CAPABILITY_LABELS[0], self.capabilities[0]),
             (CAPABILITY_LABELS[1], self.capabilities[1]),
@@ -64,22 +64,22 @@ impl DiagnosticsPanel {
         ]
     }
 
-    pub(crate) const fn feedback_label(&self) -> &'static str {
+    pub const fn feedback_label(&self) -> &'static str {
         self.feedback.diagnostic_label()
     }
 
-    pub(crate) const fn error_code(&self) -> Option<ErrorCode> {
+    pub const fn error_code(&self) -> Option<ErrorCode> {
         self.feedback.error_code()
     }
 
-    pub(crate) const fn recovery_suggestion(&self) -> Option<&'static str> {
+    pub const fn recovery_suggestion(&self) -> Option<&'static str> {
         match self.error_code() {
             Some(error) => Some(recovery_suggestion(error)),
             None => None,
         }
     }
 
-    pub(crate) fn set_feedback(&mut self, feedback: TrayFeedback) {
+    pub fn set_feedback(&mut self, feedback: TrayFeedback) {
         self.feedback = feedback;
     }
 }
@@ -127,7 +127,7 @@ const fn platform_label() -> &'static str {
 
 /// 将受控状态绘制到诊断窗口。所有行使用固定 ASCII，避免依赖平台字体和意外
 /// 将用户来源文本带入像素缓冲。
-pub(crate) fn paint(
+pub fn paint(
     panel: &DiagnosticsPanel,
     theme: PanelTheme,
     frame: &mut [u32],

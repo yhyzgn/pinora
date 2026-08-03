@@ -3,11 +3,16 @@
 //! 本 crate 只处理确定性的几何、布局、窗口属性和受控呈现状态；它不拥有应用
 //! EventLoop、托盘句柄、业务线程或任务生命周期。窗口宿主和业务编排仍由上层负责。
 
+pub mod diagnostics_panel;
+pub mod history_browser;
 pub mod kwin_place;
 mod overlay_preview_cache;
+pub mod overlay_selection_readout;
 mod overlay_toolbar;
 pub mod panel_theme;
+pub mod pin_context_menu;
 mod pin_layout;
+pub mod settings_panel;
 pub mod tray_capabilities;
 pub mod tray_feedback;
 pub mod window_policy;

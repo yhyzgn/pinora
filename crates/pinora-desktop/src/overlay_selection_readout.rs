@@ -13,13 +13,13 @@ const PANEL_EDGE_GAP: i32 = 5;
 const TEXT_Y_OFFSET: i32 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SelectionReadout {
+pub struct SelectionReadout {
     source_rect: PixelRect,
     global_origin: PixelPoint,
 }
 
 impl SelectionReadout {
-    pub(crate) fn new(source_rect: PixelRect, display_origin: PixelPoint) -> Self {
+    pub fn new(source_rect: PixelRect, display_origin: PixelPoint) -> Self {
         Self {
             source_rect,
             global_origin: PixelPoint::new(
@@ -29,7 +29,7 @@ impl SelectionReadout {
         }
     }
 
-    pub(crate) fn text(self) -> String {
+    pub fn text(self) -> String {
         format!(
             "W{} H{} X{} Y{}",
             self.source_rect.size.width,
@@ -41,13 +41,13 @@ impl SelectionReadout {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SelectionReadoutLayout {
-    pub(crate) panel: PixelRect,
+pub struct SelectionReadoutLayout {
+    pub panel: PixelRect,
     text_origin: PixelPoint,
 }
 
 /// 在选区外优先放置读数；工具栏占用下方时优先切换到上方。
-pub(crate) fn layout_selection_readout(
+pub fn layout_selection_readout(
     selection: PixelRect,
     image_width: u32,
     image_height: u32,
@@ -101,7 +101,7 @@ pub(crate) fn layout_selection_readout(
     }
 }
 
-pub(crate) fn paint_selection_readout(
+pub fn paint_selection_readout(
     frame: &mut [u32],
     stride: usize,
     height: usize,

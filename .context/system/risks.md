@@ -577,6 +577,15 @@
 - 负责人和状态：Neo；离线契约与静态门禁已验证，真实登录、权限、窗口管理器、启动性能和 `SMAppService` 证据开放。
 - 文档更正：Linux `.desktop` 的 `TryExec` 使用未引号的绝对可执行路径，`Exec` 单独负责参数转义；可执行文件在启用前必须是绝对且存在的普通文件，入口通过 `Exec` 传递 `--pinora-autostart`。
 
+## R-064：桌面面板 crate 边界已收敛，但真实 GUI 仍未验证（中）
+
+- 证据和影响范围：113 已将 `settings_panel`、`history_browser`、`diagnostics_panel`、`overlay_selection_readout` 和 `pin_context_menu` 迁入 `pinora-desktop`；`pinora-app` 通过 crate 内兼容 re-export 复用这些纯 UI 模块。`cargo tree -p pinora-desktop --depth 1` 仅显示 `pinora-core` 与 `winit`，`cargo tree -p pinora-app --depth 1` 仍显示对 `pinora-desktop` 的直接依赖；`cargo test -p pinora-desktop -- --nocapture` 77 项全部通过。
+- 触发条件：真实窗口缩放、输入法、焦点、任务栏/Dock、HiDPI 或持续帧时间出现差异。
+- 失败模式：离线布局、命中和 XRGB 绘制测试无法证明原生窗口管理器下的可用性或流畅度；真实 GUI 行为仍可能与纯数据测试不同。
+- 缓解措施和必需验证：在授权的原生桌面会话复查设置、历史、诊断、读数和贴图菜单；保留 app 侧窗口宿主与业务服务不变。
+- 回滚或隔离动作：恢复 app 内兼容 re-export 或回退纯 UI 模块引用，不触碰设置、历史、诊断或贴图数据格式。
+- 负责人和状态：Neo；离线 crate 边界和定向测试已验证，真实 GUI、HiDPI、输入法、焦点、tray/taskbar 和性能证据开放。
+
 ## 风险一：上下文漂移
 
 - 触发条件：代码、配置或工作流变化后，没有同步更新对应上下文文件。

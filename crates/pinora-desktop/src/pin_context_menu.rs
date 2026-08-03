@@ -12,7 +12,7 @@ const ITEM_HEIGHT: u32 = 24;
 const MENU_PADDING: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PinMenuAction {
+pub enum PinMenuAction {
     Copy,
     Ocr,
     Edit,
@@ -27,25 +27,20 @@ pub(crate) enum PinMenuAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PinMenuItem {
+pub struct PinMenuItem {
     pub action: PinMenuAction,
     pub rect: PixelRect,
     pub enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PinContextMenu {
+pub struct PinContextMenu {
     pub bounds: PixelRect,
     pub items: Vec<PinMenuItem>,
 }
 
 impl PinContextMenu {
-    pub(crate) fn open(
-        anchor: PixelPoint,
-        window_width: u32,
-        window_height: u32,
-        locked: bool,
-    ) -> Self {
+    pub fn open(anchor: PixelPoint, window_width: u32, window_height: u32, locked: bool) -> Self {
         let specs = [
             (PinMenuAction::Copy, true),
             (PinMenuAction::Ocr, true),
@@ -96,19 +91,19 @@ impl PinContextMenu {
         Self { bounds, items }
     }
 
-    pub(crate) fn hit_test(&self, point: PixelPoint) -> Option<PinMenuAction> {
+    pub fn hit_test(&self, point: PixelPoint) -> Option<PinMenuAction> {
         self.items
             .iter()
             .find(|item| item.enabled && item.rect.contains_point(point))
             .map(|item| item.action)
     }
 
-    pub(crate) fn contains(&self, point: PixelPoint) -> bool {
+    pub fn contains(&self, point: PixelPoint) -> bool {
         self.bounds.contains_point(point)
     }
 }
 
-pub(crate) fn paint(
+pub fn paint(
     frame: &mut [u32],
     stride: usize,
     height: usize,

@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/112_desktop_presentation.md`
-- 任务：`.context/tasks/112_desktop_presentation.md`
+- 计划：`.context/plans/113_desktop_panels.md`
+- 任务：`.context/tasks/113_desktop_panels.md`
 
 ## 交付要求
 

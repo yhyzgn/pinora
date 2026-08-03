@@ -756,7 +756,7 @@ pub fn paint(
 }
 
 /// 共享的自绘 XRGB 填充原语；仅用于应用内小型工具窗口。
-pub(crate) fn fill(frame: &mut [u32], stride: usize, height: usize, rect: PixelRect, color: u32) {
+pub fn fill(frame: &mut [u32], stride: usize, height: usize, rect: PixelRect, color: u32) {
     let x0 = rect.origin.x.max(0) as usize;
     let y0 = rect.origin.y.max(0) as usize;
     let x1 = (rect.right().max(0) as usize).min(stride);
@@ -771,13 +771,7 @@ pub(crate) fn fill(frame: &mut [u32], stride: usize, height: usize, rect: PixelR
 }
 
 /// 共享的自绘 XRGB 描边原语；仅用于应用内小型工具窗口。
-pub(crate) fn draw_outline(
-    frame: &mut [u32],
-    stride: usize,
-    height: usize,
-    rect: PixelRect,
-    color: u32,
-) {
+pub fn draw_outline(frame: &mut [u32], stride: usize, height: usize, rect: PixelRect, color: u32) {
     if rect.size.width == 0 || rect.size.height == 0 {
         return;
     }
@@ -804,7 +798,7 @@ pub(crate) fn draw_outline(
 }
 
 /// 共享的简易 ASCII 点阵文字；不用于需要平台字体或无障碍语义的主界面。
-pub(crate) fn draw_text(
+pub fn draw_text(
     frame: &mut [u32],
     stride: usize,
     height: usize,
