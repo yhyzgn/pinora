@@ -12,15 +12,15 @@ use winit::dpi::PhysicalSize;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId, WindowLevel};
 
-use crate::panel_theme::{PanelThemeState, SystemAppearance};
-use crate::settings_panel::{
+use pinora_desktop::panel_theme::{PanelThemeState, SystemAppearance};
+use pinora_desktop::settings_panel::{
     self, SettingField, SettingsPanel, SettingsPanelAction, SettingsPanelKey,
 };
 use pinora_desktop::window_policy::{self, AuxiliaryWindowKind};
 use pinora_storage::{SettingsStore, default_settings_path};
 
 /// 单个设置窗口的资源、草稿和原子保存入口。
-pub(crate) struct SettingsWindow {
+pub struct SettingsWindow {
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
     panel: SettingsPanel,
@@ -32,7 +32,7 @@ pub(crate) struct SettingsWindow {
 }
 
 impl SettingsWindow {
-    pub(crate) fn open(
+    pub fn open(
         event_loop: &ActiveEventLoop,
         context: &Context<Rc<Window>>,
         current: AppSettings,
@@ -84,74 +84,74 @@ impl SettingsWindow {
         Ok(settings)
     }
 
-    pub(crate) fn window_id(&self) -> WindowId {
+    pub fn window_id(&self) -> WindowId {
         self.window.id()
     }
 
-    pub(crate) fn focus(&self) {
+    pub fn focus(&self) {
         self.window.focus_window();
     }
 
-    pub(crate) fn close(self) {
+    pub fn close(self) {
         self.window.set_visible(false);
     }
 
-    pub(crate) fn request_redraw(&self) {
+    pub fn request_redraw(&self) {
         self.window.request_redraw();
     }
 
-    pub(crate) fn set_cursor(&mut self, cursor: PixelPoint) {
+    pub fn set_cursor(&mut self, cursor: PixelPoint) {
         self.cursor = cursor;
     }
 
-    pub(crate) fn hit_test(&self) -> Option<SettingsPanelAction> {
+    pub fn hit_test(&self) -> Option<SettingsPanelAction> {
         SettingsPanel::hit_test(self.cursor)
     }
 
-    pub(crate) fn handle_key(&mut self, key: SettingsPanelKey) -> Option<SettingsPanelAction> {
+    pub fn handle_key(&mut self, key: SettingsPanelKey) -> Option<SettingsPanelAction> {
         let action = self.panel.handle_key(key);
         self.theme.set_preference(self.panel.draft().theme);
         action
     }
 
-    pub(crate) fn apply_action(&mut self, action: SettingsPanelAction) {
+    pub fn apply_action(&mut self, action: SettingsPanelAction) {
         self.panel.apply_action(action);
         self.theme.set_preference(self.panel.draft().theme);
     }
 
-    pub(crate) fn start_hotkey_recording(&mut self) {
+    pub fn start_hotkey_recording(&mut self) {
         self.panel.start_hotkey_recording();
     }
 
-    pub(crate) fn recording_hotkey_field(&self) -> Option<SettingField> {
+    pub fn recording_hotkey_field(&self) -> Option<SettingField> {
         self.panel.recording_field()
     }
 
-    pub(crate) fn record_hotkey(&mut self, binding: HotkeyBinding) -> Result<(), &'static str> {
+    pub fn record_hotkey(&mut self, binding: HotkeyBinding) -> Result<(), &'static str> {
         self.panel.record_hotkey(binding)
     }
 
-    pub(crate) fn reject_hotkey_recording(&mut self, code: &'static str) {
+    pub fn reject_hotkey_recording(&mut self, code: &'static str) {
         self.panel.reject_hotkey_recording(code);
     }
 
-    pub(crate) fn draft(&self) -> AppSettings {
+    pub fn draft(&self) -> AppSettings {
         self.panel.draft()
     }
 
-    pub(crate) fn save(&self, draft: AppSettings) -> Result<(), String> {
+    pub fn save(&self, draft: AppSettings) -> Result<(), String> {
         self.store.save(draft)
     }
 
-    pub(crate) fn mark_saved(&mut self) {
+    pub fn mark_saved(&mut self) {
         self.panel.mark_saved();
     }
 
-    pub(crate) fn mark_save_failed(&mut self, code: &'static str) {
+    pub fn mark_save_failed(&mut self, code: &'static str) {
         self.panel.mark_save_failed(code);
     }
 
-    pub(crate) fn handle_system_theme_change(&mut self, theme: winit::window::Theme) {
+    pub fn handle_system_theme_change(&mut self, theme: winit::window::Theme) {
         if self
             .theme
             .update_system_appearance(SystemAppearance::from_winit(Some(theme)))
@@ -160,7 +160,7 @@ impl SettingsWindow {
         }
     }
 
-    pub(crate) fn resize(&mut self, width: u32, height: u32) {
+    pub fn resize(&mut self, width: u32, height: u32) {
         self.width = width.max(1);
         self.height = height.max(1);
         if let (Some(width), Some(height)) =
@@ -171,7 +171,7 @@ impl SettingsWindow {
         self.request_redraw();
     }
 
-    pub(crate) fn paint(&mut self) -> Result<(), PinoraError> {
+    pub fn paint(&mut self) -> Result<(), PinoraError> {
         let size = self.window.inner_size();
         self.width = size.width.max(1);
         self.height = size.height.max(1);

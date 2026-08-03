@@ -8,7 +8,7 @@
 | 日期 | 2026-08-01 |
 | 状态 | 目标设计；不等同于当前实现或平台支持声明 |
 | 产品代号 | Pinora（Pin + Liora，可后续更名） |
-| 当前代码状态 | Rust 2024 workspace；当前实际 crate 为 `pinora-core`、`pinora-platform`、`pinora-capture`、`pinora-jobs`、`pinora-storage`、`pinora-desktop`、`pinora-ocr`、`pinora-export`、`pinora-history`、`pinora-diagnostics`、`pinora-tray`、`pinora-runtime`、`pinora-app`，桌面能力仍以 Linux/KDE 实验路径为主，尚未达到可发布架构 |
+| 当前代码状态 | Rust 2024 workspace；当前实际 crate 为 `pinora-core`、`pinora-platform`、`pinora-capture`、`pinora-jobs`、`pinora-storage`、`pinora-desktop`、`pinora-ocr`、`pinora-export`、`pinora-history`、`pinora-diagnostics`、`pinora-panels`、`pinora-tray`、`pinora-runtime`、`pinora-app`，桌面能力仍以 Linux/KDE 实验路径为主，尚未达到可发布架构 |
 
 > **阅读说明**：本文是后续重构的目标设计，而非功能清单式承诺。任何模块、平台能力或性能目标，只有在对应任务完成代码、测试和授权的隔离探针后，才能写入已实现状态。UI 框架、平台 SDK 和 OCR 引擎均未在本文锁定；不得将草案直接复制为公共 API。
 
@@ -259,6 +259,9 @@ flowchart LR
     HistoryNow --> ExportNow
     App --> DiagnosticsNow["pinora-diagnostics\n已实现：脱敏报告/字段校验/原子发布"]
     DiagnosticsNow --> Core
+    App --> PanelsNow["pinora-panels\n已实现：设置/历史/诊断窗口适配"]
+    PanelsNow --> Desktop
+    PanelsNow --> StorageNow
     App --> TrayNow["pinora-tray\n已实现：tray-icon 菜单/句柄/事件"]
     TrayNow --> Core
     TrayNow --> Desktop
@@ -286,10 +289,11 @@ flowchart LR
 | `pinora-export` | 原图/标注图来源、已提交标注烧录/草稿预览回退、PNG/JPEG/WebP 编码、原子文件发布、内存与系统剪贴板、取消/超时受监督导出 worker | 后续接收更窄的导出端口并与历史记录编排解耦 | 不拥有窗口、历史索引、托盘或应用 EventLoop；外部子进程必须可回收 |
 | `pinora-history` | 受管历史索引加载、PNG 摘要/尺寸校验、插入、删除/清空、配额/保留期 tombstone 清理、当前 Unix 毫秒到截止时间策略、异步历史图像读取 | 后续把历史策略与导出输入进一步抽象为端口 | 不拥有窗口、Panel、托盘或 EventLoop；所有路径限制在受管目录 |
 | `pinora-diagnostics` | 固定白名单诊断报告、平台/反馈标签校验、设置脱敏摘要、字段顺序、文本渲染和原子文件发布 | 后续接收更窄的诊断快照端口 | 不拥有窗口、Panel、托盘、EventLoop、线程或外部进程 |
+| `pinora-panels` | 设置、历史、诊断三个辅助窗口的 Window/Surface、Panel 状态、主题刷新、输入转发和 softbuffer 绘制适配 | 后续迁移 Overlay/贴图窗口适配 | 不拥有 ApplicationHandler、EventLoop、托盘、截图、贴图、worker 或业务副作用；窗口创建/展示必须经过 `window_policy` |
 | `pinora-tray` | `tray-icon` 菜单构造、托盘句柄、事件轮询、动态贴图列表、热键/能力/固定反馈同步 | 后续抽象平台 tray backend 或引入原生探针 | 不拥有截图、贴图、设置、历史、诊断业务工作流或 EventLoop |
 | `pinora-ocr` | tesseract CLI、PNG 临时输入、TSV 解析、取消/超时/输出上限、受监督 OCR worker、结果缓存和词框视觉状态 | 继续承载本地 OCR 服务；app 只提供当前 UI owner/asset 并消费结果 | 不下载模型、不联网、不拥有窗口、剪贴板或应用 EventLoop |
 | `pinora-runtime` | AppRuntime、命令分发、领域状态变更、单实例 bootstrap/forward/shutdown、能力探测端口和事件发布 | 继续承载无 UI 的应用工作流 | 不创建窗口、EventLoop、线程、网络或具体平台探测；捕获/剪贴板通过泛型端口注入 |
-| `pinora-app` | desktop shell、OCR 触发/结果 UI 交付、历史窗口/选择编排、存储调用编排、托盘动作编排和窗口编排；导出/历史请求与结果消费 | 继续迁移 Overlay/贴图适配 | 保持唯一事件循环和现有用户行为，迁移后才删除旧路径 |
+| `pinora-app` | desktop shell、OCR 触发/结果 UI 交付、历史选择编排、存储调用编排、托盘动作编排、设置/历史/诊断打开时机与业务副作用；导出/历史请求与结果消费 | 继续迁移 Overlay/贴图适配 | 保持唯一事件循环和现有用户行为，窗口资源适配已迁至 `pinora-panels` |
 
 后续每个 crate 拆分都必须单独建立计划/任务、迁移原有测试、更新依赖图，并通过 workspace 与目标平台编译门禁；不得把一次性目录搬迁当作功能完成。
 
@@ -327,6 +331,43 @@ crates/pinora-desktop/
 - `pinora-desktop` 仅依赖 `pinora-core` 和 `winit`。
 - `pinora-app` 通过 `pub(crate) use pinora_desktop::{...}` 与公开 re-export 复用这些纯 UI 模块，窗口宿主和业务服务仍留在 app。
 - 已迁移的纯 UI 模块包含 `settings_panel`、`history_browser`、`diagnostics_panel`、`overlay_selection_readout`、`overlay_geometry`、`overlay_annotation`、`overlay_input`、`pin_context_menu` 与 `xrgb`；窗口宿主、缓存生命周期和事件分发/状态写入仍保留在 app。
+
+### 2.6 `pinora-panels` 辅助面板窗口适配
+
+`pinora-panels` 是面向窗口资源的适配层，不是第二个应用入口。它把既有 Panel 模型绑定到
+`winit::window::Window`、`softbuffer::Surface` 和 `pinora-desktop::window_policy`，统一处理隐藏
+创建、映射后隔离、主题刷新、resize、绘制和窗口关闭；它不实现 `ApplicationHandler`，不创建
+`EventLoop`，也不触碰设置保存后的 runtime、历史索引、诊断导出、托盘或后台任务。
+
+```mermaid
+flowchart TB
+    EventLoop["pinora-app\n唯一 ApplicationHandler/EventLoop"] --> Open["打开/关闭/输入/主题事件"]
+    Open --> Panels["pinora-panels"]
+    Panels --> Settings["SettingsWindow\nSettingsPanel + SettingsStore"]
+    Panels --> History["HistoryWindow\nHistoryPanel + Preview"]
+    Panels --> Diagnostics["DiagnosticsWindow\nDiagnosticsPanel + TrayFeedback"]
+    Settings --> Policy["pinora-desktop::window_policy"]
+    History --> Policy
+    Diagnostics --> Policy
+    Policy --> Surface["Window + softbuffer Surface\n隐藏创建/映射后隔离"]
+    EventLoop -.业务副作用仍在 app.-> Runtime["runtime/历史/诊断/托盘编排"]
+```
+
+```text
+crates/pinora-panels/
+├── Cargo.toml
+└── src/
+    ├── diagnostics_window.rs
+    ├── history_window.rs
+    ├── lib.rs
+    └── settings_window.rs
+```
+
+- `pinora-panels` 只依赖 `pinora-core`、`pinora-desktop`、`pinora-storage`、`softbuffer` 和
+  `winit`；不依赖 `pinora-app`、`pinora-tray`、截图、OCR、导出、runtime 或外部进程。
+- 面板窗口的创建和展示只能调用 `create_auxiliary_window` 与 `show_auxiliary_window`；源码守卫
+  防止直接调用 `create_window`、`set_visible(true)`，确保 tray-only 和任务栏/Dock 约束不会因
+  后续适配器演进而绕开。
 
 ---
 
@@ -1220,6 +1261,7 @@ pinora/
 │   ├── pinora-export/         # 已存在：图像编码、原子文件、系统剪贴板和导出任务
 │   ├── pinora-history/        # 已存在：历史策略、受管文件和异步图像读取
 │   ├── pinora-diagnostics/    # 已存在：脱敏诊断报告、固定字段和原子发布
+│   ├── pinora-panels/         # 已存在：设置/历史/诊断 Window/Surface 与 Panel 适配
 │   ├── pinora-runtime/        # 已存在：命令/状态/单实例工作流与能力端口
 │   └── pinora-tray/           # 已存在：tray-icon 菜单、句柄和事件适配
 ├── assets/

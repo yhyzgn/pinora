@@ -12,13 +12,13 @@ use winit::dpi::PhysicalSize;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId, WindowLevel};
 
-use crate::diagnostics_panel::{self, DiagnosticsPanel};
-use crate::panel_theme::{PanelThemeState, SystemAppearance};
-use crate::tray_feedback::TrayFeedback;
+use pinora_desktop::diagnostics_panel::{self, DiagnosticsPanel};
+use pinora_desktop::panel_theme::{PanelThemeState, SystemAppearance};
+use pinora_desktop::tray_feedback::TrayFeedback;
 use pinora_desktop::window_policy::{self, AuxiliaryWindowKind};
 
 /// 单个诊断窗口的资源与受控快照。
-pub(crate) struct DiagnosticsWindow {
+pub struct DiagnosticsWindow {
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
     panel: DiagnosticsPanel,
@@ -28,7 +28,7 @@ pub(crate) struct DiagnosticsWindow {
 }
 
 impl DiagnosticsWindow {
-    pub(crate) fn open(
+    pub fn open(
         event_loop: &ActiveEventLoop,
         context: &Context<Rc<Window>>,
         panel: DiagnosticsPanel,
@@ -79,35 +79,35 @@ impl DiagnosticsWindow {
         Ok(diagnostics)
     }
 
-    pub(crate) fn window_id(&self) -> WindowId {
+    pub fn window_id(&self) -> WindowId {
         self.window.id()
     }
 
-    pub(crate) fn focus(&self) {
+    pub fn focus(&self) {
         self.window.focus_window();
     }
 
-    pub(crate) fn close(self) {
+    pub fn close(self) {
         self.window.set_visible(false);
     }
 
-    pub(crate) fn set_panel(&mut self, panel: DiagnosticsPanel) {
+    pub fn set_panel(&mut self, panel: DiagnosticsPanel) {
         self.panel = panel;
         self.request_redraw();
     }
 
-    pub(crate) fn set_feedback(&mut self, feedback: TrayFeedback) {
+    pub fn set_feedback(&mut self, feedback: TrayFeedback) {
         self.panel.set_feedback(feedback);
         self.request_redraw();
     }
 
-    pub(crate) fn set_theme_preference(&mut self, preference: ThemeMode) {
+    pub fn set_theme_preference(&mut self, preference: ThemeMode) {
         if self.theme.set_preference(preference) {
             self.request_redraw();
         }
     }
 
-    pub(crate) fn handle_system_theme_change(&mut self, theme: winit::window::Theme) {
+    pub fn handle_system_theme_change(&mut self, theme: winit::window::Theme) {
         if self
             .theme
             .update_system_appearance(SystemAppearance::from_winit(Some(theme)))
@@ -116,11 +116,11 @@ impl DiagnosticsWindow {
         }
     }
 
-    pub(crate) fn request_redraw(&self) {
+    pub fn request_redraw(&self) {
         self.window.request_redraw();
     }
 
-    pub(crate) fn resize(&mut self, width: u32, height: u32) {
+    pub fn resize(&mut self, width: u32, height: u32) {
         self.width = width.max(1);
         self.height = height.max(1);
         if let (Some(width), Some(height)) =
@@ -131,7 +131,7 @@ impl DiagnosticsWindow {
         self.request_redraw();
     }
 
-    pub(crate) fn paint(&mut self) -> Result<(), PinoraError> {
+    pub fn paint(&mut self) -> Result<(), PinoraError> {
         let size = self.window.inner_size();
         self.width = size.width.max(1);
         self.height = size.height.max(1);

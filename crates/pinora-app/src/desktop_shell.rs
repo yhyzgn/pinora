@@ -16,14 +16,11 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::diagnostics_panel::DiagnosticsPanel;
-use crate::diagnostics_window::DiagnosticsWindow;
 use crate::history_browser::{HistoryPanelAction, HistoryPanelKey};
-use crate::history_window::HistoryWindow;
 use crate::overlay_selection_readout::{
     SelectionReadout, layout_selection_readout, paint_selection_readout,
 };
 use crate::settings_panel::{SettingsPanelAction, SettingsPanelKey};
-use crate::settings_window::SettingsWindow;
 use crate::tray_capabilities::TrayCapabilitySummary;
 use crate::tray_feedback::{TrayExportOperation, TrayFeedback};
 use crate::{
@@ -66,6 +63,7 @@ use pinora_jobs::JobState;
 use pinora_ocr::{
     OcrJobCompletion, OcrJobService, OcrJobStart, tesseract_available, word_visual_state,
 };
+use pinora_panels::{DiagnosticsWindow, HistoryWindow, SettingsWindow};
 use pinora_storage::{ExportNameAllocator, HistoryStore, default_history_path};
 use softbuffer::{Context, Rect as DamageRect, Surface};
 use winit::application::ApplicationHandler;

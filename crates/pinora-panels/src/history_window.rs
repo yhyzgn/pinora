@@ -14,8 +14,8 @@ use winit::dpi::PhysicalSize;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId, WindowLevel};
 
-use crate::history_browser::{self, HistoryPanel, HistoryPreview};
-use crate::panel_theme::{PanelThemeState, SystemAppearance};
+use pinora_desktop::history_browser::{self, HistoryPanel, HistoryPreview};
+use pinora_desktop::panel_theme::{PanelThemeState, SystemAppearance};
 use pinora_desktop::window_policy::{self, AuxiliaryWindowKind};
 
 struct HistoryPreviewCache {
@@ -25,7 +25,7 @@ struct HistoryPreviewCache {
 }
 
 /// 单个历史窗口的资源和呈现状态。
-pub(crate) struct HistoryWindow {
+pub struct HistoryWindow {
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
     panel: HistoryPanel,
@@ -37,7 +37,7 @@ pub(crate) struct HistoryWindow {
 }
 
 impl HistoryWindow {
-    pub(crate) fn open(
+    pub fn open(
         event_loop: &ActiveEventLoop,
         context: &Context<Rc<Window>>,
         entries: Vec<HistoryEntry>,
@@ -90,29 +90,29 @@ impl HistoryWindow {
         Ok(history)
     }
 
-    pub(crate) fn window_id(&self) -> WindowId {
+    pub fn window_id(&self) -> WindowId {
         self.window.id()
     }
 
-    pub(crate) fn focus(&self) {
+    pub fn focus(&self) {
         self.window.focus_window();
     }
 
-    pub(crate) fn close(self) {
+    pub fn close(self) {
         self.window.set_visible(false);
     }
 
-    pub(crate) fn request_redraw(&self) {
+    pub fn request_redraw(&self) {
         self.window.request_redraw();
     }
 
-    pub(crate) fn set_theme_preference(&mut self, preference: ThemeMode) {
+    pub fn set_theme_preference(&mut self, preference: ThemeMode) {
         if self.theme.set_preference(preference) {
             self.request_redraw();
         }
     }
 
-    pub(crate) fn handle_system_theme_change(&mut self, theme: winit::window::Theme) {
+    pub fn handle_system_theme_change(&mut self, theme: winit::window::Theme) {
         if self
             .theme
             .update_system_appearance(SystemAppearance::from_winit(Some(theme)))
@@ -121,15 +121,15 @@ impl HistoryWindow {
         }
     }
 
-    pub(crate) fn cursor(&self) -> PixelPoint {
+    pub fn cursor(&self) -> PixelPoint {
         self.cursor
     }
 
-    pub(crate) fn set_cursor(&mut self, cursor: PixelPoint) {
+    pub fn set_cursor(&mut self, cursor: PixelPoint) {
         self.cursor = cursor;
     }
 
-    pub(crate) fn resize(&mut self, width: u32, height: u32) {
+    pub fn resize(&mut self, width: u32, height: u32) {
         self.width = width.max(1);
         self.height = height.max(1);
         if let (Some(width), Some(height)) =
@@ -140,24 +140,19 @@ impl HistoryWindow {
         self.request_redraw();
     }
 
-    pub(crate) fn panel(&self) -> &HistoryPanel {
+    pub fn panel(&self) -> &HistoryPanel {
         &self.panel
     }
 
-    pub(crate) fn panel_mut(&mut self) -> &mut HistoryPanel {
+    pub fn panel_mut(&mut self) -> &mut HistoryPanel {
         &mut self.panel
     }
 
-    pub(crate) fn clear_preview(&mut self) {
+    pub fn clear_preview(&mut self) {
         self.preview = None;
     }
 
-    pub(crate) fn cache_preview(
-        &mut self,
-        image_id: ImageId,
-        pixels_xrgb: Vec<u32>,
-        size: PixelSize,
-    ) {
+    pub fn cache_preview(&mut self, image_id: ImageId, pixels_xrgb: Vec<u32>, size: PixelSize) {
         self.preview = Some(HistoryPreviewCache {
             entry_image_id: image_id,
             pixels_xrgb,
@@ -165,7 +160,7 @@ impl HistoryWindow {
         });
     }
 
-    pub(crate) fn paint(&mut self) -> Result<(), PinoraError> {
+    pub fn paint(&mut self) -> Result<(), PinoraError> {
         let size = self.window.inner_size();
         self.width = size.width.max(1);
         self.height = size.height.max(1);

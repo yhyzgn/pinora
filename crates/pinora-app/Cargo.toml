@@ -17,6 +17,7 @@ pinora-ocr = { workspace = true }
 pinora-export = { workspace = true }
 pinora-history = { workspace = true }
 pinora-diagnostics = { workspace = true }
+pinora-panels = { workspace = true }
 pinora-tray = { workspace = true }
 pinora-runtime = { workspace = true }
 winit = "0.30"

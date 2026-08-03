@@ -1,13 +1,10 @@
 //! Pinora 应用编排：生命周期、单实例与命令分发。
 
 mod desktop_shell;
-mod diagnostics_window;
-mod history_window;
 mod platform;
-mod settings_window;
 
 pub(crate) use pinora_desktop::{
-    diagnostics_panel, history_browser, overlay_selection_readout, panel_theme, pin_context_menu,
+    diagnostics_panel, history_browser, overlay_selection_readout, pin_context_menu,
     settings_panel, tray_capabilities, tray_feedback,
 };
 pub(crate) use pinora_history::{

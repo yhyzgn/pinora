@@ -712,6 +712,15 @@
 - 回滚或隔离动作：恢复 `pinora-app::diagnostics_export` 与 app 依赖，移除 `pinora-diagnostics` workspace 成员；不改变报告格式、诊断面板、能力探测、截图、OCR、历史或托盘生命周期。
 - 负责人和状态：Neo；离线白名单、报告顺序、原子发布、crate 边界、workspace 门禁、Windows target、格式、差异和上下文校验已验证，真实文件系统、托盘、窗口管理器与性能证据开放。
 
+## R-079：辅助面板窗口适配已迁移，但真实窗口管理器行为仍未验证（高）
+
+- 证据和影响范围：128 将设置、历史和诊断的 Window/Surface、Panel 状态、主题刷新、输入转发和绘制适配迁入 `pinora-panels`；三个适配器仍通过 `pinora-desktop::window_policy` 隐藏创建和映射，app 继续独占唯一 EventLoop、业务副作用与退出控制。离线源码守卫、workspace 门禁和 app 回归只能证明代码边界，不能观察原生窗口管理器。
+- 触发条件：Windows、macOS、X11、KDE Wayland 或其他 Wayland 合成器延迟/忽略任务栏、Dock、分页器策略，或者 softbuffer 首帧、主题事件、焦点和高 DPI 输入时序与离线模型不同。
+- 失败模式：设置/历史/诊断窗口可能短暂或持续出现在任务栏/Dock，首帧空白、焦点丢失、主题不刷新、resize 后 surface 不匹配，或窗口关闭时 tray-only 状态不稳定；不得以交叉编译或源码测试宣称真实桌面通过。
+- 缓解措施和必需验证：保持所有创建/展示只经过 `window_policy`，适配器不创建 EventLoop、不拥有业务 worker；在 Windows、macOS、Linux X11、KDE Wayland 原生会话验证打开/关闭、重复打开、主题切换、键盘录制、历史预览、诊断反馈、取消/退出、窗口列表、任务栏/Dock/分页器、首帧、焦点、100%/200% 缩放和帧时间。
+- 回滚或隔离动作：恢复 `pinora-app` 内三个窗口适配器和依赖，移除 `pinora-panels`；不改变 Panel 绘制、设置 schema、历史索引、诊断报告、截图、贴图或托盘生命周期。
+- 负责人和状态：Neo；离线源码守卫、定向测试、workspace、Clippy、Windows target、格式、差异和上下文校验已验证，真实窗口管理器、tray-only 和性能证据开放。
+
 ## 风险一：上下文漂移
 
 - 触发条件：代码、配置或工作流变化后，没有同步更新对应上下文文件。

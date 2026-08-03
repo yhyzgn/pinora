@@ -13,7 +13,7 @@
 - Pinora 空闲状态不创建控制窗口；托盘、已成功注册的全局热键与单实例 IPC 是后台入口。所有辅助 `WindowAttributes` 必须经 `window_policy::auxiliary_window_attributes`；新建事件循环必须使用 `window_policy::auxiliary_event_loop`，禁止绕开任务栏/Dock 策略。
 - KWin 特例仅允许在窗口映射后按 Pinora 自身标题调用 `kwin_place`；`busctl` 失败只能记录，不能阻塞事件循环或被当作其他 Wayland 合成器的支持证据。
 
-## 当前 crate 边界（任务 127 已验证）
+## 当前 crate 边界（任务 128 已验证）
 
 ```mermaid
 graph LR
@@ -25,6 +25,7 @@ graph LR
     App --> Export["pinora-export\n图像合成/导出/编码/剪贴板任务"]
     App --> History["pinora-history\n历史策略/截止时间/异步读取"]
     App --> Diagnostics["pinora-diagnostics\n脱敏报告/原子发布"]
+    App --> Panels["pinora-panels\n设置/历史/诊断窗口适配"]
     App --> Tray["pinora-tray\n菜单/句柄/事件"]
     App --> Core["pinora-core\n领域模型"]
     Runtime --> Core
@@ -38,6 +39,10 @@ graph LR
     History --> Capture
     History --> Jobs
     Diagnostics --> Core
+    Panels --> Desktop
+    Panels --> Storage
+    Panels --> Core
+    Panels --> Winit["winit + softbuffer\n窗口/Surface"]
     Tray --> Core
     Tray --> Desktop
     Desktop --> Winit["winit\nSystemAppearance 映射"]
@@ -55,9 +60,14 @@ graph LR
   摘要、报告渲染和同目录原子文件发布；`pinora-app` 只组装 `DiagnosticsPanel`/runtime 的
   稳定值并处理 `ExportDiagnostics` 托盘动作与固定反馈。该 crate 不依赖 desktop、tray、winit、
   Window、EventLoop、线程或外部进程。
+- `pinora-panels` 现承载设置、历史和诊断三个辅助窗口的 Window/Surface、Panel 状态、主题
+  刷新、输入转发和绘制适配；所有创建/展示继续通过 `pinora-desktop::window_policy`。它不
+  拥有 ApplicationHandler、EventLoop、托盘、截图、贴图、worker 或业务副作用，`pinora-app`
+  只负责打开时机、事件循环、设置/历史/诊断编排和结果反馈。
 - `pinora-tray` 现唯一拥有 `tray-icon` 的菜单、句柄、事件映射和动态贴图列表；`pinora-app` 仅消费 `TrayAction` 并编排业务操作。
 - `pinora-runtime` 现唯一拥有 `AppRuntime`、命令分发、单实例生命周期、领域事件发布和 `CapabilityProbe` 端口；`pinora-app` 仅实现真实能力探测。
-- `pinora-app` 当前仍拥有 OCR 触发与 UI 结果交付、历史窗口/选择、Overlay/贴图窗口和唯一 EventLoop；这些边界按后续任务逐一拆分。
+- `pinora-app` 当前仍拥有 OCR 触发与 UI 结果交付、历史选择、Overlay/贴图窗口和唯一 EventLoop；
+  设置/历史/诊断的 Window/Surface 适配已迁入 `pinora-panels`，Overlay/贴图适配仍按后续任务拆分。
 
 ## 系统依赖（Linux + xcap）
 
@@ -144,6 +154,17 @@ sudo dnf install -y pipewire-devel mesa-libgbm-devel wayland-devel libxcb-devel
 098 发布链路已完成：`cargo run --quiet -- --version` 输出 `pinora 0.1.0`；当前 `main` CI `30783363209`、tag package/release `30783568639` 和 `runtime-verify` `30783727003` 均成功。Release `v0.1.0-preview.8` 已确认 `isPrerelease=true`，下载全部 11 个资产后按合并 `SHA256SUMS.txt` 执行 `sha256sum -c` 全部通过；Linux tarball 清单包含 `/usr/bin/pinora` 和 desktop entry，runtime 报告已回写 Release body。该门禁不证明真实桌面 GUI、tray、热键、权限、签名/公证或性能。
 
 099 脱敏诊断包增量已通过：`cargo test -p pinora-app --lib -- --nocapture`（294 通过、2 忽略）、`cargo check --workspace`、`cargo clippy --workspace --all-targets -- -D warnings` 和 `PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace` 均成功。报告字段为固定白名单，写入使用同目录临时文件、`sync_all`、原子 rename 和可读性校验；测试不证明真实托盘点击、跨平台目录权限或文件系统断电语义。
+
+127 诊断报告 crate 边界已完成：`pinora-diagnostics` 现唯一拥有脱敏报告、固定字段/标签、
+渲染与原子发布；`pinora-app` 只组装诊断面板/runtime 的稳定值并处理托盘反馈。报告 5 项、
+app 22 项回归、完整 workspace、Clippy、Windows target、`--version`、fmt、diff 和上下文
+校验均通过；真实文件系统、托盘、窗口隔离和性能仍未验证。
+
+128 辅助面板窗口适配 crate 已完成：`pinora-panels` 现唯一拥有设置、历史和诊断窗口的
+Window/Surface、Panel 状态、主题刷新、输入转发与绘制适配；三个适配器只能通过
+`pinora-desktop::window_policy` 创建/展示，源码守卫覆盖绕过调用。`cargo test -p pinora-panels`
+1 项、app 22 项回归、完整 workspace、Clippy、Windows target、`--version`、fmt、diff 和
+`ctx validate` 均通过。真实窗口管理器、焦点、任务栏/Dock、HiDPI 和性能仍由 R-079 跟踪。
 
 ## 跨平台构建与打包
 
