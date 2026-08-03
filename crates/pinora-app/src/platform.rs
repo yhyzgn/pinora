@@ -1,6 +1,6 @@
 use pinora_core::CapabilitySnapshot;
 
-use crate::capture_select::CaptureBackendKind;
+use pinora_capture::CaptureBackendKind;
 
 /// 平台能力探测。
 pub trait CapabilityProbe {

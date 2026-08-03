@@ -51,7 +51,7 @@
 
 ## R-006：桌面壳单体化导致架构不可控（高）
 
-- 证据和影响范围：任务 105 已将系统集成迁入 `crates/pinora-platform`；`crates/pinora-app/src/desktop_shell.rs` 当前约 7491 行，仍统一处理窗口事件、截图线程、Overlay 帧缓冲、标注、贴图、OCR、托盘和 IPC 编排；045 已抽出 `history_window`，046 已抽出 `settings_window` 的窗口资源、草稿/预览缓存、存储调用和呈现，但 Overlay/贴图职责仍集中在 shell。
+- 证据和影响范围：任务 105 已将系统集成迁入 `crates/pinora-platform`，任务 106 已将捕获后端和 `FrameCache` 迁入 `crates/pinora-capture`；`crates/pinora-app/src/desktop_shell.rs` 当前约 7491 行，仍统一处理窗口事件、截图线程、Overlay 帧缓冲、标注、贴图、OCR、托盘和 IPC 编排；045 已抽出 `history_window`，046 已抽出 `settings_window` 的窗口资源、草稿/预览缓存、存储调用和呈现，但 Overlay/贴图职责仍集中在 shell。
 - 触发条件：继续向现有事件循环增加工具、平台分支或异步任务。
 - 失败模式：输入状态互相污染、窗口关闭/重截竞态、性能修复反复回归，无法对单个能力做隔离测试。
 - 缓解措施和必需验证：冻结现有 UI 行为作为回归场景；按 045 模式继续拆出设置、Overlay 和贴图窗口适配，建立应用状态机、窗口适配、Overlay 渲染、贴图控制器和异步任务边界；每层有 fake 契约测试和至少一条桌面探针。

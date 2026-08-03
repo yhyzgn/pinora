@@ -231,7 +231,7 @@ flowchart TB
 
 ### 2.4 当前实现边界与后续拆分路线
 
-当前代码已经完成第一步系统集成拆分；表中的目标模块仍是设计边界，不代表同名 crate 已经存在。
+当前代码已经完成系统集成和捕获边界拆分；表中的目标模块仍是设计边界，不代表未标记为已实现的 crate 已经存在。
 
 ```mermaid
 flowchart LR
@@ -241,12 +241,12 @@ flowchart LR
     App --> Core["pinora-core\n纯领域模型"]
     Platform --> Core
 
-    App -. 下一步 .-> Capture["pinora-capture\n捕获后端 + FrameCache"]
+    App --> CaptureNow["pinora-capture\n已实现：KDE/xcap/fake 选择 + FrameCache"]
+    CaptureNow --> Core
     App -. 后续 .-> Jobs["pinora-jobs\n通用任务监督"]
     App -. 后续 .-> Storage["pinora-storage\n设置、历史、文件导出"]
     App -. 后续 .-> Desktop["pinora-desktop\n托盘、窗口与 Overlay"]
     App -. 后续 .-> Ocr["pinora-ocr\n识别与文字层"]
-    Capture --> Core
     Jobs --> Core
     Storage --> Core
     Ocr --> Core
@@ -1149,8 +1149,8 @@ pinora/
 ├── crates/
 │   ├── pinora-core/           # 已存在：纯领域模型、命令、事件、错误码
 │   ├── pinora-platform/       # 已存在：启动项、单实例/IPC、热键、Wayland Portal
+│   ├── pinora-capture/        # 已存在：KDE/xcap/fake 选择、显示器快照、FrameCache
 │   ├── pinora-app/            # 已存在：runtime、desktop_shell 与当前编排模块
-│   ├── pinora-capture/        # 计划：捕获后端、显示器快照、FrameCache
 │   ├── pinora-jobs/           # 计划：通用任务监督、取消、超时和回收
 │   ├── pinora-storage/        # 计划：设置、历史、文件导出和清理
 │   ├── pinora-desktop/        # 计划：托盘、窗口策略、Overlay、贴图适配

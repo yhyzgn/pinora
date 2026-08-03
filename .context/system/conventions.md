@@ -58,6 +58,8 @@ sudo dnf install -y pipewire-devel mesa-libgbm-devel wayland-devel libxcb-devel
 
 105 系统集成功能 crate 已完成：`cargo test -p pinora-platform -- --nocapture`（21 通过），workspace 全量测试（app 286 通过、2 忽略；core 90 通过；platform 21 通过；根入口 1 通过）、`cargo check --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo check --workspace --target x86_64-pc-windows-msvc`、`cargo fmt --check`、`git diff --check` 与 `ctx validate` 均通过。`pinora-platform` 现唯一拥有启动项、单实例/IPC、全局热键和 Linux Wayland Portal；真实桌面 GUI、登录会话、任务栏/Dock/分页器和性能仍未验证。
 
+106 捕获功能 crate 已完成：`pinora-capture` 现唯一拥有 KDE/Spectacle、xcap、显式 fake、后端选择和 `FrameCache`；`cargo test -p pinora-capture -- --nocapture` 为 25 通过、1 个真实桌面测试忽略，`cargo tree -p pinora-app --depth 1` 已确认 app 不再直接依赖 xcap。完整 workspace 测试、严格 Clippy、Windows target、fmt、diff 和 `ctx validate` 作为任务 106 最终门禁；真实屏幕权限、HiDPI、桌面后端和性能仍未验证。
+
 096 历史保留期增量已执行并通过：`cargo test -p pinora-core settings -- --nocapture`、`cargo test -p pinora-core history -- --nocapture`、`cargo test -p pinora-app --lib settings_store::tests -- --nocapture`、`cargo test -p pinora-app --lib settings_panel::tests -- --nocapture`、`cargo test -p pinora-app --lib history_export::tests -- --nocapture`、`cargo test -p pinora-app --lib desktop_shell::overlay_scale_tests -- --nocapture`；完整门禁使用上方 workspace、Clippy、测试、Windows target、差异和 `ctx validate` 命令。完整测试未连接真实共享数据库、缓存、消息队列、对象存储或第三方服务；2 个真实桌面测试按既有约定忽略。
 
 097 历史最大磁盘占用增量使用同一组定向测试，并额外覆盖 v7 到 v8 设置迁移、非法容量修复、容量下调后的最旧优先 tombstone 与受管 PNG 清理；完整门禁仍使用上方 workspace、Clippy、测试、Windows target、差异和 `ctx validate` 命令。测试不连接真实共享基础设施；2 个真实桌面测试按既有约定忽略。

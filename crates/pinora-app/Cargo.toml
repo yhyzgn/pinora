@@ -9,9 +9,9 @@ description = "Pinora application lifecycle, runtime, and dependency assembly"
 [dependencies]
 pinora-core = { workspace = true }
 pinora-platform = { workspace = true }
+pinora-capture = { workspace = true }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "webp"] }
 png = "0.17"
-xcap = "0.9.7"
 winit = "0.30"
 softbuffer = "0.4"
 # 关闭 libxdo 默认特性，避免链接 -lxdo（Wayland/KDE 不需要）

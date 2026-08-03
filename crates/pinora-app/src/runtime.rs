@@ -392,9 +392,9 @@ fn fail(code: ErrorCode, message: impl Into<String>) -> PinoraError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture_fake::FakeCaptureProvider;
     use crate::image_sink::LocalImageSink;
     use crate::platform::FakeCapabilityProbe;
+    use pinora_capture::FakeCaptureProvider;
     use pinora_core::{PinTransform, PixelSize};
     use pinora_platform::InMemorySingleInstance;
     use std::time::{SystemTime, UNIX_EPOCH};

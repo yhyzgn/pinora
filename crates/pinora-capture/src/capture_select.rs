@@ -9,9 +9,9 @@ use pinora_core::{
     PinoraError,
 };
 
-use crate::capture_fake::FakeCaptureProvider;
-use crate::capture_kde::KdeSpectacleCaptureProvider;
-use crate::capture_xcap::XcapCaptureProvider;
+use super::capture_fake::FakeCaptureProvider;
+use super::capture_kde::KdeSpectacleCaptureProvider;
+use super::capture_xcap::XcapCaptureProvider;
 
 /// 当前选用的捕获后端名称。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

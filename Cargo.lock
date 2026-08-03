@@ -2513,12 +2513,22 @@ version = "0.1.0"
 dependencies = [
  "gtk",
  "image",
+ "pinora-capture",
  "pinora-core",
  "pinora-platform",
  "png 0.17.16",
  "softbuffer",
  "tray-icon",
  "winit",
+]
+
+[[package]]
+name = "pinora-capture"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "pinora-core",
+ "png 0.17.16",
  "xcap",
 ]
 

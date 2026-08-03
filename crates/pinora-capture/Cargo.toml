@@ -1,0 +1,14 @@
+[package]
+name = "pinora-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pinora screen capture providers and low-latency frame cache"
+
+[dependencies]
+pinora-core = { workspace = true }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "webp"] }
+png = "0.17"
+xcap = "0.9.7"
+

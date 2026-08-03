@@ -1,16 +1,11 @@
 //! Pinora 应用编排：生命周期、单实例与命令分发。
 
-mod capture_fake;
-mod capture_kde;
-mod capture_select;
-mod capture_xcap;
 mod desktop_shell;
 mod diagnostics_export;
 mod diagnostics_panel;
 mod diagnostics_window;
 mod export_job;
 mod export_name;
-mod frame_cache;
 mod history_browser;
 mod history_export;
 mod history_load_job;
@@ -39,10 +34,6 @@ mod tray_feedback;
 mod window_policy;
 mod worker_lifecycle;
 
-pub use capture_fake::FakeCaptureProvider;
-pub use capture_kde::KdeSpectacleCaptureProvider;
-pub use capture_select::{CaptureBackendKind, SelectedCaptureProvider, fake_only};
-pub use capture_xcap::XcapCaptureProvider;
 pub use desktop_shell::run_desktop_shell;
 pub use export_job::{
     ExportJobCompletion, ExportJobInput, ExportJobService, ExportRunner, LocalExportRunner,
@@ -58,6 +49,10 @@ pub use job_supervisor::{
 pub use ocr::{recognize_image, recognize_image_with_cancellation, tesseract_available};
 pub use ocr_job::{LocalOcrRunner, OcrJobCompletion, OcrJobService, OcrJobStart, OcrRunner};
 pub use pin_layout::scaled_window_size;
+pub use pinora_capture::{
+    CachedFrame, CaptureBackendKind, FakeCaptureProvider, FrameCache, KdeSpectacleCaptureProvider,
+    SelectedCaptureProvider, XcapCaptureProvider, fake_only, rgba_to_xrgb, rgba_to_xrgb_and_dim,
+};
 pub use platform::{CapabilityProbe, FakeCapabilityProbe, RuntimeCapabilityProbe};
 pub use runtime::{AppRuntime, BootstrapOutcome, DispatchResult};
 pub use settings_panel::{
