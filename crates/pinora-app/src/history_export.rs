@@ -9,7 +9,7 @@ use pinora_core::{
 };
 
 use crate::export_job::ExportJobInput;
-use crate::history_store::{HistoryLoad, HistoryStore};
+use pinora_storage::{HistoryLoad, HistoryStore};
 
 const MAX_HISTORY_PNG_BYTES: u64 = 128 * 1024 * 1024;
 

@@ -19,7 +19,6 @@ use crate::diagnostics_export::{SanitizedDiagnosticReport, write_report};
 use crate::diagnostics_panel::DiagnosticsPanel;
 use crate::diagnostics_window::DiagnosticsWindow;
 use crate::export_job::{ExportJobCompletion, ExportJobInput, ExportJobService};
-use crate::export_name::ExportNameAllocator;
 use crate::history_browser::{HistoryPanelAction, HistoryPanelKey};
 use crate::history_export::{
     HistoryExportCandidate, clear_history_entries, delete_history_entry,
@@ -30,7 +29,6 @@ use crate::history_load_job::{
     HistoryLoadCompletion, HistoryLoadInput, HistoryLoadJobService, HistoryLoadPayload,
     HistoryLoadPreparation,
 };
-use crate::history_store::{HistoryStore, default_history_path};
 use crate::history_window::HistoryWindow;
 use crate::ocr::tesseract_available;
 use crate::ocr_job::{OcrJobCompletion, OcrJobService, OcrJobStart};
@@ -61,6 +59,7 @@ use pinora_core::{
     resolve_all_displays_rect, sample_rgba_at,
 };
 use pinora_jobs::JobState;
+use pinora_storage::{ExportNameAllocator, HistoryStore, default_history_path};
 use softbuffer::{Context, Rect as DamageRect, Surface};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};

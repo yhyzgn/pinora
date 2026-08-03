@@ -5,11 +5,9 @@ mod diagnostics_export;
 mod diagnostics_panel;
 mod diagnostics_window;
 mod export_job;
-mod export_name;
 mod history_browser;
 mod history_export;
 mod history_load_job;
-mod history_store;
 mod history_window;
 mod image_sink;
 mod kwin_place;
@@ -25,7 +23,6 @@ mod pin_layout;
 mod platform;
 mod runtime;
 mod settings_panel;
-mod settings_store;
 mod settings_window;
 mod tray;
 mod tray_capabilities;
@@ -37,7 +34,6 @@ pub use export_job::{
     ExportJobCompletion, ExportJobInput, ExportJobService, ExportRunner, LocalExportRunner,
 };
 pub use history_browser::{HistoryPanel, HistoryPanelAction, HistoryPanelKey, HistoryPanelStatus};
-pub use history_store::{HistoryLoad, HistoryStore, default_history_path};
 pub use image_sink::{
     LocalImageSink, copy_text_to_system_clipboard, detect_system_clipboard_backend,
 };
@@ -51,9 +47,12 @@ pub use pinora_capture::{
 pub use pinora_jobs::{
     AcceptedJobResult, JobCancellation, JobResultDisposition, JobState, JobSupervisor, JobTicket,
 };
+pub use pinora_storage::{
+    ExportNameAllocator, HistoryLoad, HistoryStore, SettingsLoad, SettingsStore,
+    default_history_path, default_settings_path,
+};
 pub use platform::{CapabilityProbe, FakeCapabilityProbe, RuntimeCapabilityProbe};
 pub use runtime::{AppRuntime, BootstrapOutcome, DispatchResult};
 pub use settings_panel::{
     SettingField, SettingsPanel, SettingsPanelAction, SettingsPanelKey, SettingsPanelStatus,
 };
-pub use settings_store::{SettingsLoad, SettingsStore, default_settings_path};

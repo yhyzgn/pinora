@@ -72,7 +72,7 @@ flowchart LR
 | UI 框架 | 待验证 | 先定义 UI Adapter 和离线状态机；不预设 GPUI/Liora | 通过官方文档、最小窗口 spike、许可证和可访问性评审 |
 | 截图后端 | 待验证 | 每个发布平台使用正式系统 API/受支持 Portal；fake 仅测试 | target 编译、授权探针和多屏/HiDPI 场景通过 |
 | OCR 引擎与模型分发 | 待验证 | 本地优先、按需加载、可取消、无隐式下载 | 许可证、包体、离线模型、取消和准确率场景完成验证 |
-| 配置与历史存储 | 目标已定、实现待做 | 版本化本地文件、原子写、白名单清理 | 损坏恢复、迁移、并发写入和回滚测试通过 |
+| 配置与历史存储 | `pinora-storage` 已实现纯本地 codec 与命名；清理编排仍在 app | 版本化本地文件、原子写、白名单清理 | 损坏恢复、迁移、并发写入和回滚测试通过；断电/权限/网络文件系统仍需桌面探针 |
 | 发布平台 | 待验证 | 仅声明已通过核心流程探针的平台 | 每个平台有 CI target、隔离桌面探针和人工验收证据 |
 
 ---
@@ -245,16 +245,16 @@ flowchart LR
     CaptureNow --> Core
     App --> JobsNow["pinora-jobs\n已实现：监督、取消、worker 回收"]
     JobsNow --> Core
-    App -. 后续 .-> Storage["pinora-storage\n设置、历史、文件导出"]
+    App --> StorageNow["pinora-storage\n已实现：设置/历史 codec + 原子文件 + 命名"]
+    StorageNow --> Core
     App -. 后续 .-> Desktop["pinora-desktop\n托盘、窗口与 Overlay"]
     App -. 后续 .-> Ocr["pinora-ocr\n识别与文字层"]
-    Storage --> Core
     Ocr --> Core
     Desktop --> Core
     Desktop --> Platform
-    Desktop --> Capture
+    Desktop --> CaptureNow
     Desktop --> JobsNow
-    Desktop --> Storage
+    Desktop --> StorageNow
     Ocr --> JobsNow
 ```
 
@@ -264,7 +264,8 @@ flowchart LR
 | `pinora-platform` | 启动项、单实例/IPC、全局热键、Wayland Portal | 继续承载系统能力适配器 | 只向上提供稳定端口与真实失败语义 |
 | `pinora-capture` | KDE/xcap/fake 后端选择、显示器/窗口快照校验、预截帧缓存 | 继续承载真实捕获适配器 | 不创建窗口，失败不得伪装为 fake 成功 |
 | `pinora-jobs` | 通用任务监督、协作式取消、结果门禁、有界 worker 回收 | 继续承载通用生命周期底座 | 不运行具体 worker，不依赖 OCR/导出/存储/UI |
-| `pinora-app` | runtime、desktop shell、具体 OCR/导出/历史任务、存储、托盘和窗口编排 | 逐项迁移至 `storage/desktop/ocr` | 保持唯一事件循环和现有用户行为，迁移后才删除旧路径 |
+| `pinora-storage` | 设置 schema、历史索引 codec、原子本地文件和受管文件名 | 继续承载纯本地持久化；后续接收文件编码端口 | 不拥有任务、剪贴板子进程或窗口 |
+| `pinora-app` | runtime、desktop shell、具体 OCR/导出/历史任务、存储调用编排、托盘和窗口编排 | 逐项迁移至 `desktop/ocr`，保留对 `storage` 的业务编排 | 保持唯一事件循环和现有用户行为，迁移后才删除旧路径 |
 
 后续每个 crate 拆分都必须单独建立计划/任务、迁移原有测试、更新依赖图，并通过 workspace 与目标平台编译门禁；不得把一次性目录搬迁当作功能完成。
 
@@ -1154,7 +1155,7 @@ pinora/
 │   ├── pinora-capture/        # 已存在：KDE/xcap/fake 选择、显示器快照、FrameCache
 │   ├── pinora-jobs/           # 已存在：任务监督、取消、结果门禁、worker 回收
 │   ├── pinora-app/            # 已存在：runtime、desktop_shell 与当前编排模块
-│   ├── pinora-storage/        # 计划：设置、历史、文件导出和清理
+│   ├── pinora-storage/        # 已存在：设置、历史 codec、原子文件和受管文件名
 │   ├── pinora-desktop/        # 计划：托盘、窗口策略、Overlay、贴图适配
 │   └── pinora-ocr/            # 计划：Tesseract 适配、文字层和结果门禁
 ├── assets/
@@ -1167,9 +1168,9 @@ graph TD
     Main["src/main.rs (pinora bin)"] --> App[pinora-application]
     App --> UI[pinora-ui]
     App --> Core[pinora-core]
+    App --> Storage[pinora-storage]
     App --> PlatformApi[pinora-platform-api]
     App --> Jobs[pinora-jobs]
-    App --> Storage[pinora-storage]
     App --> Diagnostics[pinora-diagnostics]
     UI --> Core
     UI --> App

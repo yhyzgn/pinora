@@ -12,14 +12,14 @@ const MAX_SEQUENCE: u32 = 9_999;
 
 /// 单个桌面进程内的文件名分配器。
 #[derive(Debug, Default)]
-pub(crate) struct ExportNameAllocator {
+pub struct ExportNameAllocator {
     last_second: Option<u64>,
     next_sequence: u32,
 }
 
 impl ExportNameAllocator {
     /// 分配与冻结格式匹配的 `Pinora_YYYYMMDD_HHMMSS[_NNN].<extension>`，并跳过调用方报告的已有候选。
-    pub(crate) fn allocate<F>(
+    pub fn allocate<F>(
         &mut self,
         export_dir: &Path,
         now: SystemTime,

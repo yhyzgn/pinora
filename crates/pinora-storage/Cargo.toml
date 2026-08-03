@@ -1,0 +1,11 @@
+[package]
+name = "pinora-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pinora versioned settings, history index and managed file naming"
+
+[dependencies]
+pinora-core = { workspace = true }
+
