@@ -26,6 +26,7 @@ use crate::export_session::{
     tray_export_operation,
 };
 use crate::history_browser::{HistoryPanelAction, HistoryPanelKey};
+use crate::history_session::{ActiveHistoryLoad, HistoryLoadIntent, HistoryLoadRequest};
 use crate::overlay_selection_readout::{
     SelectionReadout, layout_selection_readout, paint_selection_readout,
 };
@@ -34,11 +35,10 @@ use crate::tray_capabilities::TrayCapabilitySummary;
 use crate::tray_feedback::{TrayExportOperation, TrayFeedback};
 use crate::{
     AppTray, CaptureExportSource, ExportJobCompletion, ExportJobInput, ExportJobService,
-    HistoryLoadCompletion, HistoryLoadInput, HistoryLoadJobService, HistoryLoadPayload,
-    HistoryLoadPreparation, TrayAction, TrayPinListEntry, clear_history_entries,
-    compose_capture_export_image, delete_history_entry, history_candidate_for_export,
-    history_retention_cutoff_ms, load_history_index, reconcile_history_policy,
-    record_history_candidate,
+    HistoryLoadCompletion, HistoryLoadInput, HistoryLoadJobService, HistoryLoadPayload, TrayAction,
+    TrayPinListEntry, clear_history_entries, compose_capture_export_image, delete_history_entry,
+    history_candidate_for_export, history_retention_cutoff_ms, load_history_index,
+    reconcile_history_policy, record_history_candidate,
 };
 use pinora_capture::{
     CaptureMode, CapturePreview, CaptureTarget, FrameCache, apply_initial_selection,
@@ -343,40 +343,6 @@ where
 enum OverlayPhase {
     Selecting,
     Ready,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HistoryLoadIntent {
-    Preview,
-    Reopen,
-    Edit,
-}
-
-#[derive(Debug, Clone)]
-struct HistoryLoadRequest {
-    entry: HistoryEntry,
-    intent: HistoryLoadIntent,
-}
-
-#[derive(Debug, Clone)]
-struct ActiveHistoryLoad {
-    job_id: JobId,
-    request: HistoryLoadRequest,
-}
-
-fn current_history_load_asset(
-    active: Option<&ActiveHistoryLoad>,
-    selected: Option<&HistoryEntry>,
-    job_id: JobId,
-    owner: JobOwner,
-) -> Option<AssetRef> {
-    let active = active?;
-    let selected = selected?;
-    (active.job_id == job_id
-        && owner == JobOwner::History(active.request.entry.image_id)
-        && selected.image_id == active.request.entry.image_id
-        && selected.generation == active.request.entry.generation)
-        .then_some(AssetRef::new(selected.image_id, selected.generation))
 }
 
 struct OverlayState {
@@ -1860,7 +1826,7 @@ where
         };
         self.history_load_jobs.cancel_all();
         self.active_history_load = None;
-        self.queued_history_load = Some(HistoryLoadRequest { entry, intent });
+        self.queued_history_load = Some(HistoryLoadRequest::new(entry, intent));
         if let Some(history) = self.history.as_mut() {
             history.panel_mut().mark_loading();
             history.request_redraw();
@@ -1887,10 +1853,7 @@ where
             .history
             .as_ref()
             .and_then(|history| history.panel().selected_entry())
-            .is_some_and(|entry| {
-                entry.image_id == request.entry.image_id
-                    && entry.generation == request.entry.generation
-            });
+            .is_some_and(|entry| request.matches_entry(entry));
         if !still_selected {
             return;
         }
@@ -1902,34 +1865,29 @@ where
             self.mark_history_load_error("history_load_failed");
             return;
         };
-        let asset = AssetRef::new(request.entry.image_id, request.entry.generation);
+        let asset = request.asset();
         let spec = JobSpec::new(
             JobId::new(),
             CorrelationId::new(),
             asset,
-            JobOwner::History(request.entry.image_id),
+            JobOwner::History(request.entry().image_id),
             JobKind::HistoryLoad,
             monotonic_ms().saturating_add(HISTORY_LOAD_TIMEOUT_MS),
         );
         let input = HistoryLoadInput {
             export_dir,
-            entry: request.entry.clone(),
-            preparation: match request.intent {
-                HistoryLoadIntent::Preview => HistoryLoadPreparation::Preview,
-                HistoryLoadIntent::Reopen => HistoryLoadPreparation::Pin,
-                HistoryLoadIntent::Edit => HistoryLoadPreparation::Editor,
-            },
+            entry: request.entry().clone(),
+            preparation: request.preparation(),
         };
         match self.history_load_jobs.start(spec, input) {
             Ok(ticket) => {
                 println!(
                     "pinora: history load {} started image={} intent={:?}",
-                    ticket.id, request.entry.image_id, request.intent
+                    ticket.id,
+                    request.entry().image_id,
+                    request.intent()
                 );
-                self.active_history_load = Some(ActiveHistoryLoad {
-                    job_id: ticket.id,
-                    request,
-                });
+                self.active_history_load = Some(ActiveHistoryLoad::new(ticket.id, request));
             }
             Err(error) => {
                 eprintln!("pinora: history load start failed: {error}");
@@ -1939,12 +1897,15 @@ where
     }
 
     fn take_active_history_load(&mut self, job_id: JobId) -> Option<HistoryLoadRequest> {
-        (self
-            .active_history_load
+        self.active_history_load
             .as_ref()
-            .is_some_and(|active| active.job_id == job_id))
-        .then(|| self.active_history_load.take().map(|active| active.request))
-        .flatten()
+            .is_some_and(|active| active.has_job_id(job_id))
+            .then(|| {
+                self.active_history_load
+                    .take()
+                    .map(ActiveHistoryLoad::into_request)
+            })
+            .flatten()
     }
 
     fn mark_history_load_error(&mut self, code: &'static str) {
@@ -1965,7 +1926,9 @@ where
         let completions = self
             .history_load_jobs
             .poll(monotonic_ms(), |job_id, owner| {
-                current_history_load_asset(active.as_ref(), selected.as_ref(), job_id, owner)
+                active
+                    .as_ref()
+                    .and_then(|active| active.accepts_result(selected.as_ref(), job_id, owner))
             });
 
         for completion in completions {
@@ -1974,13 +1937,13 @@ where
                     let Some(request) = self.take_active_history_load(job.id) else {
                         continue;
                     };
-                    match (request.intent, payload) {
+                    match (request.intent(), payload) {
                         (
                             HistoryLoadIntent::Preview,
                             HistoryLoadPayload::Preview { size, pixels_xrgb },
                         ) => {
                             if let Some(history) = self.history.as_mut() {
-                                history.cache_preview(request.entry.image_id, pixels_xrgb, size);
+                                history.cache_preview(request.entry().image_id, pixels_xrgb, size);
                                 history.panel_mut().clear_error();
                                 history.request_redraw();
                             }
@@ -1991,7 +1954,7 @@ where
                         ) => {
                             self.open_loaded_history_pin(
                                 event_loop,
-                                request.entry,
+                                request.into_entry(),
                                 image,
                                 pixels_xrgb,
                             );
@@ -2006,7 +1969,7 @@ where
                         ) => {
                             self.open_loaded_history_editor(
                                 event_loop,
-                                request.entry,
+                                request.into_entry(),
                                 image,
                                 base,
                                 dimmed,
@@ -5879,26 +5842,10 @@ fn next_pin_recency(current: u64) -> u64 {
 mod overlay_scale_tests {
     use super::*;
     use pinora_core::{
-        Annotation, AnnotationDoc, AssetGeneration, CaptureImage, CaptureMetadata, ContentDigest,
-        DEFAULT_STROKE, DEFAULT_WIDTH, DisplayId, HistoryEntry, HistoryEntrySpec, HistoryOcrState,
-        ImageId, JobResultRef, PixelSize, RgbaBuffer,
+        Annotation, AnnotationDoc, CaptureImage, CaptureMetadata, DEFAULT_STROKE, DEFAULT_WIDTH,
+        DisplayId, ImageId, JobResultRef, PixelSize, RgbaBuffer,
     };
     use pinora_jobs::{JobResultDisposition, JobSupervisor};
-
-    fn history_entry(id: u64) -> HistoryEntry {
-        HistoryEntry::new(HistoryEntrySpec {
-            image_id: ImageId::from_raw(id),
-            generation: AssetGeneration::INITIAL,
-            created_at_ms: id,
-            display: DisplayId::new("test-history"),
-            source_rect: PixelRect::new(0, 0, 2, 2),
-            file_name: format!("{id}.png"),
-            byte_len: 1,
-            digest: ContentDigest::of(b"history"),
-            ocr: HistoryOcrState::Unknown,
-        })
-        .expect("history entry")
-    }
 
     #[test]
     fn selection_readout_maps_buffer_pixels_to_the_source_and_global_origin() {
@@ -5943,51 +5890,6 @@ mod overlay_scale_tests {
 
         assert_eq!(error.code, ErrorCode::CapabilityUnavailable);
         assert!(error.message.contains("tray-only mode"));
-    }
-
-    #[test]
-    fn history_load_result_requires_current_selected_entry() {
-        let entry = history_entry(31);
-        let active = ActiveHistoryLoad {
-            job_id: JobId::from_raw(32),
-            request: HistoryLoadRequest {
-                entry: entry.clone(),
-                intent: HistoryLoadIntent::Preview,
-            },
-        };
-        let asset = AssetRef::new(entry.image_id, entry.generation);
-
-        assert_eq!(
-            current_history_load_asset(
-                Some(&active),
-                Some(&entry),
-                JobId::from_raw(32),
-                JobOwner::History(entry.image_id),
-            ),
-            Some(asset)
-        );
-        assert_eq!(
-            current_history_load_asset(
-                Some(&active),
-                Some(&entry),
-                JobId::from_raw(33),
-                JobOwner::History(entry.image_id),
-            ),
-            None
-        );
-        let changed = HistoryEntry {
-            generation: entry.generation.advance().expect("advance generation"),
-            ..entry
-        };
-        assert_eq!(
-            current_history_load_asset(
-                Some(&active),
-                Some(&changed),
-                JobId::from_raw(32),
-                JobOwner::History(changed.image_id),
-            ),
-            None
-        );
     }
 
     #[test]

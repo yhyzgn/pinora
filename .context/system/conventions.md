@@ -183,6 +183,14 @@ EventLoop 和所有导出副作用。`cargo test -p pinora-app export_session --
 `cargo check --workspace`、严格 Clippy、Windows target、`--version`、fmt、diff 与 `ctx validate` 均通过。
 这些离线门禁不证明真实文件系统、系统剪贴板、tray、窗口管理器、焦点、HiDPI 或性能，风险由 R-081 跟踪。
 
+131 历史加载会话状态模块已完成：`pinora-app::history_session` 唯一拥有 `HistoryLoadIntent`、
+`HistoryLoadRequest`、`ActiveHistoryLoad`、`HistoryLoadPreparation` 映射和当前历史选择的结果资产门禁。
+模块不依赖 winit，不读取文件、不启动/轮询 worker、不创建窗口或访问 runtime/tray；`desktop_shell`
+继续独占 `HistoryLoadJobService`、历史窗口、贴图/编辑器、错误反馈和 EventLoop。`cargo test -p pinora-app history_session -- --nocapture`
+（3 项）、`cargo test -p pinora-app --lib -- --nocapture`（26 项）、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`、
+`cargo check --workspace`、严格 Clippy、Windows target、fmt、diff 与 `ctx validate` 均通过。这些离线门禁
+不证明真实历史目录权限、worker 时序、窗口管理器、焦点、HiDPI、tray-only 或性能，风险由 R-082 跟踪。
+
 ## 跨平台构建与打包
 
 - Linux CI/打包依赖：`libasound2-dev libgbm-dev libgtk-3-dev libpipewire-0.3-dev libwayland-dev libx11-dev libxkbcommon-dev libxkbcommon-x11-dev pkg-config rpm`。
