@@ -70,6 +70,8 @@ sudo dnf install -y pipewire-devel mesa-libgbm-devel wayland-devel libxcb-devel
 
 111 桌面窗口策略边界已完成：`pinora-desktop` 现唯一拥有隐藏创建、任务栏/Dock 隔离、映射后显示和 KDE KWin 位置/分页器策略；窗口策略/KWin 定向 8 项与交互原语测试通过。完整 workspace、Clippy、Windows target、fmt、diff 和 `ctx validate` 作为任务 111 最终门禁；真实 Windows/macOS/X11/KDE Wayland 窗口管理器行为、首帧、焦点、tray 和性能仍未验证。
 
+112 桌面呈现状态边界已完成：`pinora-desktop` 现唯一拥有 `PanelTheme`、系统外观解析、tray 能力摘要和固定反馈/错误码映射；主题、能力和反馈定向 10 项与既有桌面测试通过。完整 workspace、Clippy、Windows target、fmt、diff 和 `ctx validate` 作为任务 112 最终门禁；真实 tray、系统主题事件、窗口管理器与性能仍未验证。
+
 096 历史保留期增量已执行并通过：`cargo test -p pinora-core settings -- --nocapture`、`cargo test -p pinora-core history -- --nocapture`、`cargo test -p pinora-app --lib settings_store::tests -- --nocapture`、`cargo test -p pinora-app --lib settings_panel::tests -- --nocapture`、`cargo test -p pinora-app --lib history_export::tests -- --nocapture`、`cargo test -p pinora-app --lib desktop_shell::overlay_scale_tests -- --nocapture`；完整门禁使用上方 workspace、Clippy、测试、Windows target、差异和 `ctx validate` 命令。完整测试未连接真实共享数据库、缓存、消息队列、对象存储或第三方服务；2 个真实桌面测试按既有约定忽略。
 
 097 历史最大磁盘占用增量使用同一组定向测试，并额外覆盖 v7 到 v8 设置迁移、非法容量修复、容量下调后的最旧优先 tombstone 与受管 PNG 清理；完整门禁仍使用上方 workspace、Clippy、测试、Windows target、差异和 `ctx validate` 命令。测试不连接真实共享基础设施；2 个真实桌面测试按既有约定忽略。

@@ -5,11 +5,11 @@
 
 use pinora_core::CapabilitySnapshot;
 
-pub(crate) const CAPABILITY_MENU_TITLE: &str = "环境能力（本次启动）";
+pub const CAPABILITY_MENU_TITLE: &str = "环境能力（本次启动）";
 
 /// 可安全显示在 tray 中的启动能力快照。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TrayCapabilitySummary {
+pub struct TrayCapabilitySummary {
     capture_available: bool,
     global_hotkey_available: bool,
     clipboard_image_available: bool,
@@ -18,7 +18,7 @@ pub(crate) struct TrayCapabilitySummary {
 
 impl TrayCapabilitySummary {
     /// 热键状态必须来自实际注册结果，不能沿用 bootstrap probe 的平台猜测。
-    pub(crate) const fn from_runtime(
+    pub const fn from_runtime(
         runtime: &CapabilitySnapshot,
         global_hotkey_available: bool,
         ocr_available: bool,
@@ -32,7 +32,7 @@ impl TrayCapabilitySummary {
     }
 
     /// 标题下的只读菜单项，顺序固定以便快速扫描。
-    pub(crate) const fn labels(self) -> [&'static str; 4] {
+    pub const fn labels(self) -> [&'static str; 4] {
         [
             capture_label(self.capture_available),
             global_hotkey_label(self.global_hotkey_available),
@@ -50,7 +50,7 @@ const fn capture_label(available: bool) -> &'static str {
     }
 }
 
-pub(crate) const fn global_hotkey_label(available: bool) -> &'static str {
+pub const fn global_hotkey_label(available: bool) -> &'static str {
     if available {
         "全局热键：可用"
     } else {

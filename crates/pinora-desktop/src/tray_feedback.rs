@@ -7,7 +7,7 @@ use pinora_core::ErrorCode;
 
 /// 当前 tray 中可展示的导出操作种类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TrayExportOperation {
+pub enum TrayExportOperation {
     CopyImage,
     CopyText,
     SaveFile,
@@ -15,7 +15,7 @@ pub(crate) enum TrayExportOperation {
 
 /// 当前 tray 中可展示的最近用户操作状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TrayFeedback {
+pub enum TrayFeedback {
     Ready,
     CapturePreparing,
     CaptureReady,
@@ -41,7 +41,7 @@ pub(crate) enum TrayFeedback {
 
 impl TrayFeedback {
     /// 菜单状态项和 tooltip 共享这一受控文本。
-    pub(crate) const fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Ready => "Pinora - 就绪",
             Self::CapturePreparing => "Pinora - 正在准备截图",
@@ -69,7 +69,7 @@ impl TrayFeedback {
 
     /// 诊断面板使用的短状态标识。它与 tray 文案一样只来自有限枚举，避免把
     /// 原始错误消息、路径或用户内容带入可见 UI。
-    pub(crate) const fn diagnostic_label(self) -> &'static str {
+    pub const fn diagnostic_label(self) -> &'static str {
         match self {
             Self::Ready => "READY",
             Self::CapturePreparing => "CAPTURE PREPARING",
@@ -96,7 +96,7 @@ impl TrayFeedback {
     }
 
     /// 只有失败状态才向诊断面板提供稳定错误码；成功或进行中状态不伪造错误。
-    pub(crate) const fn error_code(self) -> Option<ErrorCode> {
+    pub const fn error_code(self) -> Option<ErrorCode> {
         match self {
             Self::CaptureFailed(error)
             | Self::DelayedCaptureFailed(error)

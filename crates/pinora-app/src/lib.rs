@@ -12,15 +12,14 @@ mod history_window;
 mod image_sink;
 mod ocr_job;
 mod overlay_selection_readout;
-mod panel_theme;
 mod pin_context_menu;
 mod platform;
 mod runtime;
 mod settings_panel;
 mod settings_window;
 mod tray;
-mod tray_capabilities;
-mod tray_feedback;
+
+pub(crate) use pinora_desktop::{panel_theme, tray_capabilities, tray_feedback};
 
 pub use desktop_shell::run_desktop_shell;
 pub use export_job::{

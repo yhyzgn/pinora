@@ -8,14 +8,14 @@ use winit::window::Theme;
 
 /// 仅表示窗口系统 API 已明确报告的外观；未知状态不能猜测为浅色。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SystemAppearance {
+pub enum SystemAppearance {
     Unknown,
     Light,
     Dark,
 }
 
 impl SystemAppearance {
-    pub(crate) const fn from_winit(theme: Option<Theme>) -> Self {
+    pub const fn from_winit(theme: Option<Theme>) -> Self {
         match theme {
             Some(Theme::Light) => Self::Light,
             Some(Theme::Dark) => Self::Dark,
@@ -29,39 +29,36 @@ impl SystemAppearance {
 /// 颜色仅服务设置、历史和诊断窗口，不能被 Overlay、贴图或原生菜单复用，以免
 /// 在这些独立交互面上偷偷改变对比度和可读性。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PanelTheme {
-    pub(crate) background: u32,
-    pub(crate) header: u32,
-    pub(crate) border: u32,
-    pub(crate) surface: u32,
-    pub(crate) recessed_surface: u32,
-    pub(crate) selected_surface: u32,
-    pub(crate) control_surface: u32,
-    pub(crate) control_border: u32,
-    pub(crate) primary_text: u32,
-    pub(crate) secondary_text: u32,
-    pub(crate) muted_text: u32,
-    pub(crate) accent_text: u32,
-    pub(crate) on_action_text: u32,
-    pub(crate) primary_action: u32,
-    pub(crate) primary_action_border: u32,
-    pub(crate) secondary_action: u32,
-    pub(crate) secondary_action_border: u32,
-    pub(crate) success_action: u32,
-    pub(crate) success_action_border: u32,
-    pub(crate) danger_action: u32,
-    pub(crate) danger_action_border: u32,
-    pub(crate) warning_action: u32,
-    pub(crate) warning_action_border: u32,
-    pub(crate) available_status: u32,
-    pub(crate) restricted_status: u32,
+pub struct PanelTheme {
+    pub background: u32,
+    pub header: u32,
+    pub border: u32,
+    pub surface: u32,
+    pub recessed_surface: u32,
+    pub selected_surface: u32,
+    pub control_surface: u32,
+    pub control_border: u32,
+    pub primary_text: u32,
+    pub secondary_text: u32,
+    pub muted_text: u32,
+    pub accent_text: u32,
+    pub on_action_text: u32,
+    pub primary_action: u32,
+    pub primary_action_border: u32,
+    pub secondary_action: u32,
+    pub secondary_action_border: u32,
+    pub success_action: u32,
+    pub success_action_border: u32,
+    pub danger_action: u32,
+    pub danger_action_border: u32,
+    pub warning_action: u32,
+    pub warning_action_border: u32,
+    pub available_status: u32,
+    pub restricted_status: u32,
 }
 
 impl PanelTheme {
-    pub(crate) const fn resolve(
-        preference: ThemeMode,
-        system_appearance: SystemAppearance,
-    ) -> Self {
+    pub const fn resolve(preference: ThemeMode, system_appearance: SystemAppearance) -> Self {
         match preference {
             ThemeMode::Light => Self::light(),
             ThemeMode::Dark => Self::dark(),
@@ -72,7 +69,7 @@ impl PanelTheme {
         }
     }
 
-    pub(crate) const fn dark() -> Self {
+    pub const fn dark() -> Self {
         Self {
             background: 0x0014_1820,
             header: 0x0020_2B3A,
@@ -102,7 +99,7 @@ impl PanelTheme {
         }
     }
 
-    pub(crate) const fn light() -> Self {
+    pub const fn light() -> Self {
         Self {
             background: 0x00F4_F7FB,
             header: 0x00E6_EDF5,
@@ -138,31 +135,31 @@ impl PanelTheme {
 /// 即使用户暂时强制浅色或深色，仍记录后续系统事件；再次切回 `System` 时会立即
 /// 使用最近的明确系统外观，而不是等待下一次平台事件。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PanelThemeState {
+pub struct PanelThemeState {
     preference: ThemeMode,
     system_appearance: SystemAppearance,
 }
 
 impl PanelThemeState {
-    pub(crate) const fn new(preference: ThemeMode, system_appearance: SystemAppearance) -> Self {
+    pub const fn new(preference: ThemeMode, system_appearance: SystemAppearance) -> Self {
         Self {
             preference,
             system_appearance,
         }
     }
 
-    pub(crate) const fn palette(self) -> PanelTheme {
+    pub const fn palette(self) -> PanelTheme {
         PanelTheme::resolve(self.preference, self.system_appearance)
     }
 
-    pub(crate) fn set_preference(&mut self, preference: ThemeMode) -> bool {
+    pub fn set_preference(&mut self, preference: ThemeMode) -> bool {
         let changed = self.preference != preference;
         self.preference = preference;
         changed
     }
 
     /// 返回是否应重绘。强制浅/深色时仍吸收事件，但不产生无效帧。
-    pub(crate) fn update_system_appearance(&mut self, appearance: SystemAppearance) -> bool {
+    pub fn update_system_appearance(&mut self, appearance: SystemAppearance) -> bool {
         let changed = self.system_appearance != appearance;
         self.system_appearance = appearance;
         changed && self.preference == ThemeMode::System

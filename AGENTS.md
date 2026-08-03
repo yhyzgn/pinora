@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/111_window_policy.md`
-- 任务：`.context/tasks/111_window_policy.md`
+- 计划：`.context/plans/112_desktop_presentation.md`
+- 任务：`.context/tasks/112_desktop_presentation.md`
 
 ## 交付要求
 
