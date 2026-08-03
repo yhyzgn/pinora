@@ -41,16 +41,19 @@ use pinora_core::{
     CorrelationId, DEFAULT_OCR_CONFIDENCE_THRESHOLD, DisplayId, DisplayInfo, DomainEventKind,
     ErrorCode, ExportImageFormat, HistoryEntry, HistoryIndex, ImageId, ImageSink, JobId, JobKind,
     JobOwner, JobSpec, JobTerminalState, OcrLanguage, OcrResult, OcrTextSelection, OcrWordRef,
-    PinId, PinTransform, PinoraError, PixelPoint, PixelRect, SelectionHandle, SelectionSession,
-    SessionId, ThemeMode, bake_annotations, color_to_hex, render_preview_rgba,
+    PinId, PinTransform, PinoraError, PixelPoint, PixelRect, PixelSize, SelectionHandle,
+    SelectionSession, SessionId, ThemeMode, bake_annotations, color_to_hex, render_preview_rgba,
     resolve_all_displays_rect, sample_rgba_at,
 };
 use pinora_desktop::window_policy::{self, AuxiliaryWindowKind};
 use pinora_desktop::{
-    OverlayPreviewCache, PinResizeHandle, PinResizeTarget, ToolbarAction, ToolbarButton,
-    ToolbarPaintState, default_pin_position, fit_to_image_target, layout_toolbar, paint_toolbar,
-    pin_resize_anchor_position, pin_resize_handle_at, pin_resize_target_from_drag,
-    proportional_resize_target, scaled_window_size, toolbar_bounds, toolbar_hit,
+    OverlayPreviewCache, PinRenderCache, PinResizeHandle, PinResizeTarget, ToolbarAction,
+    ToolbarButton, ToolbarPaintState, XRGB_SELECTION_HANDLE_RENDER_RADIUS, blit_xrgb_rect,
+    build_pin_render_cache, default_pin_position, draw_xrgb_border, draw_xrgb_outline,
+    draw_xrgb_rect_border, draw_xrgb_selection_handles, fit_to_image_target, layout_toolbar,
+    paint_toolbar, pin_resize_anchor_position, pin_resize_handle_at, pin_resize_target_from_drag,
+    proportional_resize_target, scale_xrgb_nearest, scaled_window_size, toolbar_bounds,
+    toolbar_hit, xrgb_pixel_count,
 };
 use pinora_jobs::JobState;
 use pinora_ocr::{
@@ -948,22 +951,6 @@ fn cursor_for_pin_resize(handle: Option<PinResizeHandle>) -> CursorIcon {
         Some(PinResizeHandle::West) => CursorIcon::WResize,
         Some(PinResizeHandle::NorthWest) => CursorIcon::NwResize,
         None => CursorIcon::Default,
-    }
-}
-
-/// 贴图基础帧缓存：不包含 OCR、拖选或锁定边框等每帧变化的叠加层。
-struct PinRenderCache {
-    width: u32,
-    height: u32,
-    opacity_factor: u32,
-    pixels: Vec<u32>,
-}
-
-impl PinRenderCache {
-    fn matches(&self, width: u32, height: u32, opacity: f64) -> bool {
-        self.width == width
-            && self.height == height
-            && self.opacity_factor == opacity_factor(opacity)
     }
 }
 
@@ -4387,7 +4374,7 @@ where
 
         let image_size = image.size();
         let (w, h) = scaled_window_size(image_size, scale);
-        let expected_pixels = pixel_count(image_size.width, image_size.height, "pin image")?;
+        let expected_pixels = xrgb_pixel_count(image_size)?;
         let pixels_xrgb = match prepared_pixels_xrgb {
             Some(pixels) if pixels.len() == expected_pixels => pixels,
             Some(_) => {
@@ -5515,11 +5502,11 @@ where
         } else {
             Vec::new()
         };
-        let cached_pixels = &pin
+        let cached_pixels = pin
             .render_cache
             .as_ref()
             .expect("render cache is populated by ensure_pin_render_cache")
-            .pixels;
+            .pixels();
         let mut buffer = pin
             .surface
             .buffer_mut()
@@ -5543,7 +5530,7 @@ where
                 let y0 = (rect.origin.y as f64 * sy).round() as i32;
                 let x1 = (rect.right() as f64 * sx).round() as i32;
                 let y1 = (rect.bottom() as f64 * sy).round() as i32;
-                draw_rect_outline_xrgb(
+                draw_xrgb_outline(
                     &mut buffer[..bw * bh],
                     bw,
                     bh,
@@ -5555,7 +5542,7 @@ where
         }
         if let Some((start, end)) = ocr_drag {
             let drag_rect = window_rect_from_points(start, end);
-            draw_rect_outline_xrgb(
+            draw_xrgb_outline(
                 &mut buffer[..bw * bh],
                 bw,
                 bh,
@@ -5569,7 +5556,7 @@ where
         } else {
             0x00_40_A0_FF
         };
-        draw_border(&mut buffer[..bw * bh], bw, bh, border);
+        draw_xrgb_border(&mut buffer[..bw * bh], bw, bh, border);
         if let Some(menu) = context_menu.as_ref() {
             pin_context_menu::paint(&mut buffer[..bw * bh], bw, bh, menu, locked, always_on_top);
         }
@@ -5879,7 +5866,6 @@ fn nudge_selected_annotation(ov: &mut OverlayState, dx: i32, dy: i32) -> bool {
 }
 
 const SELECTION_HANDLE_HIT_RADIUS: i32 = 7;
-const SELECTION_HANDLE_RENDER_RADIUS: i32 = 4;
 
 fn overlay_can_resize_selection(ov: &OverlayState) -> bool {
     ov.phase == OverlayPhase::Ready
@@ -6005,7 +5991,7 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
     let tb_layout_changed = ov.last_toolbar_bounds != new_tb;
     let readout_changed = ov.last_selection_readout != new_readout
         || ov.last_selection_readout_bounds != new_readout_bounds;
-    let selection_chrome_padding = SELECTION_HANDLE_RENDER_RADIUS + 3;
+    let selection_chrome_padding = XRGB_SELECTION_HANDLE_RENDER_RADIUS + 3;
     let chrome_only = ov.toolbar_chrome_dirty
         && !ov.annotate_dirty
         && !sel_changed
@@ -6017,7 +6003,7 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
 
     if chrome_only {
         if let Some(tb) = ov.last_toolbar_bounds.or(new_tb) {
-            blit_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, tb);
+            blit_xrgb_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, tb);
             if ov.phase == OverlayPhase::Ready && !ov.toolbar.is_empty() {
                 paint_toolbar(
                     &mut ov.frame,
@@ -6043,15 +6029,15 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
     {
         if let Some(old) = ov.last_drawn_rect {
             let expanded = expand_rect(old, selection_chrome_padding, ov.buf_w, ov.buf_h);
-            blit_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, expanded);
+            blit_xrgb_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, expanded);
             damage.push(expanded);
         }
         if let Some(old_tb) = ov.last_toolbar_bounds {
-            blit_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, old_tb);
+            blit_xrgb_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, old_tb);
             damage.push(old_tb);
         }
         if let Some(old_readout) = ov.last_selection_readout_bounds {
-            blit_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, old_readout);
+            blit_xrgb_rect(&mut ov.frame, &ov.dimmed, img_w, img_h, old_readout);
             damage.push(old_readout);
         }
 
@@ -6075,13 +6061,13 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
                         rect.size.height as usize,
                     );
                 } else {
-                    blit_rect(&mut ov.frame, &ov.base, img_w, img_h, rect);
+                    blit_xrgb_rect(&mut ov.frame, &ov.base, img_w, img_h, rect);
                 }
             } else {
-                blit_rect(&mut ov.frame, &ov.base, img_w, img_h, rect);
+                blit_xrgb_rect(&mut ov.frame, &ov.base, img_w, img_h, rect);
             }
             if let Some(bounds) = selected_annotation_display_bounds(ov, rect) {
-                draw_rect_outline_xrgb(
+                draw_xrgb_outline(
                     &mut ov.frame,
                     img_w,
                     img_h,
@@ -6093,9 +6079,9 @@ fn paint_overlay(ov: &mut OverlayState) -> Result<(), PinoraError> {
                     0x00_35_D0_FF,
                 );
             }
-            draw_rect_border(&mut ov.frame, img_w, img_h, rect, 0x00_FF_CC_33);
+            draw_xrgb_rect_border(&mut ov.frame, img_w, img_h, rect, 0x00_FF_CC_33);
             if overlay_can_resize_selection(ov) {
-                draw_selection_handles(&mut ov.frame, img_w, img_h, rect);
+                draw_xrgb_selection_handles(&mut ov.frame, img_w, img_h, rect);
             }
             damage.push(expand_rect(
                 rect,
@@ -6291,7 +6277,7 @@ fn ensure_annotate_cache(ov: &mut OverlayState, disp_rect: PixelRect) {
         ov.annotate_cache = Some(xrgb);
     } else {
         let mut scaled = vec![0u32; dw * dh];
-        scale_nearest(&xrgb, sw, sh, &mut scaled, dw, dh);
+        scale_xrgb_nearest(&xrgb, sw, sh, &mut scaled, dw, dh);
         ov.annotate_cache = Some(scaled);
     }
     ov.annotate_cache_wh = wh;
@@ -6462,93 +6448,11 @@ fn ensure_pin_render_cache(pin: &mut PinWin, width: u32, height: u32) -> Result<
     let source_size = pin.image.size();
     pin.render_cache = Some(build_pin_render_cache(
         &pin.pixels_xrgb,
-        source_size.width,
-        source_size.height,
-        width,
-        height,
+        source_size,
+        PixelSize::new(width, height),
         pin.opacity,
     )?);
     Ok(())
-}
-
-fn build_pin_render_cache(
-    source: &[u32],
-    source_width: u32,
-    source_height: u32,
-    width: u32,
-    height: u32,
-    opacity: f64,
-) -> Result<PinRenderCache, PinoraError> {
-    let source_len = pixel_count(source_width, source_height, "pin source")?;
-    if source.len() != source_len {
-        return Err(PinoraError::new(
-            ErrorCode::InvalidState,
-            "pin source pixels do not match image dimensions",
-        ));
-    }
-    let target_len = pixel_count(width, height, "pin render target")?;
-    let source_width = usize::try_from(source_width)
-        .map_err(|_| PinoraError::new(ErrorCode::InvalidState, "pin source is too large"))?;
-    let source_height = usize::try_from(source_height)
-        .map_err(|_| PinoraError::new(ErrorCode::InvalidState, "pin source is too large"))?;
-    let width_usize = usize::try_from(width)
-        .map_err(|_| PinoraError::new(ErrorCode::InvalidState, "pin render target is too large"))?;
-    let height_usize = usize::try_from(height)
-        .map_err(|_| PinoraError::new(ErrorCode::InvalidState, "pin render target is too large"))?;
-    let mut pixels = vec![0; target_len];
-    if source_width == width_usize && source_height == height_usize {
-        pixels.copy_from_slice(source);
-    } else {
-        scale_nearest(
-            source,
-            source_width,
-            source_height,
-            &mut pixels,
-            width_usize,
-            height_usize,
-        );
-    }
-    apply_opacity_darken(&mut pixels, opacity);
-    Ok(PinRenderCache {
-        width,
-        height,
-        opacity_factor: opacity_factor(opacity),
-        pixels,
-    })
-}
-
-fn pixel_count(width: u32, height: u32, subject: &str) -> Result<usize, PinoraError> {
-    let width = usize::try_from(width).map_err(|_| {
-        PinoraError::new(ErrorCode::InvalidState, format!("{subject} is too large"))
-    })?;
-    let height = usize::try_from(height).map_err(|_| {
-        PinoraError::new(ErrorCode::InvalidState, format!("{subject} is too large"))
-    })?;
-    width
-        .checked_mul(height)
-        .ok_or_else(|| PinoraError::new(ErrorCode::InvalidState, format!("{subject} is too large")))
-}
-
-/// 无窗口透明时，用压暗模拟 opacity（1.0 = 原色，0.15 = 很暗）。
-fn apply_opacity_darken(buf: &mut [u32], opacity: f64) {
-    let factor = opacity_factor(opacity);
-    if factor == 256 {
-        return;
-    }
-    for px in buf.iter_mut() {
-        let r = ((*px >> 16) & 0xff) * factor / 256;
-        let g = ((*px >> 8) & 0xff) * factor / 256;
-        let b = (*px & 0xff) * factor / 256;
-        *px = (r << 16) | (g << 8) | b;
-    }
-}
-
-fn opacity_factor(opacity: f64) -> u32 {
-    if opacity >= 0.999 {
-        256
-    } else {
-        (opacity.clamp(0.05, 1.0) * 256.0) as u32
-    }
 }
 
 fn opacity_from_settings_percent(percent: u8) -> f64 {
@@ -6565,152 +6469,6 @@ fn pin_window_level(always_on_top: bool) -> WindowLevel {
 
 fn next_pin_recency(current: u64) -> u64 {
     current.saturating_add(1)
-}
-
-fn blit_rect(dst: &mut [u32], src: &[u32], stride: usize, height: usize, rect: PixelRect) {
-    let x0 = rect.origin.x.max(0) as usize;
-    let y0 = rect.origin.y.max(0) as usize;
-    let x1 = (rect.right() as usize).min(stride);
-    let y1 = (rect.bottom() as usize).min(height);
-    if x1 <= x0 || y1 <= y0 {
-        return;
-    }
-    let row_w = x1 - x0;
-    for y in y0..y1 {
-        let start = y * stride + x0;
-        dst[start..start + row_w].copy_from_slice(&src[start..start + row_w]);
-    }
-}
-
-fn scale_nearest(src: &[u32], sw: usize, sh: usize, dst: &mut [u32], dw: usize, dh: usize) {
-    for y in 0..dh {
-        let sy = y * sh / dh;
-        let src_row = sy * sw;
-        let dst_row = y * dw;
-        for x in 0..dw {
-            dst[dst_row + x] = src[src_row + x * sw / dw];
-        }
-    }
-}
-
-fn draw_rect_border(buf: &mut [u32], stride: usize, height: usize, rect: PixelRect, color: u32) {
-    let x0 = rect.origin.x.max(0) as usize;
-    let y0 = rect.origin.y.max(0) as usize;
-    let x1 = (rect.right() as usize).min(stride);
-    let y1 = (rect.bottom() as usize).min(height);
-    if x1 <= x0 || y1 <= y0 {
-        return;
-    }
-    for t in 0..2usize {
-        let yt = y0 + t;
-        let yb = y1.saturating_sub(1 + t);
-        if yt < height {
-            for x in x0..x1 {
-                buf[yt * stride + x] = color;
-            }
-        }
-        if yb < height && yb >= y0 {
-            for x in x0..x1 {
-                buf[yb * stride + x] = color;
-            }
-        }
-        let xl = x0 + t;
-        let xr = x1.saturating_sub(1 + t);
-        for y in y0..y1 {
-            if xl < stride {
-                buf[y * stride + xl] = color;
-            }
-            if xr < stride {
-                buf[y * stride + xr] = color;
-            }
-        }
-    }
-}
-
-fn draw_selection_handles(buf: &mut [u32], stride: usize, height: usize, rect: PixelRect) {
-    for handle in SelectionHandle::ALL {
-        let center = handle.center(rect);
-        fill_xrgb_rect(
-            buf,
-            stride,
-            height,
-            PixelRect::new(
-                center.x.saturating_sub(SELECTION_HANDLE_RENDER_RADIUS),
-                center.y.saturating_sub(SELECTION_HANDLE_RENDER_RADIUS),
-                (SELECTION_HANDLE_RENDER_RADIUS * 2 + 1) as u32,
-                (SELECTION_HANDLE_RENDER_RADIUS * 2 + 1) as u32,
-            ),
-            0x00_23_29_33,
-        );
-        fill_xrgb_rect(
-            buf,
-            stride,
-            height,
-            PixelRect::new(
-                center.x.saturating_sub(SELECTION_HANDLE_RENDER_RADIUS - 1),
-                center.y.saturating_sub(SELECTION_HANDLE_RENDER_RADIUS - 1),
-                (SELECTION_HANDLE_RENDER_RADIUS * 2 - 1) as u32,
-                (SELECTION_HANDLE_RENDER_RADIUS * 2 - 1) as u32,
-            ),
-            0x00_FF_FF_FF,
-        );
-    }
-}
-
-fn fill_xrgb_rect(buf: &mut [u32], stride: usize, height: usize, rect: PixelRect, color: u32) {
-    let x0 = rect.origin.x.max(0) as usize;
-    let y0 = rect.origin.y.max(0) as usize;
-    let x1 = (rect.right() as usize).min(stride);
-    let y1 = (rect.bottom() as usize).min(height);
-    if x1 <= x0 || y1 <= y0 {
-        return;
-    }
-    for y in y0..y1 {
-        buf[y * stride + x0..y * stride + x1].fill(color);
-    }
-}
-
-/// XRGB 缓冲区上画轴对齐矩形轮廓（OCR 词框）。
-fn draw_rect_outline_xrgb(
-    buf: &mut [u32],
-    stride: usize,
-    height: usize,
-    from: PixelPoint,
-    to: PixelPoint,
-    color: u32,
-) {
-    if stride == 0 || height == 0 {
-        return;
-    }
-    let x0 = from.x.clamp(0, stride as i32 - 1) as usize;
-    let x1 = to.x.clamp(0, stride as i32 - 1) as usize;
-    let y0 = from.y.clamp(0, height as i32 - 1) as usize;
-    let y1 = to.y.clamp(0, height as i32 - 1) as usize;
-    if x1 < x0 || y1 < y0 {
-        return;
-    }
-    for x in x0..=x1 {
-        buf[y0 * stride + x] = color;
-        buf[y1 * stride + x] = color;
-    }
-    for y in y0..=y1 {
-        buf[y * stride + x0] = color;
-        buf[y * stride + x1] = color;
-    }
-}
-
-fn draw_border(buf: &mut [u32], w: usize, h: usize, color: u32) {
-    if w == 0 || h == 0 {
-        return;
-    }
-    for x in 0..w {
-        buf[x] = color;
-        buf[(h - 1) * w + x] = color;
-    }
-    for y in 0..h {
-        buf[y * w] = color;
-        buf[y * w + w - 1] = color;
-    }
 }
 
 #[cfg(test)]
@@ -7294,28 +7052,6 @@ mod overlay_scale_tests {
             persisted_auxiliary_panel_theme(&Err("write_failed".into()), ThemeMode::Light),
             None
         );
-    }
-
-    #[test]
-    fn pin_render_cache_scales_and_darkens_for_its_exact_key() {
-        let cache =
-            build_pin_render_cache(&[0x00ff_0000, 0x0000_00ff], 2, 1, 4, 1, 0.5).expect("cache");
-
-        assert_eq!(
-            cache.pixels,
-            vec![0x007f_0000, 0x007f_0000, 0x0000_007f, 0x0000_007f]
-        );
-        assert!(cache.matches(4, 1, 0.5));
-        assert!(!cache.matches(2, 1, 0.5));
-        assert!(!cache.matches(4, 1, 0.75));
-    }
-
-    #[test]
-    fn near_opaque_pin_render_cache_keeps_existing_pixel_semantics() {
-        let cache = build_pin_render_cache(&[0x0011_2233], 1, 1, 1, 1, 0.999).expect("cache");
-
-        assert_eq!(cache.pixels, vec![0x0011_2233]);
-        assert!(cache.matches(1, 1, 1.0));
     }
 
     #[test]

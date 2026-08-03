@@ -18,12 +18,15 @@
 ```mermaid
 graph LR
     Main["src/main.rs"] --> App["pinora-app\n窗口宿主 + 业务编排"]
+    App --> Runtime["pinora-runtime\n命令/状态/单实例工作流"]
     App --> Platform["pinora-platform\n系统集成"]
     App --> Desktop["pinora-desktop\n纯 UI 面板/读数/菜单 + 交互原语"]
     App --> Export["pinora-export\n导出/编码/剪贴板任务"]
     App --> History["pinora-history\n历史策略/异步读取"]
     App --> Tray["pinora-tray\n菜单/句柄/事件"]
     App --> Core["pinora-core\n领域模型"]
+    Runtime --> Core
+    Runtime --> Platform
     Platform --> Core
     Desktop --> Core
     Export --> Core
@@ -38,10 +41,11 @@ graph LR
 ```
 
 - `pinora-platform` 唯一拥有 `start_on_login`、`single_instance`、`os_instance`、`hotkey` 和 Linux `wayland_portal`。
-- `pinora-desktop` 现唯一拥有 `settings_panel`、`history_browser`、`diagnostics_panel`、`overlay_selection_readout` 和 `pin_context_menu` 的纯自绘状态、布局、命中和 XRGB 绘制；`pinora-app` 通过 `pub(crate) use pinora_desktop::{...}` 与公开 re-export 复用这些模块。
+- `pinora-desktop` 现唯一拥有 `settings_panel`、`history_browser`、`diagnostics_panel`、`overlay_selection_readout`、`pin_context_menu` 与 `xrgb` 的纯自绘状态、布局、命中、XRGB 绘制和贴图基础帧缓存；`pinora-app` 通过 crate 导出复用这些模块，但仍持有 Window/Surface。
 - `pinora-export` 现唯一拥有 `image_sink` 与 `export_job` 的图像编码、原子保存、系统剪贴板和受监督导出 worker；`pinora-app` 仅通过 crate re-export 与服务接口使用它们。
 - `pinora-history` 现唯一拥有 `history_export` 与 `history_load_job` 的历史索引、tombstone 策略、受管 PNG 校验和异步读取 worker；`pinora-app` 仅通过 crate re-export 使用历史服务。
 - `pinora-tray` 现唯一拥有 `tray-icon` 的菜单、句柄、事件映射和动态贴图列表；`pinora-app` 仅消费 `TrayAction` 并编排业务操作。
+- `pinora-runtime` 现唯一拥有 `AppRuntime`、命令分发、单实例生命周期、领域事件发布和 `CapabilityProbe` 端口；`pinora-app` 仅实现真实能力探测。
 - `pinora-app` 当前仍拥有 OCR 触发与 UI 结果交付、历史窗口/选择、Overlay/贴图窗口和唯一 EventLoop；这些边界按后续任务逐一拆分。
 
 ## 系统依赖（Linux + xcap）
@@ -100,6 +104,8 @@ sudo dnf install -y pipewire-devel mesa-libgbm-devel wayland-devel libxcb-devel
 117 OCR 任务服务 crate 边界已完成：`pinora-ocr` 现唯一拥有 `OcrJobService`、本地 runner、进程内结果缓存、worker 回收和基于 owner/资产版本/截止时间的结果门禁；app 只传入当前 UI 资产并处理验收结果。`cargo test -p pinora-ocr -- --nocapture` 26 通过，`cargo test -p pinora-app --lib -- --nocapture` 57 通过；workspace 测试、Clippy、Windows target、fmt、diff 和 `ctx validate` 作为任务 117 最终门禁。真实 OCR 模型、外部进程压力、GUI 交付和性能仍未验证。
 
 118 应用运行时工作流 crate 边界已完成：`pinora-runtime` 现唯一拥有 `AppRuntime`、`BootstrapOutcome`、`DispatchResult`、`CapabilityProbe`、命令分发、单实例生命周期和领域事件发布；app 只实现真实能力探测并通过 re-export 兼容根入口和 desktop shell。`cargo test -p pinora-runtime -- --nocapture` 14 项通过、app 回归 43 项通过；完整 workspace、Clippy、Windows target、fmt、diff 和 `ctx validate` 作为任务 118 最终门禁。真实桌面单实例、权限、窗口隔离和性能仍未验证。
+
+119 桌面 XRGB 渲染原语边界已完成：`pinora-desktop` 现唯一拥有 `PinRenderCache`、最近邻缩放、压暗、脏区恢复、选区手柄、矩形/词框/贴图边框和受控像素计数；app 只保留 `Window`/`Surface` 上传、Overlay/贴图状态和输入编排。`cargo test -p pinora-desktop -- --nocapture` 83 项通过、app 回归 41 项通过；完整 workspace、Clippy、Windows target、fmt、diff 和 `ctx validate` 作为任务 119 最终门禁。真实 softbuffer、HiDPI、连续 resize、焦点和性能仍未验证。
 
 096 历史保留期增量已执行并通过：`cargo test -p pinora-core settings -- --nocapture`、`cargo test -p pinora-core history -- --nocapture`、`cargo test -p pinora-app --lib settings_store::tests -- --nocapture`、`cargo test -p pinora-app --lib settings_panel::tests -- --nocapture`、`cargo test -p pinora-app --lib history_export::tests -- --nocapture`、`cargo test -p pinora-app --lib desktop_shell::overlay_scale_tests -- --nocapture`；完整门禁使用上方 workspace、Clippy、测试、Windows target、差异和 `ctx validate` 命令。完整测试未连接真实共享数据库、缓存、消息队列、对象存储或第三方服务；2 个真实桌面测试按既有约定忽略。
 

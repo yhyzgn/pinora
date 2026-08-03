@@ -16,6 +16,7 @@ pub mod settings_panel;
 pub mod tray_capabilities;
 pub mod tray_feedback;
 pub mod window_policy;
+mod xrgb;
 
 pub use overlay_preview_cache::OverlayPreviewCache;
 pub use overlay_toolbar::{
@@ -27,4 +28,9 @@ pub use pin_layout::{
     PinResizeTarget, default_pin_position, fit_to_image_target, pin_resize_anchor_position,
     pin_resize_handle_at, pin_resize_target_from_drag, proportional_resize_target,
     scaled_window_size,
+};
+pub use xrgb::{
+    PinRenderCache, XRGB_SELECTION_HANDLE_RENDER_RADIUS, blit_xrgb_rect, build_pin_render_cache,
+    draw_xrgb_border, draw_xrgb_outline, draw_xrgb_rect_border, draw_xrgb_selection_handles,
+    scale_xrgb_nearest, xrgb_pixel_count,
 };

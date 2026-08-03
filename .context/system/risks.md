@@ -631,6 +631,15 @@
 - 回滚或隔离动作：恢复 app 内 `runtime.rs` 与 `mod runtime`，移除 `pinora-runtime` 依赖；不改变 core 命令/事件格式和平台适配器。
 - 负责人和状态：Neo；离线工作流边界已验证，真实单实例、权限和桌面生命周期证据开放。
 
+## R-070：XRGB 渲染原语已迁移，但真实图形表面与交互帧时间仍未验证（高）
+
+- 证据和影响范围：119 将贴图基础帧缓存、最近邻缩放、压暗、脏区恢复、选区手柄和矩形/词框/贴图边框绘制迁入 `pinora-desktop::xrgb`；app 只持有窗口、surface 和状态机。desktop 83 项与 app 41 项离线测试通过。
+- 触发条件：高分辨率多贴图、持续 resize、拖选/标注、OCR 词框、HiDPI、softbuffer 后端、显卡驱动、窗口最小化/恢复和不同桌面合成器。
+- 失败模式：纯像素结果正确但真实 surface 上传、damage present、窗口 configure 或合成器调度仍可能造成闪烁、掉帧、输入延迟或焦点/任务栏/Dock 异常。
+- 缓解措施和必需验证：保持 app 仅在状态变化时重建基础帧，Overlay 持续使用脏区上传，所有窗口继续经过 `window_policy`；在 Windows/macOS/X11/KDE Wayland 的 100%/200% HiDPI 上验证连续 resize、拖选、OCR、10+ 贴图、首帧、连续帧时间、焦点、tray-only 和任务栏/Dock/分页器。
+- 回滚或隔离动作：恢复 app 内 XRGB 函数与 `PinRenderCache`，移除 `pinora-desktop::xrgb` 导出；不改变图像、OCR、窗口策略、托盘或数据格式。
+- 负责人和状态：Neo；离线像素与 crate 边界已验证，真实图形表面、窗口管理器和性能证据开放。
+
 ## 风险一：上下文漂移
 
 - 触发条件：代码、配置或工作流变化后，没有同步更新对应上下文文件。
