@@ -2521,6 +2521,7 @@ dependencies = [
  "pinora-ocr",
  "pinora-overlay",
  "pinora-panels",
+ "pinora-pin",
  "pinora-platform",
  "pinora-runtime",
  "pinora-storage",
@@ -2616,6 +2617,13 @@ dependencies = [
  "pinora-storage",
  "softbuffer",
  "winit",
+]
+
+[[package]]
+name = "pinora-pin"
+version = "0.1.0"
+dependencies = [
+ "pinora-core",
 ]
 
 [[package]]

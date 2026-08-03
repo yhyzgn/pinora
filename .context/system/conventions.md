@@ -13,7 +13,7 @@
 - Pinora 空闲状态不创建控制窗口；托盘、已成功注册的全局热键与单实例 IPC 是后台入口。所有辅助 `WindowAttributes` 必须经 `window_policy::auxiliary_window_attributes`；新建事件循环必须使用 `window_policy::auxiliary_event_loop`，禁止绕开任务栏/Dock 策略。
 - KWin 特例仅允许在窗口映射后按 Pinora 自身标题调用 `kwin_place`；`busctl` 失败只能记录，不能阻塞事件循环或被当作其他 Wayland 合成器的支持证据。
 
-## 当前 crate 边界（任务 128 已验证）
+## 当前 crate 边界（任务 128/135 已验证）
 
 ```mermaid
 graph LR
@@ -21,6 +21,8 @@ graph LR
     App --> Runtime["pinora-runtime\n命令/状态/单实例工作流"]
     App --> Platform["pinora-platform\n系统集成"]
     App --> Desktop["pinora-desktop\n纯 UI 面板/读数/菜单 + 交互原语"]
+    App --> Overlay["pinora-overlay\nOverlay 会话身份/阶段"]
+    App --> Pin["pinora-pin\n贴图会话状态/呈现参数"]
     App --> Capture["pinora-capture\n捕获请求/后端/预截帧"]
     App --> Export["pinora-export\n图像合成/导出/编码/剪贴板任务"]
     App --> History["pinora-history\n历史策略/截止时间/异步读取"]
@@ -32,6 +34,8 @@ graph LR
     Runtime --> Platform
     Platform --> Core
     Desktop --> Core
+    Overlay --> Core
+    Pin --> Core
     Export --> Core
     Export --> Jobs["pinora-jobs\n任务监督"]
     History --> Core
@@ -66,6 +70,7 @@ graph LR
   只负责打开时机、事件循环、设置/历史/诊断编排和结果反馈。
 - `pinora-tray` 现唯一拥有 `tray-icon` 的菜单、句柄、事件映射和动态贴图列表；`pinora-app` 仅消费 `TrayAction` 并编排业务操作。
 - `pinora-runtime` 现唯一拥有 `AppRuntime`、命令分发、单实例生命周期、领域事件发布和 `CapabilityProbe` 端口；`pinora-app` 仅实现真实能力探测。
+- `pinora-pin` 现唯一拥有贴图鼠标命中状态、平台确认后的纯状态转移、呈现参数、关闭恢复快照和饱和最近使用序号；其生产依赖仅为 `pinora-core`。`pinora-app` 继续独占 `PinWin`、Window/Surface、输入、平台命中调用、OCR、导出、tray 和唯一 EventLoop。
 - `pinora-app` 当前仍拥有 OCR 触发与 UI 结果交付、历史选择、Overlay/贴图窗口和唯一 EventLoop；
   设置/历史/诊断的 Window/Surface 适配已迁入 `pinora-panels`，Overlay/贴图适配仍按后续任务拆分。
 
@@ -191,13 +196,13 @@ EventLoop 和所有导出副作用。`cargo test -p pinora-app export_session --
 `cargo check --workspace`、严格 Clippy、Windows target、fmt、diff 与 `ctx validate` 均通过。这些离线门禁
 不证明真实历史目录权限、worker 时序、窗口管理器、焦点、HiDPI、tray-only 或性能，风险由 R-082 跟踪。
 
-132 贴图会话状态模块已完成：`pinora-app::pin_session` 唯一拥有 `PinMouseMode`、平台请求后的
-状态转移、`PinPresentation`、`ClosedPinSnapshot` 和饱和最近使用序号；模块只依赖 `pinora-core`，
-不依赖 winit。`desktop_shell` 继续独占 `PinWin`、Window/Surface、输入、平台命中、runtime、OCR、
-导出、tray 和 EventLoop。`cargo test -p pinora-app pin_session -- --nocapture`（3 项）、
-`cargo test -p pinora-app --lib -- --nocapture`（27 项）、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`、
-`cargo check --workspace`、严格 Clippy、Windows target、fmt、diff 与 `ctx validate` 均通过。这些离线门禁
-不证明真实鼠标命中、窗口管理器、焦点、任务栏/Dock、HiDPI、tray-only 或性能，风险由 R-083 跟踪。
+132/135 贴图会话 crate 已完成：`pinora-pin` 唯一拥有 `PinMouseMode`、平台请求后的状态转移、
+`PinPresentation`、`ClosedPinSnapshot` 和饱和最近使用序号；生产依赖仅为 `pinora-core`，不依赖
+winit。`desktop_shell` 继续独占 `PinWin`、Window/Surface、输入、平台命中、runtime、OCR、导出、tray
+和 EventLoop。`cargo test -p pinora-pin -- --nocapture`（3 项）、`cargo test -p pinora-app --lib -- --nocapture`
+（21 项）、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`、`cargo check --workspace`、严格 Clippy、
+Windows target、`--version`、fmt、diff 与 `ctx validate` 均通过。这些离线门禁不证明真实鼠标命中、
+窗口管理器、焦点、任务栏/Dock、HiDPI、tray-only 或性能，风险由 R-083 跟踪。
 
 133/134 Overlay 会话 crate 已完成：`pinora-overlay` 唯一拥有 `OverlayPhase`、`OverlayAssetIdentity`、
 `AnnotationRevision` 到 `AssetRef` 的 generation 映射和派生图像身份盖章；生产依赖只包含

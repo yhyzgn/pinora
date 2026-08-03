@@ -4,7 +4,6 @@ mod capture_session;
 mod desktop_shell;
 mod export_session;
 mod history_session;
-mod pin_session;
 mod platform;
 
 pub(crate) use pinora_desktop::{

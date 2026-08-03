@@ -8,6 +8,7 @@ members = [
     "crates/pinora-storage",
     "crates/pinora-desktop",
     "crates/pinora-overlay",
+    "crates/pinora-pin",
     "crates/pinora-ocr",
     "crates/pinora-export",
     "crates/pinora-history",
@@ -32,6 +33,7 @@ pinora-jobs = { path = "crates/pinora-jobs" }
 pinora-storage = { path = "crates/pinora-storage" }
 pinora-desktop = { path = "crates/pinora-desktop" }
 pinora-overlay = { path = "crates/pinora-overlay" }
+pinora-pin = { path = "crates/pinora-pin" }
 pinora-ocr = { path = "crates/pinora-ocr" }
 pinora-export = { path = "crates/pinora-export" }
 pinora-history = { path = "crates/pinora-history" }

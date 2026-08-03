@@ -82,12 +82,12 @@
   `HistoryLoadJobService`、窗口/贴图/编辑器、错误反馈和 EventLoop。状态模块 3 项、app 26 项、
   workspace 回归、严格 Clippy、Windows target、格式、差异和上下文校验通过；离线证据不证明真实
   历史目录权限、worker 时序、窗口管理器、焦点、HiDPI、tray-only 或性能。
-- 2026-08-03 的 132 将 `PinMouseMode`、平台请求后的纯状态转移、`PinPresentation`、
-  `ClosedPinSnapshot` 和饱和最近使用序号迁入 `pinora-app::pin_session`。模块只依赖
-  `pinora-core`，不依赖 winit；`desktop_shell` 保留 `PinWin`、Window/Surface、输入、平台命中、
-  runtime、OCR、导出、tray 和 EventLoop。状态模块 3 项、app 27 项、workspace 回归、严格 Clippy、
-  Windows target、格式、差异和上下文校验通过；离线证据不证明真实鼠标命中、窗口管理器、焦点、
-  任务栏/Dock、HiDPI、tray-only 或性能。
+- 2026-08-03 的 132/135 将 `PinMouseMode`、平台请求后的纯状态转移、`PinPresentation`、
+  `ClosedPinSnapshot` 和饱和最近使用序号先迁入 app 私有模块，随后提升为 `pinora-pin` crate。
+  该 crate 的生产依赖仅为 `pinora-core`，不依赖 winit；`desktop_shell` 保留 `PinWin`、
+  Window/Surface、输入、平台命中、runtime、OCR、导出、tray 和 EventLoop。crate 3 项、app 21 项、
+  workspace 回归、严格 Clippy、Windows target、版本探针、格式、差异和上下文校验通过；离线证据不证明
+  真实鼠标命中、窗口管理器、焦点、任务栏/Dock、HiDPI、tray-only 或性能。
 - 2026-08-03 的 133/134 将 `OverlayPhase`、`OverlayAssetIdentity`、选区标注 revision 到 `AssetRef`
   的映射和派生 `CaptureImage` 身份盖章迁入 `pinora-overlay`。生产代码只依赖 `pinora-core`，
   `pinora-jobs` 仅为陈旧结果门禁的测试依赖；`desktop_shell` 继续独占 Overlay Window/Surface、绘制、

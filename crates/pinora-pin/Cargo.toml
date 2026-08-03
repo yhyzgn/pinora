@@ -1,0 +1,10 @@
+[package]
+name = "pinora-pin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pinora pinned-image session state and presentation values"
+
+[dependencies]
+pinora-core = { workspace = true }

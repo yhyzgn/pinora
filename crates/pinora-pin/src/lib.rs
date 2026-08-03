@@ -1,25 +1,24 @@
 //! 贴图会话的纯状态和值对象。
 //!
-//! 贴图窗口、输入、平台命中调用、runtime、OCR、导出、tray 和唯一 EventLoop 仍由
-//! `desktop_shell` 持有。
+//! 贴图窗口、输入、平台命中调用、runtime、OCR、导出、tray 和唯一 EventLoop 由应用桌面壳持有。
 
 use pinora_core::{CaptureImage, PixelPoint};
 
 /// 贴图窗口请求给平台的鼠标命中状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PinMouseMode {
+pub enum PinMouseMode {
     Direct,
     Passthrough,
 }
 
 impl PinMouseMode {
-    pub(crate) const fn hittest_enabled(self) -> bool {
+    pub const fn hittest_enabled(self) -> bool {
         matches!(self, Self::Direct)
     }
 }
 
 /// 平台调用失败时，进程内状态必须保留原值，不能把请求当作已生效。
-pub(crate) const fn pin_mouse_mode_after_platform_request(
+pub const fn pin_mouse_mode_after_platform_request(
     current: PinMouseMode,
     requested: PinMouseMode,
     platform_succeeded: bool,
@@ -32,12 +31,12 @@ pub(crate) const fn pin_mouse_mode_after_platform_request(
 }
 
 /// 创建贴图窗口所需的呈现参数。预处理像素仅由受监督的历史读取 worker 提供。
-pub(crate) struct PinPresentation {
-    pub(crate) position: PixelPoint,
-    pub(crate) scale: f64,
-    pub(crate) opacity: f64,
-    pub(crate) always_on_top: bool,
-    pub(crate) pixels_xrgb: Option<Vec<u32>>,
+pub struct PinPresentation {
+    pub position: PixelPoint,
+    pub scale: f64,
+    pub opacity: f64,
+    pub always_on_top: bool,
+    pub pixels_xrgb: Option<Vec<u32>>,
 }
 
 /// 可撤销关闭的贴图快照。
@@ -45,17 +44,17 @@ pub(crate) struct PinPresentation {
 /// 快照只保留可恢复的领域图像和用户可见呈现参数。窗口、Surface、鼠标穿透和 worker
 /// 都属于已结束的窗口生命周期，不能在恢复时携带。
 #[derive(Clone)]
-pub(crate) struct ClosedPinSnapshot {
-    pub(crate) image: CaptureImage,
-    pub(crate) position: PixelPoint,
-    pub(crate) scale: f64,
-    pub(crate) opacity: f64,
-    pub(crate) locked: bool,
-    pub(crate) always_on_top: bool,
+pub struct ClosedPinSnapshot {
+    pub image: CaptureImage,
+    pub position: PixelPoint,
+    pub scale: f64,
+    pub opacity: f64,
+    pub locked: bool,
+    pub always_on_top: bool,
 }
 
 impl ClosedPinSnapshot {
-    pub(crate) fn new(
+    pub fn new(
         image: CaptureImage,
         position: PixelPoint,
         scale: f64,
@@ -75,7 +74,7 @@ impl ClosedPinSnapshot {
 }
 
 /// 进程内最近使用序号；饱和后保持最大值而不是回绕，避免 tray 排序逆序。
-pub(crate) const fn next_pin_recency(current: u64) -> u64 {
+pub const fn next_pin_recency(current: u64) -> u64 {
     current.saturating_add(1)
 }
 

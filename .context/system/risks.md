@@ -761,10 +761,10 @@
 
 ## R-083：贴图会话状态已拆分，但真实鼠标命中与窗口时序仍未验证（高）
 
-- 证据和影响范围：132 将 `PinMouseMode`、平台请求后的纯状态转移、`PinPresentation`、
-  `ClosedPinSnapshot` 和饱和最近使用序号迁入 `pinora-app::pin_session`。模块只依赖 `pinora-core`，
-  不依赖 winit；`desktop_shell` 保留 `PinWin`、Window/Surface、输入、平台命中调用、runtime、OCR、
-  导出、tray 和 EventLoop。3 项状态测试、app 27 项回归和完整静态门禁通过。
+- 证据和影响范围：132/135 将 `PinMouseMode`、平台请求后的纯状态转移、`PinPresentation`、
+  `ClosedPinSnapshot` 和饱和最近使用序号先迁入 app 私有模块，随后迁入 `pinora-pin` crate。该 crate 的
+  生产依赖仅为 `pinora-core`，不依赖 winit；`desktop_shell` 保留 `PinWin`、Window/Surface、输入、平台命中
+  调用、runtime、OCR、导出、tray 和 EventLoop。crate 3 项状态测试、app 21 项回归和完整静态门禁通过。
 - 触发条件：平台拒绝或延迟鼠标穿透命中请求，tray 唤起穿透贴图，关闭/撤销关闭后的窗口重建，快速
   聚焦/隐藏/显示/缩放，或 Windows/macOS/X11/KDE Wayland 的鼠标命中和窗口调度与离线模型不同。
 - 失败模式：平台拒绝后错误更新模式会使贴图不可交互；关闭恢复若携带跨窗口瞬态状态可能错误穿透或
@@ -772,8 +772,8 @@
 - 缓解措施和必需验证：保持平台失败回退当前鼠标模式，关闭快照只保留图像和用户可见呈现参数；在
   Windows、macOS、Linux X11、KDE Wayland 验证穿透启停、tray 唤起、关闭/撤销关闭、快速焦点/缩放、
   多贴图排序、任务栏/Dock/分页器、100%/200% 缩放和帧时间。
-- 回滚或隔离动作：恢复 `desktop_shell` 内贴图会话值对象和纯转移，并移除 `pin_session`；不改变贴图
-  窗口、图像、runtime、OCR、导出、tray 或设置。
+- 回滚或隔离动作：移除 `pinora-pin` workspace 成员与 app 依赖，并恢复 `pinora-app::pin_session`；不改变
+  贴图窗口、图像、runtime、OCR、导出、tray 或设置。
 - 负责人和状态：Neo；离线状态、app、workspace、Clippy、Windows target、格式、差异和上下文门禁已验证，
   真实鼠标命中、窗口管理器、tray-only 和性能证据开放。
 
