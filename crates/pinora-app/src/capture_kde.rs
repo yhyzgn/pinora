@@ -44,7 +44,7 @@ impl KdeSpectacleCaptureProvider {
             )
         })?;
         // 轻量探测：能列出显示器即可（不真正截图）。
-        let displays = list_displays_kscreen().or_else(|_| list_displays_xrandr_like())?;
+        let displays = list_displays_kscreen().or_else(|_| list_displays_xrandr())?;
         if displays.is_empty() {
             return Err(PinoraError::new(
                 ErrorCode::CapabilityUnavailable,
@@ -120,7 +120,7 @@ impl KdeSpectacleCaptureProvider {
 
 impl CaptureProvider for KdeSpectacleCaptureProvider {
     fn displays(&self) -> Result<Vec<DisplayInfo>, PinoraError> {
-        list_displays_kscreen().or_else(|_| list_displays_xrandr_like())
+        list_displays_kscreen().or_else(|_| list_displays_xrandr())
     }
 
     fn windows(&self) -> Result<Vec<CaptureWindowInfo>, PinoraError> {
@@ -469,15 +469,90 @@ fn parse_kscreen_doctor(text: &str) -> Result<Vec<DisplayInfo>, PinoraError> {
     Ok(displays)
 }
 
-/// 极简兜底：单虚拟屏（尺寸未知时用常见值；真正裁剪以 PNG 为准）。
-fn list_displays_xrandr_like() -> Result<Vec<DisplayInfo>, PinoraError> {
-    // 若 kscreen 不可用，返回一个大虚拟桌面占位；capture 时以 PNG 实际尺寸裁剪。
-    Ok(vec![DisplayInfo {
-        id: DisplayId::new("kde-workspace"),
-        name: "Workspace".into(),
-        bounds: PixelRect::new(0, 0, 3840, 2160),
-        scale: 1.0,
-    }])
+/// `kscreen-doctor` 不可用时使用真实的 X11 xrandr 拓扑；不再返回硬编码占位屏幕。
+fn list_displays_xrandr() -> Result<Vec<DisplayInfo>, PinoraError> {
+    let output = Command::new("xrandr")
+        .arg("--query")
+        .output()
+        .map_err(|_| PinoraError::new(ErrorCode::CapabilityUnavailable, "xrandr unavailable"))?;
+    if !output.status.success() {
+        return Err(PinoraError::new(
+            ErrorCode::CapabilityUnavailable,
+            "xrandr query failed",
+        ));
+    }
+    parse_xrandr_query(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_xrandr_query(text: &str) -> Result<Vec<DisplayInfo>, PinoraError> {
+    let mut displays = Vec::new();
+    for line in text.lines() {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        let Some(connected_index) = fields.iter().position(|field| *field == "connected") else {
+            continue;
+        };
+        if connected_index == 0 {
+            continue;
+        }
+        let Some((width, height, x, y)) = fields[connected_index + 1..]
+            .iter()
+            .find_map(|field| parse_xrandr_geometry(field))
+        else {
+            continue;
+        };
+        let name = fields[0];
+        let is_primary = fields[connected_index + 1..].contains(&"primary");
+        displays.push(DisplayInfo {
+            id: DisplayId::new(format!("xrandr-{name}")),
+            name: if is_primary {
+                format!("{name} (primary)")
+            } else {
+                name.to_string()
+            },
+            bounds: PixelRect::new(x, y, width, height),
+            scale: 1.0,
+        });
+    }
+    if displays.is_empty() {
+        return Err(PinoraError::new(
+            ErrorCode::CapabilityUnavailable,
+            "xrandr returned no connected outputs with valid geometry",
+        ));
+    }
+    Ok(displays)
+}
+
+fn parse_xrandr_geometry(value: &str) -> Option<(u32, u32, i32, i32)> {
+    let value = value.split('(').next()?.trim_end_matches(',');
+    let x_index = value.find('x')?;
+    let first_sign = value[x_index + 1..]
+        .char_indices()
+        .find(|(_, ch)| *ch == '+' || *ch == '-')
+        .map(|(index, _)| x_index + 1 + index)?;
+    let second_sign = value[first_sign + 1..]
+        .char_indices()
+        .find(|(_, ch)| *ch == '+' || *ch == '-')
+        .map(|(index, _)| first_sign + 1 + index)?;
+    let width = value[..x_index].parse().ok()?;
+    let height = value[x_index + 1..first_sign].parse().ok()?;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let x = parse_signed_component(
+        value.as_bytes()[first_sign] as char,
+        &value[first_sign + 1..second_sign],
+    )?;
+    let y = parse_signed_component(
+        value.as_bytes()[second_sign] as char,
+        &value[second_sign + 1..],
+    )?;
+    Some((width, height, x, y))
+}
+
+fn parse_signed_component(sign: char, digits: &str) -> Option<i32> {
+    let magnitude: i64 = digits.parse().ok()?;
+    let signed = if sign == '-' { -magnitude } else { magnitude };
+    i32::try_from(signed).ok()
 }
 
 #[cfg(test)]
@@ -578,5 +653,26 @@ Scale: 1
             &display,
             display.bounds,
         ));
+    }
+
+    #[test]
+    fn parse_xrandr_query_accepts_primary_and_negative_coordinates() {
+        let sample = r#"
+Screen 0: minimum 320 x 200, current 4480 x 1440, maximum 16384 x 16384
+DP-1 connected primary 2560x1440+0+0 (normal left inverted right x axis y axis) 600mm x 340mm
+HDMI-1 connected 1920x1080-1920+100 (normal left inverted right x axis y axis) 500mm x 300mm
+VGA-1 disconnected (normal left inverted right x axis y axis)
+"#;
+        let displays = parse_xrandr_query(sample).expect("connected outputs");
+        assert_eq!(displays.len(), 2);
+        assert_eq!(displays[0].name, "DP-1 (primary)");
+        assert_eq!(displays[1].bounds, PixelRect::new(-1920, 100, 1920, 1080));
+    }
+
+    #[test]
+    fn malformed_xrandr_query_does_not_create_a_virtual_display() {
+        let error = parse_xrandr_query("DP-1 connected (normal)\n")
+            .expect_err("missing geometry must be unavailable");
+        assert_eq!(error.code, ErrorCode::CapabilityUnavailable);
     }
 }

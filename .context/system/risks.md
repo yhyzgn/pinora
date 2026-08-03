@@ -549,6 +549,15 @@
 - 回滚或隔离动作：保留唯一显示器 `-m` 快路径，隐藏 KDE 多显示器指定全屏入口或让其返回 `CapabilityUnavailable`；不改变区域截图、AllDisplays、窗口截图、tray/IPC、热键、设置或数据格式。
 - 负责人和状态：Neo；离线决策与静态门禁已验证，真实 KDE 多显示器/性能/窗口管理器证据开放。
 
+## R-061：KDE 显示器探测命令与驱动输出兼容性尚未验证（高）
+
+- 证据和影响范围：102 移除了 `kscreen-doctor` 失败时硬编码 `3840x2160` 占位屏，改为真实执行 `xrandr --query`，只接受 connected 且有正尺寸 geometry 的输出，支持 primary 标记和正负坐标；命令失败、无输出或 malformed geometry 均受控返回 `CapabilityUnavailable`。解析器、workspace 严格门禁、Windows target 和全量离线测试已通过。
+- 触发条件：KDE Plasma/KScreen 版本差异、显卡驱动、省电/热插拔时序、xrandr 不存在或无法连接 X server、Wayland 会话没有可用 xrandr、输出名称包含特殊字符、旋转/缩放导致 geometry 与 Spectacle PNG 尺寸不一致。
+- 失败模式：真实环境可能暂时失去显示器列表，用户只能使用 tray/IPC 等替代入口；也可能因格式变化被保守拒绝。解析单测、CI 和 target 编译不能证明真实拓扑、权限、截图像素、首帧、HiDPI、任务栏/Dock 或性能。
+- 缓解措施和必需验证：保持 `kscreen-doctor` 优先、xrandr 严格解析、无硬编码尺寸、无 fake 生产回退和稳定错误码；在 KDE X11、KDE Wayland（有/无 xrandr）、多屏正负 origin、异构缩放、旋转、热插拔、登录/休眠恢复下验证 displays、区域/指定全屏/AllDisplays、尺寸校验、取消/失败恢复、tray-only、任务栏/Dock/分页器和帧时间。解析不一致时禁用 KDE 后端或增加基于官方接口的独立探针，不猜测几何。
+- 回滚或隔离动作：仅保留成功的 `kscreen-doctor` 路径，或完全禁用 KDE 后端并让 xcap/受控不可用接管；不恢复固定虚拟拓扑。
+- 负责人和状态：Neo；离线解析与静态门禁已验证，真实命令/驱动/Wayland 行为和桌面性能证据开放。
+
 ## 风险一：上下文漂移
 
 - 触发条件：代码、配置或工作流变化后，没有同步更新对应上下文文件。

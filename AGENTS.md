@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/101_kde_targeted_display_capture.md`
-- 任务：`.context/tasks/101_kde_targeted_display_capture.md`
+- 计划：`.context/plans/102_kde_real_display_probe.md`
+- 任务：`.context/tasks/102_kde_real_display_probe.md`
 
 ## 交付要求
 
