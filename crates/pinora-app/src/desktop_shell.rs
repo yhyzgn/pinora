@@ -33,7 +33,6 @@ use crate::history_load_job::{
 };
 use crate::history_store::{HistoryStore, default_history_path};
 use crate::history_window::HistoryWindow;
-use crate::hotkey::{GlobalHotkeyHub, binding_from_winit};
 use crate::job_supervisor::JobState;
 use crate::ocr::tesseract_available;
 use crate::ocr_job::{OcrJobCompletion, OcrJobService, OcrJobStart};
@@ -48,7 +47,6 @@ use crate::overlay_toolbar::{
 };
 use crate::settings_panel::{SettingsPanelAction, SettingsPanelKey};
 use crate::settings_window::SettingsWindow;
-use crate::start_on_login;
 use crate::tray::{AppTray, TrayAction, TrayPinListEntry};
 use crate::tray_capabilities::TrayCapabilitySummary;
 use crate::tray_feedback::{TrayExportOperation, TrayFeedback};
@@ -79,7 +77,9 @@ use crate::pin_layout::{
 };
 use crate::platform::CapabilityProbe;
 use crate::runtime::AppRuntime;
-use crate::single_instance::SingleInstance;
+use pinora_platform::{
+    GlobalHotkeyHub, SingleInstance, binding_from_winit, set_start_on_login_enabled,
+};
 
 const MIN_FRAME_INTERVAL: Duration = Duration::from_micros(16_666);
 const OCR_JOB_TIMEOUT_MS: u64 = 30_000;
@@ -2109,7 +2109,7 @@ where
         };
         let mut start_on_login_applied = false;
         if let (true, Some(executable)) = (start_on_login_changed, executable.as_deref()) {
-            if let Err(error) = start_on_login::set_enabled(draft.start_on_login, executable) {
+            if let Err(error) = set_start_on_login_enabled(draft.start_on_login, executable) {
                 if let Some(settings) = self.settings.as_mut() {
                     settings.mark_save_failed(error.code());
                     settings.request_redraw();
@@ -2133,7 +2133,7 @@ where
                     if start_on_login_applied
                         && let Some(executable) = executable.as_deref()
                         && let Err(error) =
-                            start_on_login::set_enabled(previous.start_on_login, executable)
+                            set_start_on_login_enabled(previous.start_on_login, executable)
                     {
                         eprintln!("pinora: start-on-login rollback failed ({})", error.code());
                     }
@@ -2210,7 +2210,7 @@ where
                 if start_on_login_applied
                     && let Some(executable) = executable.as_deref()
                     && let Err(error) =
-                        start_on_login::set_enabled(previous.start_on_login, executable)
+                        set_start_on_login_enabled(previous.start_on_login, executable)
                 {
                     eprintln!("pinora: start-on-login rollback failed ({})", error.code());
                 }

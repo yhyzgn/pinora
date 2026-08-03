@@ -2,8 +2,8 @@
 
 ## 当前工程约定
 
-- Cargo workspace：唯一二进制入口为根 `src/main.rs`（package `pinora`）；领域在 `pinora-core`，编排库在 `pinora-app`；后续 crate 按设计文档 `crates/pinora-*` 拆分。
-- 依赖方向：`src/main.rs` → `pinora-app` → 下层；`pinora-core` 不得依赖 app、UI 或平台适配器。
+- Cargo workspace：唯一二进制入口为根 `src/main.rs`（package `pinora`）；领域在 `pinora-core`，系统集成在 `pinora-platform`，桌面编排/UI 仍在 `pinora-app`；后续 crate 按设计文档 `crates/pinora-*` 拆分。
+- 依赖方向：`src/main.rs` 只负责组合 `pinora-app`、`pinora-platform` 和 `pinora-core`；功能 crate 只能向下依赖 `pinora-core`/能力端口，`pinora-core` 不得依赖 app、UI 或平台适配器。
 - 命令表示意图、事件表示已发生事实；事件须带 `event_id`、`correlation_id`、`occurred_at_ms`；日志不得写入截图像素、OCR 全文或凭据。
 - 平台能力通过 trait 注入：`CaptureProvider`、`ImageSink`、`SingleInstance`、`CapabilityProbe`、`HotkeySource`；测试用 fake/内存实现；入口用 `OsSingleInstance` + `LocalImageSink` + xcap/fake。
 - 高层用户意图优先映射为 `ActionId`，再展开为 `Command`（`InvokeAction`）。
@@ -12,6 +12,20 @@
 - 外部 CLI 适配器必须持有自己创建的 `Child`；超时先对句柄执行 `kill` 再 `wait`，不得通过 PID 字符串或外部 `kill` 命令回收，也不得把 `wait_with_output` 放进脱离调用方生命周期的线程。
 - Pinora 空闲状态不创建控制窗口；托盘、已成功注册的全局热键与单实例 IPC 是后台入口。所有辅助 `WindowAttributes` 必须经 `window_policy::auxiliary_window_attributes`；新建事件循环必须使用 `window_policy::auxiliary_event_loop`，禁止绕开任务栏/Dock 策略。
 - KWin 特例仅允许在窗口映射后按 Pinora 自身标题调用 `kwin_place`；`busctl` 失败只能记录，不能阻塞事件循环或被当作其他 Wayland 合成器的支持证据。
+
+## 当前 crate 边界（任务 105 已验证）
+
+```mermaid
+graph LR
+    Main["src/main.rs"] --> App["pinora-app\n桌面编排/UI"]
+    Main --> Platform["pinora-platform\n系统集成"]
+    App --> Platform
+    App --> Core["pinora-core\n领域模型"]
+    Platform --> Core
+```
+
+- `pinora-platform` 唯一拥有 `start_on_login`、`single_instance`、`os_instance`、`hotkey` 和 Linux `wayland_portal`。
+- `pinora-app` 当前仍拥有截图选择器、任务监督、存储、导出、OCR、Overlay/贴图、托盘和窗口编排；这些边界按后续任务逐一拆分。
 
 ## 系统依赖（Linux + xcap）
 
@@ -41,6 +55,8 @@ sudo dnf install -y pipewire-devel mesa-libgbm-devel wayland-devel libxcb-devel
 103 Wayland Portal 版本门槛增量已通过：`cargo test -p pinora-app wayland_portal -- --nocapture`（5 通过）、`cargo fmt --check`、`cargo check --workspace`、`cargo check --workspace --target x86_64-pc-windows-msvc`、`cargo clippy --workspace --all-targets -- -D warnings` 和 `PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`（app 303 通过、2 忽略；core 90 通过）。该门禁只证明 v1 及更低版本不会进入绑定，不证明 backend 方法完整性、授权 UI、全局触发、tray-only 或性能。
 
 104 用户级开机自启增量已完成实现：`cargo test -p pinora-app start_on_login -- --nocapture`（3 通过）覆盖 Linux `.desktop` 参数转义、`--pinora-autostart` tray-only 参数、同目录同步原子写入和未知项所有权冲突；设置 schema v1-v8 迁移到 v9 并补充 v9 往返。新鲜完整门禁 `cargo fmt --check`、`cargo check --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`（app 307 通过、2 忽略；core 90 通过）、`cargo check --workspace --target x86_64-pc-windows-msvc`、`git diff --check` 与 `ctx validate` 均通过。该验证不证明真实登录会话、平台权限、tray/Dock/任务栏/分页器或启动性能；macOS 当前为 LaunchAgent 兼容路径，不是 `SMAppService` 受管实现。
+
+105 系统集成功能 crate 已完成：`cargo test -p pinora-platform -- --nocapture`（21 通过），workspace 全量测试（app 286 通过、2 忽略；core 90 通过；platform 21 通过；根入口 1 通过）、`cargo check --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo check --workspace --target x86_64-pc-windows-msvc`、`cargo fmt --check`、`git diff --check` 与 `ctx validate` 均通过。`pinora-platform` 现唯一拥有启动项、单实例/IPC、全局热键和 Linux Wayland Portal；真实桌面 GUI、登录会话、任务栏/Dock/分页器和性能仍未验证。
 
 096 历史保留期增量已执行并通过：`cargo test -p pinora-core settings -- --nocapture`、`cargo test -p pinora-core history -- --nocapture`、`cargo test -p pinora-app --lib settings_store::tests -- --nocapture`、`cargo test -p pinora-app --lib settings_panel::tests -- --nocapture`、`cargo test -p pinora-app --lib history_export::tests -- --nocapture`、`cargo test -p pinora-app --lib desktop_shell::overlay_scale_tests -- --nocapture`；完整门禁使用上方 workspace、Clippy、测试、Windows target、差异和 `ctx validate` 命令。完整测试未连接真实共享数据库、缓存、消息队列、对象存储或第三方服务；2 个真实桌面测试按既有约定忽略。
 

@@ -16,14 +16,12 @@ mod history_export;
 mod history_load_job;
 mod history_store;
 mod history_window;
-mod hotkey;
 mod image_sink;
 mod job_supervisor;
 mod kwin_place;
 mod ocr;
 mod ocr_job;
 mod ocr_presentation;
-mod os_instance;
 mod overlay_preview_cache;
 mod overlay_selection_readout;
 mod overlay_toolbar;
@@ -35,13 +33,9 @@ mod runtime;
 mod settings_panel;
 mod settings_store;
 mod settings_window;
-mod single_instance;
-mod start_on_login;
 mod tray;
 mod tray_capabilities;
 mod tray_feedback;
-#[cfg(target_os = "linux")]
-mod wayland_portal;
 mod window_policy;
 mod worker_lifecycle;
 
@@ -55,9 +49,6 @@ pub use export_job::{
 };
 pub use history_browser::{HistoryPanel, HistoryPanelAction, HistoryPanelKey, HistoryPanelStatus};
 pub use history_store::{HistoryLoad, HistoryStore, default_history_path};
-pub use hotkey::{
-    FakeHotkeySource, GlobalHotkeyHub, GlobalHotkeyStatus, HotkeySource, ensure_user_desktop_entry,
-};
 pub use image_sink::{
     LocalImageSink, copy_text_to_system_clipboard, detect_system_clipboard_backend,
 };
@@ -66,7 +57,6 @@ pub use job_supervisor::{
 };
 pub use ocr::{recognize_image, recognize_image_with_cancellation, tesseract_available};
 pub use ocr_job::{LocalOcrRunner, OcrJobCompletion, OcrJobService, OcrJobStart, OcrRunner};
-pub use os_instance::{OsSingleInstance, forward_ipc_frame};
 pub use pin_layout::scaled_window_size;
 pub use platform::{CapabilityProbe, FakeCapabilityProbe, RuntimeCapabilityProbe};
 pub use runtime::{AppRuntime, BootstrapOutcome, DispatchResult};
@@ -74,6 +64,3 @@ pub use settings_panel::{
     SettingField, SettingsPanel, SettingsPanelAction, SettingsPanelKey, SettingsPanelStatus,
 };
 pub use settings_store::{SettingsLoad, SettingsStore, default_settings_path};
-pub use single_instance::{
-    InMemorySingleInstance, InstanceAcquisition, SingleInstance, SingleInstanceError,
-};

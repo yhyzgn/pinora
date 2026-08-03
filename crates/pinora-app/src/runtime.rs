@@ -7,7 +7,7 @@ use pinora_core::{
 };
 
 use crate::platform::CapabilityProbe;
-use crate::single_instance::{InstanceAcquisition, SingleInstance};
+use pinora_platform::{InstanceAcquisition, SingleInstance};
 
 /// 启动结果：主实例运行，或二次启动应退出。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -395,8 +395,8 @@ mod tests {
     use crate::capture_fake::FakeCaptureProvider;
     use crate::image_sink::LocalImageSink;
     use crate::platform::FakeCapabilityProbe;
-    use crate::single_instance::InMemorySingleInstance;
     use pinora_core::{PinTransform, PixelSize};
+    use pinora_platform::InMemorySingleInstance;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     type TestRt = AppRuntime<

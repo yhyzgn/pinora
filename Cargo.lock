@@ -2504,25 +2504,22 @@ dependencies = [
  "ctrlc",
  "pinora-app",
  "pinora-core",
+ "pinora-platform",
 ]
 
 [[package]]
 name = "pinora-app"
 version = "0.1.0"
 dependencies = [
- "async-channel",
- "fs2",
- "futures-lite",
- "global-hotkey",
  "gtk",
  "image",
  "pinora-core",
+ "pinora-platform",
  "png 0.17.16",
  "softbuffer",
  "tray-icon",
  "winit",
  "xcap",
- "zbus",
 ]
 
 [[package]]
@@ -2530,6 +2527,19 @@ name = "pinora-core"
 version = "0.1.0"
 dependencies = [
  "fontdue",
+]
+
+[[package]]
+name = "pinora-platform"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "fs2",
+ "futures-lite",
+ "global-hotkey",
+ "pinora-core",
+ "winit",
+ "zbus",
 ]
 
 [[package]]

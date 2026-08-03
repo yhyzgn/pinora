@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/pinora-core", "crates/pinora-app"]
+members = ["crates/pinora-core", "crates/pinora-platform", "crates/pinora-app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,6 +10,7 @@ repository = "https://github.com/yhyzgn/pinora"
 
 [workspace.dependencies]
 pinora-core = { path = "crates/pinora-core" }
+pinora-platform = { path = "crates/pinora-platform" }
 pinora-app = { path = "crates/pinora-app" }
 
 [package]
@@ -29,3 +30,4 @@ path = "src/main.rs"
 ctrlc = "3.4"
 pinora-app = { workspace = true }
 pinora-core = { workspace = true }
+pinora-platform = { workspace = true }

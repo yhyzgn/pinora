@@ -3,11 +3,11 @@
 use std::env;
 
 use pinora_app::{
-    AppRuntime, BootstrapOutcome, LocalImageSink, OsSingleInstance, RuntimeCapabilityProbe,
-    SelectedCaptureProvider, SettingsLoad, SettingsStore, default_settings_path,
-    ensure_user_desktop_entry, forward_ipc_frame, run_desktop_shell,
+    AppRuntime, BootstrapOutcome, LocalImageSink, RuntimeCapabilityProbe, SelectedCaptureProvider,
+    SettingsLoad, SettingsStore, default_settings_path, run_desktop_shell,
 };
 use pinora_core::{AppSettings, PixelPoint, PixelRect};
+use pinora_platform::{OsSingleInstance, ensure_user_desktop_entry, forward_ipc_frame};
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();

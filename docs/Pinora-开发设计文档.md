@@ -8,7 +8,7 @@
 | 日期 | 2026-08-01 |
 | 状态 | 目标设计；不等同于当前实现或平台支持声明 |
 | 产品代号 | Pinora（Pin + Liora，可后续更名） |
-| 当前代码状态 | Rust 2024 workspace；`pinora-core` 与 `pinora-app` 已有 Linux/KDE 实验实现，尚未达到可发布架构 |
+| 当前代码状态 | Rust 2024 workspace；当前实际 crate 为 `pinora-core`、`pinora-platform`、`pinora-app`，桌面能力仍以 Linux/KDE 实验路径为主，尚未达到可发布架构 |
 
 > **阅读说明**：本文是后续重构的目标设计，而非功能清单式承诺。任何模块、平台能力或性能目标，只有在对应任务完成代码、测试和授权的隔离探针后，才能写入已实现状态。UI 框架、平台 SDK 和 OCR 引擎均未在本文锁定；不得将草案直接复制为公共 API。
 
@@ -228,6 +228,43 @@ flowchart TB
 - 平台适配器实现能力端口；每次调用返回实际结果、能力原因和可否重试。测试可用 fake，但 fake 类型必须显式注入且不得成为生产自动回退。
 - `JobSupervisor` 是外部进程和耗时任务的唯一所有者；UI、贴图和 OCR 模块不得自行 `spawn` 后丢失句柄。
 - 历史只保存应用管理目录中的索引与文件引用，不反向依赖 UI 或窗口句柄，也不接管用户主动导出的文件。
+
+### 2.4 当前实现边界与后续拆分路线
+
+当前代码已经完成第一步系统集成拆分；表中的目标模块仍是设计边界，不代表同名 crate 已经存在。
+
+```mermaid
+flowchart LR
+    Main["pinora\nsrc/main.rs"] --> App["pinora-app\n当前：runtime + desktop_shell + UI/业务模块"]
+    Main --> Platform["pinora-platform\n已实现：启动项、单实例/IPC、热键、Wayland Portal"]
+    App --> Platform
+    App --> Core["pinora-core\n纯领域模型"]
+    Platform --> Core
+
+    App -. 下一步 .-> Capture["pinora-capture\n捕获后端 + FrameCache"]
+    App -. 后续 .-> Jobs["pinora-jobs\n通用任务监督"]
+    App -. 后续 .-> Storage["pinora-storage\n设置、历史、文件导出"]
+    App -. 后续 .-> Desktop["pinora-desktop\n托盘、窗口与 Overlay"]
+    App -. 后续 .-> Ocr["pinora-ocr\n识别与文字层"]
+    Capture --> Core
+    Jobs --> Core
+    Storage --> Core
+    Ocr --> Core
+    Desktop --> Core
+    Desktop --> Platform
+    Desktop --> Capture
+    Desktop --> Jobs
+    Desktop --> Storage
+    Ocr --> Jobs
+```
+
+| 当前 crate | 当前所有权 | 下一步边界 | 迁移原则 |
+| --- | --- | --- | --- |
+| `pinora-core` | 几何、图像、标注、贴图、设置、历史、任务值对象 | 保持纯领域；仅在 crate 内继续按模型/事务拆目录 | 不引入窗口、平台 SDK、线程或外部进程 |
+| `pinora-platform` | 启动项、单实例/IPC、全局热键、Wayland Portal | 继续承载系统能力适配器 | 只向上提供稳定端口与真实失败语义 |
+| `pinora-app` | runtime、desktop shell、截图、任务、存储、OCR、托盘和窗口编排 | 逐项迁移至 `capture/jobs/storage/desktop/ocr` | 保持唯一事件循环和现有用户行为，迁移后才删除旧路径 |
+
+后续每个 crate 拆分都必须单独建立计划/任务、迁移原有测试、更新依赖图，并通过 workspace 与目标平台编译门禁；不得把一次性目录搬迁当作功能完成。
 
 ---
 
@@ -1102,7 +1139,7 @@ cargo test --workspace
 
 ## 10. 推荐仓库结构与依赖方向
 
-进程入口固定为仓库根目录 `src/main.rs`（二进制 crate `pinora`）。下列是**目标逻辑边界**，不是一次性拆 crate 的要求：先在现有 crate 中以内部模块和契约测试建立边界，只有独立编译、依赖隔离或平台分发确有收益时才拆出 crate。`src/main.rs`、注册器和路由聚合文件必须保持薄。
+进程入口固定为仓库根目录 `src/main.rs`（二进制 crate `pinora`）。下列同时标出当前实际 crate 与后续目标 crate：已存在的 crate 必须保持独立编译和单向依赖；尚未建立的目标 crate 只能作为迁移路线，不能写成已实现功能。`src/main.rs`、注册器和路由聚合文件必须保持薄。
 
 ```text
 pinora/
@@ -1110,14 +1147,14 @@ pinora/
 ├── src/
 │   └── main.rs                # 唯一进程入口
 ├── crates/
-│   ├── pinora-core/           # 纯领域模型、命令、事件、错误码
-│   ├── pinora-application/    # 会话、工作流、依赖端口、关闭编排
-│   ├── pinora-platform-api/   # 平台能力端口与 CapabilitySnapshot
-│   ├── pinora-platform-*/     # 逐平台适配器，仅在实现后存在
-│   ├── pinora-ui/             # 待选 UI 框架的 Adapter、视图和可访问性
-│   ├── pinora-jobs/           # 任务监督、取消、超时和进程封装
-│   ├── pinora-storage/        # 设置、历史、原子文件操作与清理
-│   └── pinora-diagnostics/    # 日志、错误映射、诊断包与探针
+│   ├── pinora-core/           # 已存在：纯领域模型、命令、事件、错误码
+│   ├── pinora-platform/       # 已存在：启动项、单实例/IPC、热键、Wayland Portal
+│   ├── pinora-app/            # 已存在：runtime、desktop_shell 与当前编排模块
+│   ├── pinora-capture/        # 计划：捕获后端、显示器快照、FrameCache
+│   ├── pinora-jobs/           # 计划：通用任务监督、取消、超时和回收
+│   ├── pinora-storage/        # 计划：设置、历史、文件导出和清理
+│   ├── pinora-desktop/        # 计划：托盘、窗口策略、Overlay、贴图适配
+│   └── pinora-ocr/            # 计划：Tesseract 适配、文字层和结果门禁
 ├── assets/
 └── docs/
     └── Pinora-开发设计文档.md

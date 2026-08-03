@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/104_start_on_login.md`
-- 任务：`.context/tasks/104_start_on_login.md`
+- 计划：`.context/plans/105_functional_crate_boundaries.md`
+- 任务：`.context/tasks/105_platform_integration_crate.md`
 
 ## 交付要求
 
