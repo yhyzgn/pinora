@@ -50,16 +50,17 @@ use pinora_core::{
 };
 use pinora_desktop::window_policy::{self, AuxiliaryWindowKind};
 use pinora_desktop::{
-    OverlayPreviewCache, PinRenderCache, PinResizeHandle, PinResizeTarget, ToolbarAction,
-    ToolbarButton, ToolbarPaintState, XRGB_SELECTION_HANDLE_RENDER_RADIUS,
-    annotation_bounds_to_display, blit_xrgb_block, blit_xrgb_rect, buffer_rect_to_source,
+    AnnotationHistoryAction, OverlayPreviewCache, PinRenderCache, PinResizeHandle, PinResizeTarget,
+    TextEnterAction, ToolbarAction, ToolbarButton, ToolbarPaintState,
+    XRGB_SELECTION_HANDLE_RENDER_RADIUS, annotation_bounds_to_display, annotation_history_action,
+    annotation_nudge_step, blit_xrgb_block, blit_xrgb_rect, buffer_rect_to_source,
     build_pin_render_cache, default_pin_position, draw_xrgb_border, draw_xrgb_outline,
     draw_xrgb_rect_border, draw_xrgb_selection_handles, expand_damage_rect, fit_to_image_target,
-    layout_toolbar, paint_toolbar, pin_resize_anchor_position, pin_resize_handle_at,
-    pin_resize_target_from_drag, proportional_resize_target, scale_xrgb_nearest,
-    scaled_window_size, selection_handle_at, selection_resize_allowed,
-    selection_to_annotation_local, toolbar_bounds, toolbar_hit, window_point_to_image,
-    window_rect_from_points, window_selection_to_image, xrgb_pixel_count,
+    layout_toolbar, overlay_click_finishes_copy, paint_toolbar, pin_resize_anchor_position,
+    pin_resize_handle_at, pin_resize_target_from_drag, proportional_resize_target,
+    scale_xrgb_nearest, scaled_window_size, selection_handle_at, selection_resize_allowed,
+    selection_to_annotation_local, text_enter_action, toolbar_bounds, toolbar_hit,
+    window_point_to_image, window_rect_from_points, window_selection_to_image, xrgb_pixel_count,
 };
 use pinora_jobs::JobState;
 use pinora_ocr::{
@@ -510,45 +511,6 @@ const fn export_source_for_overlay_finish(
     match action {
         OverlayFinish::Copy | OverlayFinish::Save => selected,
         OverlayFinish::Pin => CaptureExportSource::Annotated,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AnnotationHistoryAction {
-    Undo,
-    Redo,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TextEnterAction {
-    InsertLineBreak,
-    Commit,
-}
-
-fn annotation_history_action(
-    control_pressed: bool,
-    shift_pressed: bool,
-    character: &str,
-) -> Option<AnnotationHistoryAction> {
-    if !control_pressed {
-        return None;
-    }
-    match character {
-        "z" | "Z" if shift_pressed => Some(AnnotationHistoryAction::Redo),
-        "z" | "Z" => Some(AnnotationHistoryAction::Undo),
-        "y" | "Y" => Some(AnnotationHistoryAction::Redo),
-        _ => None,
-    }
-}
-
-fn text_enter_action(modifiers: ModifiersState, text_editing: bool) -> Option<TextEnterAction> {
-    if !text_editing {
-        return None;
-    }
-    if modifiers.shift_key() && !modifiers.control_key() {
-        Some(TextEnterAction::InsertLineBreak)
-    } else {
-        Some(TextEnterAction::Commit)
     }
 }
 
@@ -5631,14 +5593,6 @@ fn handle_overlay_key(
     }
 }
 
-fn annotation_nudge_step(modifiers: ModifiersState) -> i32 {
-    if modifiers.shift_key() { 10 } else { 1 }
-}
-
-fn overlay_click_finishes_copy(tool: AnnotateTool, is_double_click: bool) -> bool {
-    is_double_click && !matches!(tool, AnnotateTool::Number | AnnotateTool::Select)
-}
-
 fn set_overlay_tool(ov: &mut OverlayState, tool: AnnotateTool) {
     let had_text_draft = tool != ov.annotate.tool && ov.annotate.is_text_editing();
     if had_text_draft {
@@ -6182,29 +6136,6 @@ mod overlay_scale_tests {
     }
 
     #[test]
-    fn selected_annotation_nudge_uses_one_or_ten_pixel_steps() {
-        assert_eq!(annotation_nudge_step(ModifiersState::empty()), 1);
-        assert_eq!(annotation_nudge_step(ModifiersState::SHIFT), 10);
-    }
-
-    #[test]
-    fn text_enter_distinguishes_multiline_input_from_commit() {
-        assert_eq!(
-            text_enter_action(ModifiersState::SHIFT, true),
-            Some(TextEnterAction::InsertLineBreak)
-        );
-        assert_eq!(
-            text_enter_action(ModifiersState::CONTROL | ModifiersState::SHIFT, true),
-            Some(TextEnterAction::Commit)
-        );
-        assert_eq!(
-            text_enter_action(ModifiersState::empty(), true),
-            Some(TextEnterAction::Commit)
-        );
-        assert_eq!(text_enter_action(ModifiersState::SHIFT, false), None);
-    }
-
-    #[test]
     fn selection_readout_maps_buffer_pixels_to_the_source_and_global_origin() {
         let readout = selection_readout_from_display(
             PixelRect::new(100, 50, 400, 200),
@@ -6469,31 +6400,6 @@ mod overlay_scale_tests {
             ),
             None
         );
-    }
-
-    #[test]
-    fn annotation_history_shortcuts_distinguish_undo_and_redo() {
-        assert_eq!(
-            annotation_history_action(true, false, "z"),
-            Some(AnnotationHistoryAction::Undo)
-        );
-        assert_eq!(
-            annotation_history_action(true, true, "Z"),
-            Some(AnnotationHistoryAction::Redo)
-        );
-        assert_eq!(
-            annotation_history_action(true, false, "y"),
-            Some(AnnotationHistoryAction::Redo)
-        );
-        assert_eq!(annotation_history_action(false, false, "z"), None);
-    }
-
-    #[test]
-    fn sequence_tool_consumes_a_double_click_instead_of_copying_the_overlay() {
-        assert!(overlay_click_finishes_copy(AnnotateTool::Rect, true));
-        assert!(!overlay_click_finishes_copy(AnnotateTool::Rect, false));
-        assert!(!overlay_click_finishes_copy(AnnotateTool::Number, true));
-        assert!(!overlay_click_finishes_copy(AnnotateTool::Select, true));
     }
 
     #[test]

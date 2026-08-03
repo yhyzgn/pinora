@@ -247,7 +247,7 @@ flowchart LR
     JobsNow --> Core
     App --> StorageNow["pinora-storage\n已实现：设置/历史 codec + 原子文件 + 命名"]
     StorageNow --> Core
-    App --> Desktop["pinora-desktop\n已实现：交互原语/窗口策略/呈现状态/面板/读数/菜单；后续：托盘适配"]
+    App --> Desktop["pinora-desktop\n已实现：交互原语/Overlay 输入/窗口策略/呈现状态/面板/读数/菜单；后续：托盘适配"]
     App --> ExportNow["pinora-export\n已实现：图像编码/原子文件/系统剪贴板/导出任务"]
     ExportNow --> Core
     ExportNow --> JobsNow
@@ -280,7 +280,7 @@ flowchart LR
 | `pinora-capture` | 截图模式/目标、初始选区、显示器目标解析、KDE/xcap/fake 后端选择、显示器/窗口快照校验、预截帧缓存、`CapturePreview` 像素预处理与完整性校验 | 继续承载真实捕获适配器 | 不创建窗口，失败不得伪装为 fake 成功 |
 | `pinora-jobs` | 通用任务监督、协作式取消、结果门禁、有界 worker 回收 | 继续承载通用生命周期底座 | 不运行具体 worker，不依赖 OCR/导出/存储/UI |
 | `pinora-storage` | 设置 schema、历史索引 codec、原子本地文件和受管文件名 | 继续承载纯本地持久化；后续接收文件编码端口 | 不拥有任务、剪贴板子进程或窗口 |
-| `pinora-desktop` | 贴图几何、XRGB 缩放/压暗/裁剪/边框/块拷贝与基础帧缓存、Overlay 物理像素坐标/标注投影/脏区裁剪/选区命中、工具栏布局/命中、预览缓存、窗口策略/KWin、设置/历史/诊断面板、选区读数、贴图客户区菜单、面板主题、tray 能力摘要和固定反馈 | 继续迁移 Overlay/贴图窗口适配 | 不拥有应用 EventLoop、任务线程、文件、外部进程或图形表面 |
+| `pinora-desktop` | 贴图几何、XRGB 缩放/压暗/裁剪/边框/块拷贝与基础帧缓存、Overlay 物理像素坐标/标注投影/脏区裁剪/选区命中/输入意图、工具栏布局/命中、预览缓存、窗口策略/KWin、设置/历史/诊断面板、选区读数、贴图客户区菜单、面板主题、tray 能力摘要和固定反馈 | 继续迁移 Overlay/贴图窗口适配 | 不拥有应用 EventLoop、任务线程、文件、外部进程或图形表面 |
 | `pinora-export` | 原图/标注图来源、已提交标注烧录/草稿预览回退、PNG/JPEG/WebP 编码、原子文件发布、内存与系统剪贴板、取消/超时受监督导出 worker | 后续接收更窄的导出端口并与历史记录编排解耦 | 不拥有窗口、历史索引、托盘或应用 EventLoop；外部子进程必须可回收 |
 | `pinora-history` | 受管历史索引加载、PNG 摘要/尺寸校验、插入、删除/清空、配额/保留期 tombstone 清理、异步历史图像读取 | 后续把历史策略与导出输入进一步抽象为端口 | 不拥有窗口、Panel、托盘或 EventLoop；所有路径限制在受管目录 |
 | `pinora-tray` | `tray-icon` 菜单构造、托盘句柄、事件轮询、动态贴图列表、热键/能力/固定反馈同步 | 后续抽象平台 tray backend 或引入原生探针 | 不拥有截图、贴图、设置、历史、诊断业务工作流或 EventLoop |
@@ -302,6 +302,7 @@ crates/pinora-desktop/
     ├── lib.rs
     ├── overlay_annotation.rs
     ├── overlay_geometry.rs
+    ├── overlay_input.rs
     ├── overlay_preview_cache.rs
     ├── overlay_selection_readout.rs
     ├── overlay_toolbar.rs
@@ -317,7 +318,7 @@ crates/pinora-desktop/
 
 - `pinora-desktop` 仅依赖 `pinora-core` 和 `winit`。
 - `pinora-app` 通过 `pub(crate) use pinora_desktop::{...}` 与公开 re-export 复用这些纯 UI 模块，窗口宿主和业务服务仍留在 app。
-- 已迁移的纯 UI 模块包含 `settings_panel`、`history_browser`、`diagnostics_panel`、`overlay_selection_readout`、`overlay_geometry`、`overlay_annotation`、`pin_context_menu` 与 `xrgb`；窗口宿主、缓存生命周期和输入状态机仍保留在 app。
+- 已迁移的纯 UI 模块包含 `settings_panel`、`history_browser`、`diagnostics_panel`、`overlay_selection_readout`、`overlay_geometry`、`overlay_annotation`、`overlay_input`、`pin_context_menu` 与 `xrgb`；窗口宿主、缓存生命周期和事件分发/状态写入仍保留在 app。
 
 ---
 
@@ -1206,7 +1207,7 @@ pinora/
 │   ├── pinora-jobs/           # 已存在：任务监督、取消、结果门禁、worker 回收
 │   ├── pinora-app/            # 已存在：runtime、desktop_shell 与当前编排模块
 │   ├── pinora-storage/        # 已存在：设置、历史 codec、原子文件和受管文件名
-│   ├── pinora-desktop/        # 已存在：交互/XRGB 渲染/Overlay 坐标/窗口策略/呈现状态/面板/读数/菜单
+│   ├── pinora-desktop/        # 已存在：交互/XRGB 渲染/Overlay 坐标/输入/窗口策略/呈现状态/面板/读数/菜单
 │   ├── pinora-ocr/            # 已存在：Tesseract/TSV/受监督 OCR 服务/词框视觉状态
 │   ├── pinora-export/         # 已存在：图像编码、原子文件、系统剪贴板和导出任务
 │   ├── pinora-history/        # 已存在：历史策略、受管文件和异步图像读取

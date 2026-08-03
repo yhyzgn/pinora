@@ -8,6 +8,7 @@ pub mod history_browser;
 pub mod kwin_place;
 mod overlay_annotation;
 mod overlay_geometry;
+mod overlay_input;
 mod overlay_preview_cache;
 pub mod overlay_selection_readout;
 mod overlay_toolbar;
@@ -25,6 +26,10 @@ pub use overlay_geometry::{
     SELECTION_HANDLE_HIT_RADIUS, buffer_rect_to_source, selection_handle_at,
     selection_resize_allowed, selection_to_annotation_local, window_point_to_image,
     window_rect_from_points, window_selection_to_image,
+};
+pub use overlay_input::{
+    AnnotationHistoryAction, TextEnterAction, annotation_history_action, annotation_nudge_step,
+    overlay_click_finishes_copy, text_enter_action,
 };
 pub use overlay_preview_cache::OverlayPreviewCache;
 pub use overlay_toolbar::{

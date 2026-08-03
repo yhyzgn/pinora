@@ -44,6 +44,7 @@ graph LR
 - `pinora-platform` 唯一拥有 `start_on_login`、`single_instance`、`os_instance`、`hotkey` 和 Linux `wayland_portal`。
 - `pinora-capture` 现唯一拥有 `capture_request` 的截图模式、截图目标、Overlay 初始选区策略和显示器目标解析，以及既有真实后端、显式 fake、`FrameCache` 与 `CapturePreview`；`pinora-app` 只消费该契约并编排实际捕获、失败恢复和窗口生命周期。
 - `pinora-desktop` 现唯一拥有 `settings_panel`、`history_browser`、`diagnostics_panel`、`overlay_selection_readout`、`overlay_geometry`、`overlay_annotation`、`pin_context_menu` 与 `xrgb` 的纯自绘状态、布局、物理像素坐标、标注投影、脏区裁剪、命中、XRGB 绘制和贴图基础帧缓存；`pinora-app` 通过 crate 导出复用这些模块，但仍持有 Window/Surface。
+- `pinora-desktop` 的 `overlay_input` 现唯一拥有 Overlay 的撤销/重做、文本 Enter、微调步长和双击复制意图判定；`pinora-app` 仍独占 winit 事件分发、标注文档写入、任务提交和窗口生命周期。
 - `pinora-export` 现唯一拥有 `capture_export`、`image_sink` 与 `export_job` 的导出来源、标注合成、图像编码、原子保存、系统剪贴板和受监督导出 worker；`pinora-app` 仅通过 crate re-export 与服务接口使用它们。
 - `pinora-history` 现唯一拥有 `history_export` 与 `history_load_job` 的历史索引、tombstone 策略、受管 PNG 校验和异步读取 worker；`pinora-app` 仅通过 crate re-export 使用历史服务。
 - `pinora-tray` 现唯一拥有 `tray-icon` 的菜单、句柄、事件映射和动态贴图列表；`pinora-app` 仅消费 `TrayAction` 并编排业务操作。
@@ -118,6 +119,8 @@ sudo dnf install -y pipewire-devel mesa-libgbm-devel wayland-devel libxcb-devel
 123 标注导出图像合成契约已完成：`pinora-export::capture_export` 现拥有 `CaptureExportSource`、原图/标注图选择、已提交标注文档烧录、草稿预览回退和异常长度回退；app 只保留选区裁剪、资产盖章、Overlay 语义与导出任务编排。`cargo test -p pinora-export -- --nocapture`（30 通过，1 项真实剪贴板测试忽略）、`cargo test -p pinora-app --lib -- --nocapture`（33 通过）、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`、完整 workspace 检查、Clippy、Windows target、fmt、diff 和上下文校验均已通过。真实剪贴板/文件、窗口、HiDPI、焦点、tray-only 和性能仍未验证。
 
 124 捕获请求契约已完成：`pinora-capture::capture_request` 现拥有 `CaptureMode`、`CaptureTarget`、`OverlayInitialSelection`、模式标签、目标标签、初始选区应用和显示器目标解析；app 只保留请求发起、倒计时、失败恢复、实际捕获、Overlay、Window/Surface 和 EventLoop。`cargo test -p pinora-capture -- --nocapture`（33 通过，1 项真实显示会话测试忽略）、`cargo test -p pinora-app --lib -- --nocapture`（30 通过）、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`、完整 workspace 检查、Clippy、Windows target、`--version` 探针、fmt、diff 和上下文校验均已通过。真实截图权限、窗口、HiDPI、焦点、tray-only 和性能仍未验证。
+
+125 Overlay 输入意图契约已完成：`pinora-desktop::overlay_input` 现拥有撤销/重做、文本 Enter、微调步长和双击复制判定；app 只保留 winit 事件分发、Overlay 状态、标注文档写入和任务/窗口编排。`cargo test -p pinora-desktop -- --nocapture`（95 通过）、`cargo test -p pinora-app --lib -- --nocapture`（26 通过）、`PINORA_NO_SYSTEM_CLIPBOARD=1 cargo test --workspace`、完整 workspace 检查、Clippy、Windows target、`--version` 探针、fmt、diff 和上下文校验均已通过。真实输入法、焦点、窗口、HiDPI、tray-only 和性能仍未验证。
 
 096 历史保留期增量已执行并通过：`cargo test -p pinora-core settings -- --nocapture`、`cargo test -p pinora-core history -- --nocapture`、`cargo test -p pinora-app --lib settings_store::tests -- --nocapture`、`cargo test -p pinora-app --lib settings_panel::tests -- --nocapture`、`cargo test -p pinora-app --lib history_export::tests -- --nocapture`、`cargo test -p pinora-app --lib desktop_shell::overlay_scale_tests -- --nocapture`；完整门禁使用上方 workspace、Clippy、测试、Windows target、差异和 `ctx validate` 命令。完整测试未连接真实共享数据库、缓存、消息队列、对象存储或第三方服务；2 个真实桌面测试按既有约定忽略。
 

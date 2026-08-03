@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/124_capture_request_contract.md`
-- 任务：`.context/tasks/124_capture_request_contract.md`
+- 计划：`.context/plans/125_overlay_input_intents.md`
+- 任务：`.context/tasks/125_overlay_input_intents.md`
 
 ## 交付要求
 
