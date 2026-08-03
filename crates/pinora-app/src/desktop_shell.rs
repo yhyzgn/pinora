@@ -33,13 +33,8 @@ use crate::history_window::HistoryWindow;
 use crate::ocr::tesseract_available;
 use crate::ocr_job::{OcrJobCompletion, OcrJobService, OcrJobStart};
 use crate::ocr_presentation::word_visual_state;
-use crate::overlay_preview_cache::OverlayPreviewCache;
 use crate::overlay_selection_readout::{
     SelectionReadout, layout_selection_readout, paint_selection_readout,
-};
-use crate::overlay_toolbar::{
-    ToolbarAction, ToolbarButton, ToolbarPaintState, hit_test as toolbar_hit, layout_toolbar,
-    paint_toolbar, toolbar_bounds,
 };
 use crate::settings_panel::{SettingsPanelAction, SettingsPanelKey};
 use crate::settings_window::SettingsWindow;
@@ -58,6 +53,12 @@ use pinora_core::{
     SessionId, ThemeMode, bake_annotations, color_to_hex, render_preview_rgba,
     resolve_all_displays_rect, sample_rgba_at,
 };
+use pinora_desktop::{
+    OverlayPreviewCache, PinResizeHandle, PinResizeTarget, ToolbarAction, ToolbarButton,
+    ToolbarPaintState, default_pin_position, fit_to_image_target, layout_toolbar, paint_toolbar,
+    pin_resize_anchor_position, pin_resize_handle_at, pin_resize_target_from_drag,
+    proportional_resize_target, scaled_window_size, toolbar_bounds, toolbar_hit,
+};
 use pinora_jobs::JobState;
 use pinora_storage::{ExportNameAllocator, HistoryStore, default_history_path};
 use softbuffer::{Context, Rect as DamageRect, Surface};
@@ -69,11 +70,6 @@ use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::{CursorIcon, Fullscreen, ResizeDirection, Window, WindowId, WindowLevel};
 
 use crate::pin_context_menu::{self, PinContextMenu, PinMenuAction};
-use crate::pin_layout::{
-    PinResizeHandle, PinResizeTarget, default_pin_position, fit_to_image_target,
-    pin_resize_anchor_position, pin_resize_handle_at, pin_resize_target_from_drag,
-    proportional_resize_target, scaled_window_size,
-};
 use crate::platform::CapabilityProbe;
 use crate::runtime::AppRuntime;
 use pinora_platform::{

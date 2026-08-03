@@ -231,7 +231,7 @@ flowchart TB
 
 ### 2.4 当前实现边界与后续拆分路线
 
-当前代码已经完成系统集成、捕获和通用任务监督边界拆分；表中的目标模块仍是设计边界，不代表未标记为已实现的 crate 已经存在。
+当前代码已经完成系统集成、捕获、通用任务监督、本地存储和桌面交互原语边界拆分；表中的后续能力仍是设计边界，不代表未标记为已实现的功能已经存在。
 
 ```mermaid
 flowchart LR
@@ -247,7 +247,7 @@ flowchart LR
     JobsNow --> Core
     App --> StorageNow["pinora-storage\n已实现：设置/历史 codec + 原子文件 + 命名"]
     StorageNow --> Core
-    App -. 后续 .-> Desktop["pinora-desktop\n托盘、窗口与 Overlay"]
+    App --> Desktop["pinora-desktop\n已实现：贴图几何/工具栏/预览缓存；后续：托盘与窗口适配"]
     App -. 后续 .-> Ocr["pinora-ocr\n识别与文字层"]
     Ocr --> Core
     Desktop --> Core
@@ -265,6 +265,7 @@ flowchart LR
 | `pinora-capture` | KDE/xcap/fake 后端选择、显示器/窗口快照校验、预截帧缓存 | 继续承载真实捕获适配器 | 不创建窗口，失败不得伪装为 fake 成功 |
 | `pinora-jobs` | 通用任务监督、协作式取消、结果门禁、有界 worker 回收 | 继续承载通用生命周期底座 | 不运行具体 worker，不依赖 OCR/导出/存储/UI |
 | `pinora-storage` | 设置 schema、历史索引 codec、原子本地文件和受管文件名 | 继续承载纯本地持久化；后续接收文件编码端口 | 不拥有任务、剪贴板子进程或窗口 |
+| `pinora-desktop` | 贴图几何、Overlay 工具栏布局/命中、已提交预览缓存 | 继续迁移窗口策略、Overlay/贴图适配、托盘菜单 | 不拥有事件循环、任务线程、文件或外部进程 |
 | `pinora-app` | runtime、desktop shell、具体 OCR/导出/历史任务、存储调用编排、托盘和窗口编排 | 逐项迁移至 `desktop/ocr`，保留对 `storage` 的业务编排 | 保持唯一事件循环和现有用户行为，迁移后才删除旧路径 |
 
 后续每个 crate 拆分都必须单独建立计划/任务、迁移原有测试、更新依赖图，并通过 workspace 与目标平台编译门禁；不得把一次性目录搬迁当作功能完成。
@@ -1156,7 +1157,7 @@ pinora/
 │   ├── pinora-jobs/           # 已存在：任务监督、取消、结果门禁、worker 回收
 │   ├── pinora-app/            # 已存在：runtime、desktop_shell 与当前编排模块
 │   ├── pinora-storage/        # 已存在：设置、历史 codec、原子文件和受管文件名
-│   ├── pinora-desktop/        # 计划：托盘、窗口策略、Overlay、贴图适配
+│   ├── pinora-desktop/        # 已存在：贴图几何、Overlay 工具栏/预览缓存；后续托盘与窗口适配
 │   └── pinora-ocr/            # 计划：Tesseract 适配、文字层和结果门禁
 ├── assets/
 └── docs/

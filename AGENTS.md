@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/108_storage_crate.md`
-- 任务：`.context/tasks/108_storage_crate.md`
+- 计划：`.context/plans/109_desktop_primitives.md`
+- 任务：`.context/tasks/109_desktop_primitives.md`
 
 ## 交付要求
 

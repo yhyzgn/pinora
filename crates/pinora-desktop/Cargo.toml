@@ -1,0 +1,10 @@
+[package]
+name = "pinora-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pinora pure desktop interaction primitives"
+
+[dependencies]
+pinora-core = { workspace = true }

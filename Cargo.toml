@@ -6,6 +6,7 @@ members = [
     "crates/pinora-capture",
     "crates/pinora-jobs",
     "crates/pinora-storage",
+    "crates/pinora-desktop",
     "crates/pinora-app",
 ]
 
@@ -21,6 +22,7 @@ pinora-platform = { path = "crates/pinora-platform" }
 pinora-capture = { path = "crates/pinora-capture" }
 pinora-jobs = { path = "crates/pinora-jobs" }
 pinora-storage = { path = "crates/pinora-storage" }
+pinora-desktop = { path = "crates/pinora-desktop" }
 pinora-app = { path = "crates/pinora-app" }
 
 [package]

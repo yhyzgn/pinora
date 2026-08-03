@@ -2515,6 +2515,7 @@ dependencies = [
  "image",
  "pinora-capture",
  "pinora-core",
+ "pinora-desktop",
  "pinora-jobs",
  "pinora-platform",
  "pinora-storage",
@@ -2539,6 +2540,13 @@ name = "pinora-core"
 version = "0.1.0"
 dependencies = [
  "fontdue",
+]
+
+[[package]]
+name = "pinora-desktop"
+version = "0.1.0"
+dependencies = [
+ "pinora-core",
 ]
 
 [[package]]

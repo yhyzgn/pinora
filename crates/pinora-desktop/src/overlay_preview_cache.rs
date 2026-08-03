@@ -21,7 +21,7 @@ struct ReplacementKey {
 }
 
 #[derive(Default)]
-pub(crate) struct OverlayPreviewCache {
+pub struct OverlayPreviewCache {
     key: Option<CacheKey>,
     source_crop: Option<CaptureImage>,
     committed_rgba: Vec<u8>,
@@ -32,7 +32,7 @@ pub(crate) struct OverlayPreviewCache {
 }
 
 impl OverlayPreviewCache {
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.key = None;
         self.source_crop = None;
         self.committed_rgba.clear();
@@ -41,7 +41,7 @@ impl OverlayPreviewCache {
     }
 
     /// 合成当前草稿，返回独立的预览缓冲以供调用方转换为显示像素。
-    pub(crate) fn compose(
+    pub fn compose(
         &mut self,
         full_image: &CaptureImage,
         source_rect: PixelRect,

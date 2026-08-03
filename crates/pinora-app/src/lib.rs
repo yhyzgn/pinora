@@ -14,12 +14,9 @@ mod kwin_place;
 mod ocr;
 mod ocr_job;
 mod ocr_presentation;
-mod overlay_preview_cache;
 mod overlay_selection_readout;
-mod overlay_toolbar;
 mod panel_theme;
 mod pin_context_menu;
-mod pin_layout;
 mod platform;
 mod runtime;
 mod settings_panel;
@@ -39,11 +36,11 @@ pub use image_sink::{
 };
 pub use ocr::{recognize_image, recognize_image_with_cancellation, tesseract_available};
 pub use ocr_job::{LocalOcrRunner, OcrJobCompletion, OcrJobService, OcrJobStart, OcrRunner};
-pub use pin_layout::scaled_window_size;
 pub use pinora_capture::{
     CachedFrame, CaptureBackendKind, FakeCaptureProvider, FrameCache, KdeSpectacleCaptureProvider,
     SelectedCaptureProvider, XcapCaptureProvider, fake_only, rgba_to_xrgb, rgba_to_xrgb_and_dim,
 };
+pub use pinora_desktop::scaled_window_size;
 pub use pinora_jobs::{
     AcceptedJobResult, JobCancellation, JobResultDisposition, JobState, JobSupervisor, JobTicket,
 };
