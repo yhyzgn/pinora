@@ -654,6 +654,42 @@ mod tests {
     }
 
     #[test]
+    fn capacity_policy_evicts_oldest_managed_entry_and_preserves_newer_entry() {
+        let root = temp_root("capacity");
+        let export_dir = root.join("exports");
+        fs::create_dir_all(&export_dir).expect("create exports");
+        fs::write(export_dir.join("old.png"), b"old").expect("write old export");
+        fs::write(export_dir.join("new.png"), b"new").expect("write new export");
+        let mut store = HistoryStore::new(root.join("history.bin"), 10, u64::MAX);
+        let mut index = store.empty_index();
+        index
+            .insert(history_entry(100, "old.png", b"old"))
+            .expect("insert old");
+        index
+            .insert(history_entry(200, "new.png", b"new"))
+            .expect("insert new");
+        store.save(&index).expect("save history");
+        store.set_limits(10, 3);
+
+        let policy = reconcile_history_policy(&store, &export_dir, &mut index, None)
+            .expect("reconcile capacity");
+
+        assert_eq!(policy.quota_evicted_entries, 1);
+        assert_eq!(policy.cleanup.removed_files, 1);
+        assert!(!export_dir.join("old.png").exists());
+        assert!(export_dir.join("new.png").is_file());
+        assert_eq!(index.active_count(), 1);
+        assert_eq!(
+            index
+                .active_entries()
+                .next()
+                .map(|entry| entry.file_name.as_str()),
+            Some("new.png")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn cleanup_compacts_missing_file_without_touching_active_same_name() {
         let root = temp_root("missing-and-protected");
         let export_dir = root.join("exports");

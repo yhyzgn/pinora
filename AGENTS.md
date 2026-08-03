@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/096_history_retention_days.md`
-- 任务：`.context/tasks/096_history_retention_days.md`
+- 计划：`.context/plans/097_history_max_bytes.md`
+- 任务：`.context/tasks/097_history_max_bytes.md`
 
 ## 交付要求
 

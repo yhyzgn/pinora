@@ -83,7 +83,6 @@ const MIN_FRAME_INTERVAL: Duration = Duration::from_micros(16_666);
 const OCR_JOB_TIMEOUT_MS: u64 = 30_000;
 const EXPORT_JOB_TIMEOUT_MS: u64 = 30_000;
 const HISTORY_LOAD_TIMEOUT_MS: u64 = 30_000;
-const HISTORY_MAX_BYTES: u64 = u64::MAX;
 const MILLIS_PER_DAY: u64 = 86_400_000;
 
 fn monotonic_ms() -> u64 {
@@ -242,7 +241,7 @@ where
     let history_store = HistoryStore::new(
         default_history_path(),
         usize::try_from(settings.history_limit).expect("history limit fits usize"),
-        HISTORY_MAX_BYTES,
+        settings.history_max_bytes,
     );
     let mut history_index = match load_history_index(&history_store) {
         Ok(index) => index,
@@ -273,9 +272,10 @@ where
         Err(_) => eprintln!("pinora: history policy reconciliation deferred"),
     }
     println!(
-        "pinora: settings policy history-limit={} history-retention-days={} pin-limit={} default-opacity={}% default-always-on-top={} theme={:?}",
+        "pinora: settings policy history-limit={} history-retention-days={} history-max-bytes={} pin-limit={} default-opacity={}% default-always-on-top={} theme={:?}",
         settings.history_limit,
         settings.history_retention_days,
+        settings.history_max_bytes,
         settings.pin_limit,
         settings.default_pin_opacity_percent,
         settings.default_pin_always_on_top,
@@ -2093,9 +2093,8 @@ where
                         pin.window.request_redraw();
                     }
                 }
-                let max_bytes = self.history_store.max_bytes();
                 self.history_store
-                    .set_limits(draft.history_limit as usize, max_bytes);
+                    .set_limits(draft.history_limit as usize, draft.history_max_bytes);
                 let policy_result = self.runtime.as_ref().map(|runtime| {
                     reconcile_history_policy(
                         &self.history_store,

@@ -4,15 +4,15 @@
 //! [`SettingsPanelAction`]，并在确认保存后调用 `SettingsStore`。
 
 use pinora_core::{
-    AppSettings, ExportImageFormat, HISTORY_RETENTION_DAYS_MAX, HISTORY_RETENTION_DAYS_MIN,
-    HotkeyBinding, OcrLanguage, PixelPoint, PixelRect, REGION_ALTERNATE_HOTKEY,
-    REGION_SECONDARY_HOTKEY, ThemeMode,
+    AppSettings, ExportImageFormat, HISTORY_MAX_BYTES_MAX, HISTORY_MAX_BYTES_MIN,
+    HISTORY_RETENTION_DAYS_MAX, HISTORY_RETENTION_DAYS_MIN, HotkeyBinding, OcrLanguage, PixelPoint,
+    PixelRect, REGION_ALTERNATE_HOTKEY, REGION_SECONDARY_HOTKEY, ThemeMode,
 };
 
 use crate::panel_theme::PanelTheme;
 
 pub const PANEL_WIDTH: u32 = 560;
-pub const PANEL_HEIGHT: u32 = 888;
+pub const PANEL_HEIGHT: u32 = 950;
 
 const ROW_X: i32 = 28;
 const ROW_W: u32 = PANEL_WIDTH - 56;
@@ -28,6 +28,7 @@ pub enum SettingField {
     Theme,
     HistoryLimit,
     HistoryRetentionDays,
+    HistoryMaxBytes,
     PinLimit,
     PinOpacity,
     DefaultPinAlwaysOnTop,
@@ -40,10 +41,11 @@ pub enum SettingField {
 }
 
 impl SettingField {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Theme,
         Self::HistoryLimit,
         Self::HistoryRetentionDays,
+        Self::HistoryMaxBytes,
         Self::PinLimit,
         Self::PinOpacity,
         Self::DefaultPinAlwaysOnTop,
@@ -60,15 +62,16 @@ impl SettingField {
             Self::Theme => 0,
             Self::HistoryLimit => 1,
             Self::HistoryRetentionDays => 2,
-            Self::PinLimit => 3,
-            Self::PinOpacity => 4,
-            Self::DefaultPinAlwaysOnTop => 5,
-            Self::OcrLanguage => 6,
-            Self::OcrConfidenceThreshold => 7,
-            Self::ExportFormat => 8,
-            Self::JpegQuality => 9,
-            Self::RegionHotkey => 10,
-            Self::FullDisplayHotkey => 11,
+            Self::HistoryMaxBytes => 3,
+            Self::PinLimit => 4,
+            Self::PinOpacity => 5,
+            Self::DefaultPinAlwaysOnTop => 6,
+            Self::OcrLanguage => 7,
+            Self::OcrConfidenceThreshold => 8,
+            Self::ExportFormat => 9,
+            Self::JpegQuality => 10,
+            Self::RegionHotkey => 11,
+            Self::FullDisplayHotkey => 12,
         }
     }
 
@@ -77,6 +80,7 @@ impl SettingField {
             Self::Theme => "THEME",
             Self::HistoryLimit => "HISTORY LIMIT",
             Self::HistoryRetentionDays => "HISTORY RETENTION",
+            Self::HistoryMaxBytes => "HISTORY DISK LIMIT",
             Self::PinLimit => "PIN LIMIT",
             Self::PinOpacity => "PIN OPACITY",
             Self::DefaultPinAlwaysOnTop => "PIN ALWAYS ON TOP",
@@ -266,6 +270,15 @@ impl SettingsPanel {
                     1,
                 );
             }
+            SettingField::HistoryMaxBytes => {
+                self.draft.history_max_bytes = step_u64(
+                    self.draft.history_max_bytes,
+                    direction,
+                    HISTORY_MAX_BYTES_MIN,
+                    HISTORY_MAX_BYTES_MAX,
+                    64 * 1024 * 1024,
+                );
+            }
             SettingField::PinLimit => {
                 self.draft.pin_limit = step_u16(self.draft.pin_limit, direction, 1, 100, 1);
             }
@@ -431,6 +444,7 @@ impl SettingsPanel {
             SettingField::HistoryRetentionDays => {
                 format!("{} DAYS", self.draft.history_retention_days)
             }
+            SettingField::HistoryMaxBytes => format_history_capacity(self.draft.history_max_bytes),
             SettingField::PinLimit => format!("{} PINS", self.draft.pin_limit),
             SettingField::PinOpacity => format!("{}%", self.draft.default_pin_opacity_percent),
             SettingField::DefaultPinAlwaysOnTop => {
@@ -507,6 +521,24 @@ fn step_u8(value: u8, direction: i32, min: u8, max: u8, step: u8) -> u8 {
         value.saturating_add(step).min(max)
     } else {
         value.saturating_sub(step).max(min)
+    }
+}
+
+fn step_u64(value: u64, direction: i32, min: u64, max: u64, step: u64) -> u64 {
+    if direction > 0 {
+        value.saturating_add(step).min(max)
+    } else {
+        value.saturating_sub(step).max(min)
+    }
+}
+
+fn format_history_capacity(bytes: u64) -> String {
+    const MIB: u64 = 1024 * 1024;
+    const GIB: u64 = 1024 * MIB;
+    if bytes >= GIB && bytes.is_multiple_of(GIB) {
+        format!("{} GB", bytes / GIB)
+    } else {
+        format!("{} MB", bytes / MIB)
     }
 }
 
@@ -1013,6 +1045,29 @@ mod tests {
     }
 
     #[test]
+    fn history_capacity_steps_within_configured_byte_bounds() {
+        let mut panel = SettingsPanel::new(AppSettings::default());
+        panel.select(SettingField::HistoryMaxBytes);
+
+        panel.step(-1);
+        assert_eq!(panel.draft().history_max_bytes, 960 * 1024 * 1024);
+        assert_eq!(panel.value_label(SettingField::HistoryMaxBytes), "960 MB");
+
+        panel.step(1);
+        assert_eq!(panel.draft().history_max_bytes, 1024 * 1024 * 1024);
+        assert_eq!(panel.value_label(SettingField::HistoryMaxBytes), "1 GB");
+
+        for _ in 0..2_000 {
+            panel.step(1);
+        }
+        assert_eq!(panel.draft().history_max_bytes, HISTORY_MAX_BYTES_MAX);
+        for _ in 0..2_000 {
+            panel.step(-1);
+        }
+        assert_eq!(panel.draft().history_max_bytes, HISTORY_MAX_BYTES_MIN);
+    }
+
+    #[test]
     fn export_format_cycles_and_jpeg_quality_stays_within_valid_range() {
         let mut panel = SettingsPanel::new(AppSettings::default());
         panel.select(SettingField::ExportFormat);
@@ -1092,6 +1147,7 @@ mod tests {
     fn expanded_panel_keeps_default_pin_level_row_above_the_action_buttons() {
         assert!(SettingField::DefaultPinAlwaysOnTop.row_rect().bottom() <= save_rect().origin.y);
         assert!(SettingField::HistoryRetentionDays.row_rect().bottom() <= save_rect().origin.y);
+        assert!(SettingField::HistoryMaxBytes.row_rect().bottom() <= save_rect().origin.y);
         assert!(SettingField::OcrConfidenceThreshold.row_rect().bottom() <= save_rect().origin.y);
         assert!(SettingField::ExportFormat.row_rect().bottom() <= save_rect().origin.y);
         assert!(SettingField::JpegQuality.row_rect().bottom() <= save_rect().origin.y);
