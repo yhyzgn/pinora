@@ -2515,6 +2515,7 @@ dependencies = [
  "image",
  "pinora-capture",
  "pinora-core",
+ "pinora-jobs",
  "pinora-platform",
  "png 0.17.16",
  "softbuffer",
@@ -2537,6 +2538,13 @@ name = "pinora-core"
 version = "0.1.0"
 dependencies = [
  "fontdue",
+]
+
+[[package]]
+name = "pinora-jobs"
+version = "0.1.0"
+dependencies = [
+ "pinora-core",
 ]
 
 [[package]]

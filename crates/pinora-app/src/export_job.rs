@@ -23,10 +23,10 @@ use crate::image_sink::{
     copy_text_to_system_clipboard_with_cancellation, encode_png_bytes,
     save_image_file_with_cancellation,
 };
-use crate::job_supervisor::{
+use pinora_jobs::{
     AcceptedJobResult, JobCancellation, JobResultDisposition, JobState, JobSupervisor, JobTicket,
 };
-use crate::worker_lifecycle::{WorkerWaitOutcome, reap_finished_workers, wait_for_workers};
+use pinora_jobs::{WorkerWaitOutcome, reap_finished_workers, wait_for_workers};
 
 /// 导出/剪贴板 worker 的输入。图像和文本只在进程内传递，不进入 `JobSpec`。
 #[derive(Debug)]

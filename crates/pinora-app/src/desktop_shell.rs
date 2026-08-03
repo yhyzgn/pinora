@@ -32,7 +32,6 @@ use crate::history_load_job::{
 };
 use crate::history_store::{HistoryStore, default_history_path};
 use crate::history_window::HistoryWindow;
-use crate::job_supervisor::JobState;
 use crate::ocr::tesseract_available;
 use crate::ocr_job::{OcrJobCompletion, OcrJobService, OcrJobStart};
 use crate::ocr_presentation::word_visual_state;
@@ -61,6 +60,7 @@ use pinora_core::{
     SessionId, ThemeMode, bake_annotations, color_to_hex, render_preview_rgba,
     resolve_all_displays_rect, sample_rgba_at,
 };
+use pinora_jobs::JobState;
 use softbuffer::{Context, Rect as DamageRect, Surface};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -6722,12 +6722,12 @@ fn draw_border(buf: &mut [u32], w: usize, h: usize, color: u32) {
 #[cfg(test)]
 mod overlay_scale_tests {
     use super::*;
-    use crate::job_supervisor::{JobResultDisposition, JobSupervisor};
     use pinora_core::{
         Annotation, AnnotationDoc, AssetGeneration, CaptureImage, CaptureMetadata, ContentDigest,
         DEFAULT_STROKE, DEFAULT_WIDTH, DisplayId, HistoryEntry, HistoryEntrySpec, HistoryOcrState,
         ImageId, JobResultRef, PixelSize, RgbaBuffer,
     };
+    use pinora_jobs::{JobResultDisposition, JobSupervisor};
 
     fn history_entry(id: u64) -> HistoryEntry {
         HistoryEntry::new(HistoryEntrySpec {

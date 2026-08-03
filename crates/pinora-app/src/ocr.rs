@@ -17,7 +17,7 @@ use pinora_core::{
     union_bboxes,
 };
 
-use crate::job_supervisor::JobCancellation;
+use pinora_jobs::JobCancellation;
 
 const TESSERACT_TIMEOUT: Duration = Duration::from_secs(30);
 const TESSERACT_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -499,7 +499,7 @@ mod tests {
             JobKind::Ocr,
             u64::MAX,
         );
-        let mut supervisor = crate::job_supervisor::JobSupervisor::new();
+        let mut supervisor = pinora_jobs::JobSupervisor::new();
         let ticket = supervisor.submit(spec).expect("submit job");
         let cancellation = ticket.cancellation();
         supervisor.cancel(ticket.id).expect("cancel job");

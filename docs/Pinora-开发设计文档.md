@@ -231,7 +231,7 @@ flowchart TB
 
 ### 2.4 当前实现边界与后续拆分路线
 
-当前代码已经完成系统集成和捕获边界拆分；表中的目标模块仍是设计边界，不代表未标记为已实现的 crate 已经存在。
+当前代码已经完成系统集成、捕获和通用任务监督边界拆分；表中的目标模块仍是设计边界，不代表未标记为已实现的 crate 已经存在。
 
 ```mermaid
 flowchart LR
@@ -243,26 +243,28 @@ flowchart LR
 
     App --> CaptureNow["pinora-capture\n已实现：KDE/xcap/fake 选择 + FrameCache"]
     CaptureNow --> Core
-    App -. 后续 .-> Jobs["pinora-jobs\n通用任务监督"]
+    App --> JobsNow["pinora-jobs\n已实现：监督、取消、worker 回收"]
+    JobsNow --> Core
     App -. 后续 .-> Storage["pinora-storage\n设置、历史、文件导出"]
     App -. 后续 .-> Desktop["pinora-desktop\n托盘、窗口与 Overlay"]
     App -. 后续 .-> Ocr["pinora-ocr\n识别与文字层"]
-    Jobs --> Core
     Storage --> Core
     Ocr --> Core
     Desktop --> Core
     Desktop --> Platform
     Desktop --> Capture
-    Desktop --> Jobs
+    Desktop --> JobsNow
     Desktop --> Storage
-    Ocr --> Jobs
+    Ocr --> JobsNow
 ```
 
 | 当前 crate | 当前所有权 | 下一步边界 | 迁移原则 |
 | --- | --- | --- | --- |
 | `pinora-core` | 几何、图像、标注、贴图、设置、历史、任务值对象 | 保持纯领域；仅在 crate 内继续按模型/事务拆目录 | 不引入窗口、平台 SDK、线程或外部进程 |
 | `pinora-platform` | 启动项、单实例/IPC、全局热键、Wayland Portal | 继续承载系统能力适配器 | 只向上提供稳定端口与真实失败语义 |
-| `pinora-app` | runtime、desktop shell、截图、任务、存储、OCR、托盘和窗口编排 | 逐项迁移至 `capture/jobs/storage/desktop/ocr` | 保持唯一事件循环和现有用户行为，迁移后才删除旧路径 |
+| `pinora-capture` | KDE/xcap/fake 后端选择、显示器/窗口快照校验、预截帧缓存 | 继续承载真实捕获适配器 | 不创建窗口，失败不得伪装为 fake 成功 |
+| `pinora-jobs` | 通用任务监督、协作式取消、结果门禁、有界 worker 回收 | 继续承载通用生命周期底座 | 不运行具体 worker，不依赖 OCR/导出/存储/UI |
+| `pinora-app` | runtime、desktop shell、具体 OCR/导出/历史任务、存储、托盘和窗口编排 | 逐项迁移至 `storage/desktop/ocr` | 保持唯一事件循环和现有用户行为，迁移后才删除旧路径 |
 
 后续每个 crate 拆分都必须单独建立计划/任务、迁移原有测试、更新依赖图，并通过 workspace 与目标平台编译门禁；不得把一次性目录搬迁当作功能完成。
 
@@ -1150,8 +1152,8 @@ pinora/
 │   ├── pinora-core/           # 已存在：纯领域模型、命令、事件、错误码
 │   ├── pinora-platform/       # 已存在：启动项、单实例/IPC、热键、Wayland Portal
 │   ├── pinora-capture/        # 已存在：KDE/xcap/fake 选择、显示器快照、FrameCache
+│   ├── pinora-jobs/           # 已存在：任务监督、取消、结果门禁、worker 回收
 │   ├── pinora-app/            # 已存在：runtime、desktop_shell 与当前编排模块
-│   ├── pinora-jobs/           # 计划：通用任务监督、取消、超时和回收
 │   ├── pinora-storage/        # 计划：设置、历史、文件导出和清理
 │   ├── pinora-desktop/        # 计划：托盘、窗口策略、Overlay、贴图适配
 │   └── pinora-ocr/            # 计划：Tesseract 适配、文字层和结果门禁

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 /// 退出等待的实际结果。`unfinished` 表示取消期限后仍未结束的协作式 worker。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct WorkerWaitOutcome {
+pub struct WorkerWaitOutcome {
     pub cancelled: usize,
     pub joined: usize,
     pub panicked: usize,
@@ -22,7 +22,7 @@ impl WorkerWaitOutcome {
 }
 
 /// 只 join 已完成 worker，绝不在正常轮询路径阻塞。
-pub(crate) fn reap_finished_workers(workers: &mut Vec<JoinHandle<()>>) -> WorkerWaitOutcome {
+pub fn reap_finished_workers(workers: &mut Vec<JoinHandle<()>>) -> WorkerWaitOutcome {
     let mut pending = Vec::with_capacity(workers.len());
     let mut outcome = WorkerWaitOutcome::default();
     for worker in workers.drain(..) {
@@ -41,10 +41,7 @@ pub(crate) fn reap_finished_workers(workers: &mut Vec<JoinHandle<()>>) -> Worker
 }
 
 /// 在固定期限内重复回收已结束 worker。超过期限后返回残留数量而不无限等待。
-pub(crate) fn wait_for_workers(
-    workers: &mut Vec<JoinHandle<()>>,
-    timeout: Duration,
-) -> WorkerWaitOutcome {
+pub fn wait_for_workers(workers: &mut Vec<JoinHandle<()>>, timeout: Duration) -> WorkerWaitOutcome {
     let deadline = Instant::now() + timeout;
     let mut outcome = WorkerWaitOutcome::default();
     loop {

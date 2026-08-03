@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use pinora_core::{CaptureImage, ErrorCode, ExportImageFormat, ImageId, ImageSink, PinoraError};
 
-use crate::job_supervisor::JobCancellation;
+use pinora_jobs::JobCancellation;
 
 /// 将 RGBA 写为 PNG 文件，内存保留最近一次复制，并尽力写入系统剪贴板。
 #[derive(Debug, Default)]
@@ -622,11 +622,11 @@ fn copy_text_to_system_clipboard_with_optional_cancellation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::job_supervisor::JobSupervisor;
     use pinora_core::{
         AssetRef, CaptureMetadata, CorrelationId, DisplayId, ImageId, JobId, JobKind, JobOwner,
         JobSpec, PixelRect, PixelSize, RgbaBuffer, SessionId,
     };
+    use pinora_jobs::JobSupervisor;
     #[cfg(unix)]
     use std::time::Duration;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -756,7 +756,7 @@ mod tests {
         let ticket = supervisor.submit(spec).expect("submit cancellation job");
         assert_eq!(
             supervisor.cancel(ticket.id).expect("cancel job"),
-            crate::job_supervisor::JobState::Finished(pinora_core::JobTerminalState::Cancelled)
+            pinora_jobs::JobState::Finished(pinora_core::JobTerminalState::Cancelled)
         );
 
         let error = save_image_file_with_cancellation(

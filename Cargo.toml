@@ -4,6 +4,7 @@ members = [
     "crates/pinora-core",
     "crates/pinora-platform",
     "crates/pinora-capture",
+    "crates/pinora-jobs",
     "crates/pinora-app",
 ]
 
@@ -17,6 +18,7 @@ repository = "https://github.com/yhyzgn/pinora"
 pinora-core = { path = "crates/pinora-core" }
 pinora-platform = { path = "crates/pinora-platform" }
 pinora-capture = { path = "crates/pinora-capture" }
+pinora-jobs = { path = "crates/pinora-jobs" }
 pinora-app = { path = "crates/pinora-app" }
 
 [package]

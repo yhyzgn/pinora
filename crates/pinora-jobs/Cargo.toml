@@ -1,0 +1,11 @@
+[package]
+name = "pinora-jobs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pinora generic job supervision, cancellation and worker lifecycle"
+
+[dependencies]
+pinora-core = { workspace = true }
+

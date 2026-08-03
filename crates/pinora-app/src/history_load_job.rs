@@ -17,11 +17,11 @@ use pinora_core::{
 };
 
 use crate::history_export::load_history_image;
-use crate::job_supervisor::{
+use pinora_capture::{rgba_to_xrgb, rgba_to_xrgb_and_dim};
+use pinora_jobs::{
     AcceptedJobResult, JobCancellation, JobResultDisposition, JobState, JobSupervisor, JobTicket,
 };
-use crate::worker_lifecycle::{WorkerWaitOutcome, reap_finished_workers, wait_for_workers};
-use pinora_capture::{rgba_to_xrgb, rgba_to_xrgb_and_dim};
+use pinora_jobs::{WorkerWaitOutcome, reap_finished_workers, wait_for_workers};
 
 /// 历史读取 worker 的不可变输入。
 #[derive(Debug, Clone)]

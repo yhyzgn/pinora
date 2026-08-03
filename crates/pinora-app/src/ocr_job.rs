@@ -17,11 +17,11 @@ use pinora_core::{
     JobTerminalState, OcrLanguage, OcrResult, PinoraError,
 };
 
-use crate::job_supervisor::{
+use crate::ocr::recognize_image_with_cancellation;
+use pinora_jobs::{
     AcceptedJobResult, JobCancellation, JobResultDisposition, JobState, JobSupervisor, JobTicket,
 };
-use crate::ocr::recognize_image_with_cancellation;
-use crate::worker_lifecycle::{WorkerWaitOutcome, reap_finished_workers, wait_for_workers};
+use pinora_jobs::{WorkerWaitOutcome, reap_finished_workers, wait_for_workers};
 
 const OCR_CACHE_MAX_ENTRIES: usize = 8;
 const OCR_CACHE_MAX_ESTIMATED_BYTES: usize = 2 * 1024 * 1024;

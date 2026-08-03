@@ -12,7 +12,6 @@ mod history_load_job;
 mod history_store;
 mod history_window;
 mod image_sink;
-mod job_supervisor;
 mod kwin_place;
 mod ocr;
 mod ocr_job;
@@ -32,7 +31,6 @@ mod tray;
 mod tray_capabilities;
 mod tray_feedback;
 mod window_policy;
-mod worker_lifecycle;
 
 pub use desktop_shell::run_desktop_shell;
 pub use export_job::{
@@ -43,15 +41,15 @@ pub use history_store::{HistoryLoad, HistoryStore, default_history_path};
 pub use image_sink::{
     LocalImageSink, copy_text_to_system_clipboard, detect_system_clipboard_backend,
 };
-pub use job_supervisor::{
-    AcceptedJobResult, JobCancellation, JobResultDisposition, JobState, JobSupervisor, JobTicket,
-};
 pub use ocr::{recognize_image, recognize_image_with_cancellation, tesseract_available};
 pub use ocr_job::{LocalOcrRunner, OcrJobCompletion, OcrJobService, OcrJobStart, OcrRunner};
 pub use pin_layout::scaled_window_size;
 pub use pinora_capture::{
     CachedFrame, CaptureBackendKind, FakeCaptureProvider, FrameCache, KdeSpectacleCaptureProvider,
     SelectedCaptureProvider, XcapCaptureProvider, fake_only, rgba_to_xrgb, rgba_to_xrgb_and_dim,
+};
+pub use pinora_jobs::{
+    AcceptedJobResult, JobCancellation, JobResultDisposition, JobState, JobSupervisor, JobTicket,
 };
 pub use platform::{CapabilityProbe, FakeCapabilityProbe, RuntimeCapabilityProbe};
 pub use runtime::{AppRuntime, BootstrapOutcome, DispatchResult};
