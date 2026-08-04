@@ -91,8 +91,8 @@ fn main() {
             }
             println!("pinora: desktop shell — select region, then pin window");
             println!(
-                "pinora: global keys: {}/Ctrl+N/Ctrl+Shift+S region, {} full display (when available), Esc cancel/close, Ctrl+Q quit",
-                settings.region_hotkey, settings.full_display_hotkey
+                "pinora: global keys: {} capture, {} clipboard pin, Shift+F3 toggle pins, Esc cancel/close, Ctrl+Q quit",
+                settings.region_hotkey, settings.clipboard_hotkey
             );
             println!("pinora: cli: `pinora capture` / `pinora quit` (forwards to this instance)");
             if let Err(err) = run_desktop_shell(runtime) {
@@ -175,9 +175,10 @@ Usage:
   pinora --version    Print the installed version
 
 Global hotkeys (when OS registration succeeds; defaults shown):
-  F2, Ctrl+N, Ctrl+Shift+S → region capture
-  F3 → full-display capture
-  Configure the primary region/full-display bindings in Settings.
+  F1 → region capture
+  F3 → create a pin from the image clipboard
+  Shift+F3 → show or hide all pins
+  Configure the capture/clipboard bindings in Settings.
 
 KDE System Settings (always works as backup):
   Shortcuts → Custom → Command:

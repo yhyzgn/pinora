@@ -9,7 +9,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_channel::{Receiver, Sender};
 use futures_lite::{StreamExt, future};
-use pinora_core::{ActionId, HotkeyBinding, HotkeyCode, HotkeyModifiers};
+use pinora_core::{
+    ActionId, DEFAULT_TOGGLE_PINS_HOTKEY, HotkeyBinding, HotkeyCode, HotkeyModifiers,
+};
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 
 const PORTAL_DESTINATION: &str = "org.freedesktop.portal.Desktop";
@@ -18,7 +20,8 @@ const GLOBAL_SHORTCUTS_INTERFACE: &str = "org.freedesktop.portal.GlobalShortcuts
 const REQUEST_INTERFACE: &str = "org.freedesktop.portal.Request";
 const SESSION_INTERFACE: &str = "org.freedesktop.portal.Session";
 const REGION_SHORTCUT_ID: &str = "capture-region";
-const FULL_DISPLAY_SHORTCUT_ID: &str = "capture-full-display";
+const CLIPBOARD_SHORTCUT_ID: &str = "pin-clipboard";
+const TOGGLE_PINS_SHORTCUT_ID: &str = "toggle-all-pins";
 // CreateSession/BindShortcuts/Activated are consumed according to the v2 contract.
 const PORTAL_MIN_VERSION: u32 = 2;
 const PORTAL_QUEUE_CAPACITY: usize = 16;
@@ -60,7 +63,7 @@ impl PortalFailure {
 enum PortalCommand {
     Rebind {
         region_hotkey: HotkeyBinding,
-        full_display_hotkey: HotkeyBinding,
+        clipboard_hotkey: HotkeyBinding,
     },
     Shutdown,
 }
@@ -87,7 +90,7 @@ impl WaylandPortalHotkeys {
     /// 阻塞 tray-only 启动或 `winit` GUI 线程。
     pub(crate) fn start(
         region_hotkey: HotkeyBinding,
-        full_display_hotkey: HotkeyBinding,
+        clipboard_hotkey: HotkeyBinding,
     ) -> Option<Self> {
         if !is_wayland_session() {
             return None;
@@ -102,7 +105,7 @@ impl WaylandPortalHotkeys {
                     command_rx,
                     event_tx,
                     region_hotkey,
-                    full_display_hotkey,
+                    clipboard_hotkey,
                 ));
             })
             .ok()?;
@@ -118,12 +121,12 @@ impl WaylandPortalHotkeys {
     pub(crate) fn rebind(
         &self,
         region_hotkey: HotkeyBinding,
-        full_display_hotkey: HotkeyBinding,
+        clipboard_hotkey: HotkeyBinding,
     ) -> bool {
         self.commands
             .try_send(PortalCommand::Rebind {
                 region_hotkey,
-                full_display_hotkey,
+                clipboard_hotkey,
             })
             .is_ok()
     }
@@ -161,13 +164,13 @@ async fn run_worker(
     commands: Receiver<PortalCommand>,
     events: Sender<PortalEvent>,
     mut region_hotkey: HotkeyBinding,
-    mut full_display_hotkey: HotkeyBinding,
+    mut clipboard_hotkey: HotkeyBinding,
 ) {
     let result = run_worker_inner(
         &commands,
         &events,
         &mut region_hotkey,
-        &mut full_display_hotkey,
+        &mut clipboard_hotkey,
     )
     .await;
     if let Err(failure) = result {
@@ -183,7 +186,7 @@ async fn run_worker_inner(
     commands: &Receiver<PortalCommand>,
     events: &Sender<PortalEvent>,
     region_hotkey: &mut HotkeyBinding,
-    full_display_hotkey: &mut HotkeyBinding,
+    clipboard_hotkey: &mut HotkeyBinding,
 ) -> Result<(), PortalFailure> {
     let connection = zbus::Connection::session()
         .await
@@ -204,8 +207,7 @@ async fn run_worker_inner(
         return Err(PortalFailure::VersionUnsupported);
     }
 
-    let mut session =
-        bind_session(&connection, &portal, *region_hotkey, *full_display_hotkey).await?;
+    let mut session = bind_session(&connection, &portal, *region_hotkey, *clipboard_hotkey).await?;
     let _ = events
         .send(PortalEvent::Availability(PortalAvailability::Available))
         .await;
@@ -221,13 +223,13 @@ async fn run_worker_inner(
             }
             WorkerInput::Command(Some(PortalCommand::Rebind {
                 region_hotkey: next_region,
-                full_display_hotkey: next_full,
+                clipboard_hotkey: next_full,
             })) => {
                 close_session(&connection, &session.handle).await;
                 match bind_session(&connection, &portal, next_region, next_full).await {
                     Ok(next_session) => {
                         *region_hotkey = next_region;
-                        *full_display_hotkey = next_full;
+                        *clipboard_hotkey = next_full;
                         session = next_session;
                         let _ = events
                             .send(PortalEvent::Availability(PortalAvailability::Available))
@@ -268,7 +270,7 @@ async fn bind_session(
     connection: &zbus::Connection,
     portal: &zbus::Proxy<'_>,
     region_hotkey: HotkeyBinding,
-    full_display_hotkey: HotkeyBinding,
+    clipboard_hotkey: HotkeyBinding,
 ) -> Result<PortalSession, PortalFailure> {
     let (request_token, session_token) = next_tokens();
     let mut options = HashMap::new();
@@ -293,7 +295,7 @@ async fn bind_session(
         .receive_all_signals()
         .await
         .map_err(|_| PortalFailure::Disconnected)?;
-    let shortcuts = requested_shortcuts(region_hotkey, full_display_hotkey);
+    let shortcuts = requested_shortcuts(region_hotkey, clipboard_hotkey);
     let mut bind_options = HashMap::new();
     let bind_token = next_token("bind");
     bind_options.insert("handle_token", Value::from(bind_token.clone()));
@@ -313,7 +315,7 @@ async fn bind_session(
         return Err(PortalFailure::BindingRejected);
     }
     let accepted_shortcuts = shortcuts_from_response(&mut bind_response_stream).await?;
-    if accepted_shortcuts.is_empty() {
+    if !all_requested_shortcuts_accepted(&accepted_shortcuts) {
         close_session(connection, &session).await;
         return Err(PortalFailure::BindingRejected);
     }
@@ -391,7 +393,7 @@ async fn close_session(connection: &zbus::Connection, session: &OwnedObjectPath)
 
 fn requested_shortcuts(
     region_hotkey: HotkeyBinding,
-    full_display_hotkey: HotkeyBinding,
+    clipboard_hotkey: HotkeyBinding,
 ) -> Vec<(String, HashMap<&'static str, Value<'static>>)> {
     [
         (
@@ -400,9 +402,14 @@ fn requested_shortcuts(
             portal_trigger(region_hotkey),
         ),
         (
-            FULL_DISPLAY_SHORTCUT_ID,
-            "Capture the full display",
-            portal_trigger(full_display_hotkey),
+            CLIPBOARD_SHORTCUT_ID,
+            "Create a pin from the image clipboard",
+            portal_trigger(clipboard_hotkey),
+        ),
+        (
+            TOGGLE_PINS_SHORTCUT_ID,
+            "Show or hide all pins",
+            portal_trigger(DEFAULT_TOGGLE_PINS_HOTKEY),
         ),
     ]
     .into_iter()
@@ -435,9 +442,20 @@ fn action_from_signal(message: &zbus::Message, session: &PortalSession) -> Optio
 fn action_for_shortcut_id(shortcut_id: &str) -> Option<ActionId> {
     match shortcut_id {
         REGION_SHORTCUT_ID => Some(ActionId::CaptureRegionAndPin),
-        FULL_DISPLAY_SHORTCUT_ID => Some(ActionId::CaptureFullDisplay),
+        CLIPBOARD_SHORTCUT_ID => Some(ActionId::PasteClipboard),
+        TOGGLE_PINS_SHORTCUT_ID => Some(ActionId::ToggleAllPinsVisibility),
         _ => None,
     }
+}
+
+fn all_requested_shortcuts_accepted(accepted_shortcuts: &HashSet<String>) -> bool {
+    [
+        REGION_SHORTCUT_ID,
+        CLIPBOARD_SHORTCUT_ID,
+        TOGGLE_PINS_SHORTCUT_ID,
+    ]
+    .into_iter()
+    .all(|shortcut_id| accepted_shortcuts.contains(shortcut_id))
 }
 
 fn accepted_shortcut_ids(value: &OwnedValue) -> Option<HashSet<String>> {
@@ -550,14 +568,18 @@ mod tests {
     }
 
     #[test]
-    fn only_fixed_shortcut_ids_become_capture_actions() {
+    fn only_fixed_shortcut_ids_become_pinora_actions() {
         assert_eq!(
             action_for_shortcut_id(REGION_SHORTCUT_ID),
             Some(ActionId::CaptureRegionAndPin)
         );
         assert_eq!(
-            action_for_shortcut_id(FULL_DISPLAY_SHORTCUT_ID),
-            Some(ActionId::CaptureFullDisplay)
+            action_for_shortcut_id(CLIPBOARD_SHORTCUT_ID),
+            Some(ActionId::PasteClipboard)
+        );
+        assert_eq!(
+            action_for_shortcut_id(TOGGLE_PINS_SHORTCUT_ID),
+            Some(ActionId::ToggleAllPinsVisibility)
         );
         assert_eq!(action_for_shortcut_id("quit"), None);
     }
@@ -565,16 +587,34 @@ mod tests {
     #[test]
     fn requested_shortcuts_have_fixed_descriptions_and_preferred_triggers() {
         let entries = requested_shortcuts(
-            HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F2),
+            HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F1),
             HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4),
         );
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].0, REGION_SHORTCUT_ID);
-        assert_eq!(entries[1].0, FULL_DISPLAY_SHORTCUT_ID);
+        assert_eq!(entries[1].0, CLIPBOARD_SHORTCUT_ID);
+        assert_eq!(entries[2].0, TOGGLE_PINS_SHORTCUT_ID);
         assert_eq!(
             entries[1].1["preferred_trigger"].downcast_ref::<&str>(),
             Ok("ALT+F4")
         );
+        assert_eq!(
+            entries[2].1["preferred_trigger"].downcast_ref::<&str>(),
+            Ok("SHIFT+F3")
+        );
+    }
+
+    #[test]
+    fn portal_requires_every_default_shortcut_before_reporting_available() {
+        let mut accepted = HashSet::from([
+            REGION_SHORTCUT_ID.to_owned(),
+            CLIPBOARD_SHORTCUT_ID.to_owned(),
+            TOGGLE_PINS_SHORTCUT_ID.to_owned(),
+        ]);
+        assert!(all_requested_shortcuts_accepted(&accepted));
+
+        accepted.remove(TOGGLE_PINS_SHORTCUT_ID);
+        assert!(!all_requested_shortcuts_accepted(&accepted));
     }
 
     #[test]

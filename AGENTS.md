@@ -65,8 +65,8 @@
 
 ## 当前工作指针
 
-- 计划：`.context/plans/139_overlay_window_adapter.md`
-- 任务：`.context/tasks/139_overlay_window_adapter.md`
+- 计划：`.context/plans/140_snipaste_hotkey_contract.md`
+- 任务：`.context/tasks/140_snipaste_hotkey_contract.md`
 
 ## 交付要求
 

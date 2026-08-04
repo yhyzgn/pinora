@@ -13,6 +13,10 @@ pub enum ActionId {
     SaveLastCapture,
     /// 将最近一次捕获复制到剪贴板端口。
     CopyLastCapture,
+    /// 将系统剪贴板中的图像创建为贴图。
+    PasteClipboard,
+    /// 切换全部贴图的可见性。
+    ToggleAllPinsVisibility,
     /// 请求退出。
     Quit,
 }
@@ -24,6 +28,8 @@ impl ActionId {
             Self::CaptureFullDisplay => "capture_full_display",
             Self::SaveLastCapture => "save_last_capture",
             Self::CopyLastCapture => "copy_last_capture",
+            Self::PasteClipboard => "paste_clipboard",
+            Self::ToggleAllPinsVisibility => "toggle_all_pins_visibility",
             Self::Quit => "quit",
         }
     }
@@ -66,6 +72,11 @@ mod tests {
         assert_eq!(
             ActionId::CaptureFullDisplay.as_str(),
             "capture_full_display"
+        );
+        assert_eq!(ActionId::PasteClipboard.as_str(), "paste_clipboard");
+        assert_eq!(
+            ActionId::ToggleAllPinsVisibility.as_str(),
+            "toggle_all_pins_visibility"
         );
     }
 }

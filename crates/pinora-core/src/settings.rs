@@ -1,7 +1,7 @@
 //! 版本化本地设置的纯领域模型。
 
 /// 当前设置 schema 版本。
-pub const SETTINGS_SCHEMA_VERSION: u16 = 9;
+pub const SETTINGS_SCHEMA_VERSION: u16 = 10;
 pub const DEFAULT_HISTORY_LIMIT: u32 = 100;
 pub const DEFAULT_HISTORY_RETENTION_DAYS: u16 = 30;
 pub const HISTORY_RETENTION_DAYS_MIN: u16 = 1;
@@ -295,15 +295,11 @@ impl std::fmt::Display for HotkeyBinding {
 }
 
 pub const DEFAULT_REGION_HOTKEY: HotkeyBinding =
-    HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F2);
-pub const DEFAULT_FULL_DISPLAY_HOTKEY: HotkeyBinding =
+    HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F1);
+pub const DEFAULT_CLIPBOARD_HOTKEY: HotkeyBinding =
     HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F3);
-pub const REGION_SECONDARY_HOTKEY: HotkeyBinding =
-    HotkeyBinding::new(HotkeyModifiers::CONTROL, HotkeyCode::KeyN);
-pub const REGION_ALTERNATE_HOTKEY: HotkeyBinding = HotkeyBinding::new(
-    HotkeyModifiers(HotkeyModifiers::CONTROL.0 | HotkeyModifiers::SHIFT.0),
-    HotkeyCode::KeyS,
-);
+pub const DEFAULT_TOGGLE_PINS_HOTKEY: HotkeyBinding =
+    HotkeyBinding::new(HotkeyModifiers::SHIFT, HotkeyCode::F3);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeMode {
@@ -383,7 +379,8 @@ pub struct AppSettings {
     /// JPEG 导出的质量，必须处于 1..=100；其他格式安全忽略该值。
     pub jpeg_quality: u8,
     pub region_hotkey: HotkeyBinding,
-    pub full_display_hotkey: HotkeyBinding,
+    /// 将系统剪贴板图像创建为贴图的快捷键。
+    pub clipboard_hotkey: HotkeyBinding,
 }
 
 impl Default for AppSettings {
@@ -403,7 +400,7 @@ impl Default for AppSettings {
             export_format: crate::export::ExportImageFormat::Png,
             jpeg_quality: DEFAULT_JPEG_QUALITY,
             region_hotkey: DEFAULT_REGION_HOTKEY,
-            full_display_hotkey: DEFAULT_FULL_DISPLAY_HOTKEY,
+            clipboard_hotkey: DEFAULT_CLIPBOARD_HOTKEY,
         }
     }
 }
@@ -427,6 +424,8 @@ pub struct SettingsRepairs {
     pub migrated_from_v7: bool,
     /// v8 设置成功按默认新增用户级开机自启字段；下次保存会原子替换为当前记录。
     pub migrated_from_v8: bool,
+    /// v9 的全屏截图键位已废弃；迁移时重置为 Snipaste 风格的 F1/F3 键位。
+    pub migrated_from_v9: bool,
     pub history_limit: bool,
     pub history_retention_days: bool,
     pub history_max_bytes: bool,
@@ -435,7 +434,7 @@ pub struct SettingsRepairs {
     pub ocr_confidence_threshold: bool,
     pub jpeg_quality: bool,
     pub region_hotkey: bool,
-    pub full_display_hotkey: bool,
+    pub clipboard_hotkey: bool,
 }
 
 impl SettingsRepairs {
@@ -448,6 +447,7 @@ impl SettingsRepairs {
             && !self.migrated_from_v6
             && !self.migrated_from_v7
             && !self.migrated_from_v8
+            && !self.migrated_from_v9
             && !self.history_limit
             && !self.history_retention_days
             && !self.history_max_bytes
@@ -456,7 +456,7 @@ impl SettingsRepairs {
             && !self.ocr_confidence_threshold
             && !self.jpeg_quality
             && !self.region_hotkey
-            && !self.full_display_hotkey
+            && !self.clipboard_hotkey
     }
 }
 
@@ -494,20 +494,16 @@ impl AppSettings {
             self.jpeg_quality = DEFAULT_JPEG_QUALITY;
             repairs.jpeg_quality = true;
         }
-        if !self.region_hotkey.is_safe()
-            || self.region_hotkey == REGION_SECONDARY_HOTKEY
-            || self.region_hotkey == REGION_ALTERNATE_HOTKEY
-        {
+        if !self.region_hotkey.is_safe() || self.region_hotkey == DEFAULT_TOGGLE_PINS_HOTKEY {
             self.region_hotkey = DEFAULT_REGION_HOTKEY;
             repairs.region_hotkey = true;
         }
-        if !self.full_display_hotkey.is_safe()
-            || self.full_display_hotkey == self.region_hotkey
-            || self.full_display_hotkey == REGION_SECONDARY_HOTKEY
-            || self.full_display_hotkey == REGION_ALTERNATE_HOTKEY
+        if !self.clipboard_hotkey.is_safe()
+            || self.clipboard_hotkey == self.region_hotkey
+            || self.clipboard_hotkey == DEFAULT_TOGGLE_PINS_HOTKEY
         {
-            self.full_display_hotkey = DEFAULT_FULL_DISPLAY_HOTKEY;
-            repairs.full_display_hotkey = true;
+            self.clipboard_hotkey = DEFAULT_CLIPBOARD_HOTKEY;
+            repairs.clipboard_hotkey = true;
         }
         (self, repairs)
     }
@@ -543,7 +539,7 @@ mod tests {
             export_format: crate::export::ExportImageFormat::Png,
             jpeg_quality: 0,
             region_hotkey: HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::KeyA),
-            full_display_hotkey: HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F2),
+            clipboard_hotkey: HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F2),
         }
         .with_repaired_values();
 
@@ -599,15 +595,15 @@ mod tests {
     #[test]
     fn invalid_or_conflicting_hotkeys_are_repaired_individually() {
         let (settings, repairs) = AppSettings {
-            region_hotkey: REGION_SECONDARY_HOTKEY,
-            full_display_hotkey: DEFAULT_REGION_HOTKEY,
+            region_hotkey: DEFAULT_TOGGLE_PINS_HOTKEY,
+            clipboard_hotkey: DEFAULT_REGION_HOTKEY,
             ..AppSettings::default()
         }
         .with_repaired_values();
 
         assert_eq!(settings.region_hotkey, DEFAULT_REGION_HOTKEY);
-        assert_eq!(settings.full_display_hotkey, DEFAULT_FULL_DISPLAY_HOTKEY);
+        assert_eq!(settings.clipboard_hotkey, DEFAULT_CLIPBOARD_HOTKEY);
         assert!(repairs.region_hotkey);
-        assert!(repairs.full_display_hotkey);
+        assert!(repairs.clipboard_hotkey);
     }
 }

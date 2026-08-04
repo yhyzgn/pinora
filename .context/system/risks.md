@@ -389,10 +389,10 @@
 
 ## R-042：跨平台全局热键仍缺原生桌面证据（高）
 
-- 证据和影响范围：081 将 `GlobalHotKeyManager` 的构造、持有、轮询和析构收敛到 `DesktopApp` 所在的 `winit` GUI 线程；F2/Ctrl+N 为必需注册，Ctrl+Shift+S/F3 逐项可选，tray 摘要读取实际 `GlobalHotkeyHub` 结果。Windows target 编译与离线事件过滤测试已通过。
+- 证据和影响范围：081 将 `GlobalHotKeyManager` 的构造、持有、轮询和析构收敛到 `DesktopApp` 所在的 `winit` GUI 线程；140 将当前契约替换为 F1 区域截图、F3 剪贴板贴图和固定 Shift+F3 全部贴图显隐，tray 摘要读取实际 `GlobalHotkeyHub` 结果。Windows target 编译与离线动作过滤测试已通过。
 - 触发条件：Windows 热键冲突、隐藏 `WS_EX_TOOLWINDOW` 消息窗口的任务栏隔离、macOS 辅助功能/输入监控权限、主 run loop 行为、Linux X11 会话切换或休眠恢复，及纯 Wayland 没有 XDG GlobalShortcuts Portal adapter。
 - 失败模式：用户可能只能看到不可用状态、热键不触发、可选组合缺失，或 Windows 依赖内部窗口意外显示；不得把 manager 存活、CI 或 target 编译宣称为系统热键已经可用，更不得以后台键盘监听绕过权限。
-- 缓解措施和必需验证：保留 tray 和 `pinora capture` IPC；在 Windows、macOS、Linux X11 与 KDE Wayland 原生会话分别验证注册成功/冲突、触发、退出解除、睡眠恢复、tray-only 任务栏/Dock 状态和 Portal 降级。后续热键录制、冲突建议、热更新和 Portal 必须单独实现与验证。
+- 缓解措施和必需验证：保留 tray 和 `pinora capture` IPC；在 Windows、macOS、Linux X11 与 KDE Wayland 原生会话分别验证三项注册成功/冲突、触发、退出解除、睡眠恢复、tray-only 任务栏/Dock 状态和 Portal 降级。热键录制、冲突建议、热更新和 Portal 必须分别保持可诊断并验证。
 - 回滚或隔离动作：恢复 Linux 专用热键分支或关闭全局热键入口；tray、IPC、截图、窗口策略和数据格式保持不变。
 - 负责人和状态：Neo；离线生命周期、workspace 门禁与 Windows target 已验证，原生桌面证据开放。
 
@@ -416,11 +416,11 @@
 
 ## R-045：可配置全局热键的原生注册与恢复尚未验证（高）
 
-- 证据和影响范围：084 将设置 schema 升级至 v3，持久化区域和全屏主键；v1/v2 自动以 F2/F3 迁移。设置窗口在现有辅助窗口内录制受限物理键，录制优先于本窗口截图快捷键；`GlobalHotkeyHub` 先注册全部新键、失败时释放已注册的新键并保留旧动作映射，撤销旧键失败时尝试恢复已撤销旧键。保存失败时桌面壳尝试重绑回先前配置；086 只在设置成功提交后把已保存组合原地同步到 tray 菜单，Ctrl+N/Ctrl+Shift+S、tray 与 IPC 仍是独立区域截图入口。
+- 证据和影响范围：084 建立了区域和第二主键的持久化与重绑事务；140 将 schema 升级至 v10，历史 v1-v9 全屏键位在迁移时重置为 F1/F3，第二主键当前语义为剪贴板贴图。设置窗口在现有辅助窗口内录制受限物理键，录制优先于本窗口快捷键；`GlobalHotkeyHub` 先注册全部新键、失败时释放已注册的新键并保留旧动作映射，保存失败时桌面壳尝试重绑回先前配置。Shift+F3 固定为全部贴图显隐，tray 与 IPC 保持独立入口。
 - 触发条件：Windows/macOS/Linux X11 的系统冲突、权限、键盘布局、休眠恢复、窗口焦点、热键 API 对同进程临时重复注册的限制，或 Wayland 没有 XDG GlobalShortcuts Portal adapter。
 - 失败模式：设置可能显示已保存但原生后端在下一次会话拒绝组合，重绑或回滚中的 OS 级部分失败可能使个别键暂时不可用；纯 Wayland 仍不会注册全局键。tray 标签只表示已保存配置，可能与实际注册状态不同；不得把 fake registrar、target 编译、CI 或标签重绘当成真实系统注册、任务栏/Dock 或焦点行为的证据。
 - 缓解措施和必需验证：保留初始注册实际结果、受控不可用状态、tray 与 `pinora capture` IPC；在 Windows、macOS、Linux X11、KDE Wayland 分别验证录制安全键/冲突键、保存、重启、重绑失败、磁盘写入失败、退出解除、休眠恢复、焦点、任务栏/Dock/分页器与 Portal 降级。平台重绑事务若显示 API 语义差异，按平台适配而不是引入后台键盘监听。
-- 回滚或隔离动作：忽略 v3 两个热键字段并恢复固定 F2/F3 主键；保留 v1/v2 读取、Ctrl+N/Ctrl+Shift+S、tray、IPC、截图、贴图与窗口策略。
+- 回滚或隔离动作：移除 v10 的剪贴板贴图路由并恢复 F1 区域截图与 tray/IPC 全屏入口；保留历史设置读取、tray、IPC、截图、贴图与窗口策略。
 - 负责人和状态：Neo；领域/codec/录制/重绑成功和失败的离线契约已验证，原生桌面证据开放。
 
 ## R-046：诊断能力粒度与原生窗口反馈尚未验证（中）
@@ -533,10 +533,10 @@
 
 ## R-059：Wayland GlobalShortcuts Portal 的原生后端、授权与触发尚未验证（高）
 
-- 证据和影响范围：100 在 Linux + Wayland 会话门槛通过后启动独立 `pinora-wayland-hotkeys` worker，固定绑定 `capture-region` 与 `capture-full-display`；CreateSession、BindShortcuts、Request 响应和 `Activated` 信号不进入 GUI 事件循环，未知标识、取消、失联和缺失接口只发布稳定能力状态并保留 tray/IPC。Linux target-only 依赖、Portal/Hotkey/Desktop Shell 定向测试、workspace 编译、严格 Clippy、Windows target 编译和全量离线测试已通过；当前开发机只确认 Portal 接口未暴露，未确认授权或真实触发。
+- 证据和影响范围：100 建立 Linux + Wayland 会话下的独立 `pinora-wayland-hotkeys` worker；140 当前固定绑定 `capture-region`、`pin-clipboard` 与 `toggle-all-pins`。CreateSession、BindShortcuts、Request 响应和 `Activated` 信号不进入 GUI 事件循环；未知标识、取消、失联、缺失接口或未完整接受三项绑定只发布稳定能力状态并保留 tray/IPC。Linux target-only 依赖、Portal/Hotkey/Desktop Shell 定向测试已通过；当前开发机只确认 Portal 接口未暴露，未确认授权或真实触发。
 - 触发条件：KDE/GNOME/其他 Wayland backend 对 `org.freedesktop.portal.GlobalShortcuts` 版本、父窗口 token、用户授权 UI、preferred trigger 格式、session 生命周期、重新绑定和 `Activated`/`Deactivated` 信号的实现差异；Portal 服务重启、用户拒绝、桌面休眠恢复或 GUI 线程高负载。
 - 失败模式：Portal 可能拒绝创建/绑定、等待用户交互、返回部分快捷键、断开后不再触发或触发重复；用户仍应能通过 tray/IPC 截图。即使 D-Bus 状态显示 Available，合成器也可能让热键延迟、与其他应用冲突，或辅助窗口短暂出现在任务栏、Dock、分页器；离线 D-Bus 解析、CI、target 编译和当前机器的缺失接口都不能证明这些原生行为。
-- 缓解措施和必需验证：保持两个固定 ID、受限错误码、后台 worker、GUI 非阻塞轮询、重绑先关闭旧 session、失败不破坏既有本地后端/tray/IPC，且所有辅助窗口继续经 `window_policy`。在至少 KDE Wayland 与一个非 KDE Wayland 原生会话验证首次授权/拒绝、两项触发、未知信号过滤、重绑、Portal 重启、休眠恢复、退出清理、tray-only、任务栏/Dock/分页器、焦点、首帧、100%/200% HiDPI 和连续截图帧时间；未通过前不宣称纯 Wayland 热键生产可用或 Snipaste 级流畅度。
+- 缓解措施和必需验证：保持三个固定 ID、受限错误码、后台 worker、GUI 非阻塞轮询、重绑先关闭旧 session、失败不破坏既有本地后端/tray/IPC，且所有辅助窗口继续经 `window_policy`。在至少 KDE Wayland 与一个非 KDE Wayland 原生会话验证首次授权/拒绝、三项触发、部分接受拒绝、未知信号过滤、重绑、Portal 重启、休眠恢复、退出清理、tray-only、任务栏/Dock/分页器、焦点、首帧、100%/200% HiDPI 和连续截图帧时间；未通过前不宣称纯 Wayland 热键生产可用或 Snipaste 级流畅度。
 - 回滚或隔离动作：移除 `wayland_portal`、Linux target-only 依赖和 `GlobalHotkeyHub` Portal 接线，恢复纯 Wayland 的 tray/IPC 降级；不改变 X11/Windows/macOS 热键、设置 schema、截图、贴图、OCR、导出或窗口策略。
 - 负责人和状态：Neo；离线契约与静态门禁已验证，真实 Wayland backend、授权、触发、窗口管理器和性能证据开放。
 
@@ -563,7 +563,7 @@
 - 证据和影响范围：103 将 Portal 最低版本设为 v2；worker 在读取 `version` 后，v1 及更低版本立即发布 `VersionUnsupported`，不执行 CreateSession/BindShortcuts，也不改变 tray/IPC。版本契约、Portal 定向测试、workspace 编译、严格 Clippy、Windows target 和全量离线测试已通过。
 - 触发条件：不同 xdg-desktop-portal/backend 可能报告 v2 但缺失某个方法或使用不同 options/signals；用户授权拒绝、backend 重启、升级/降级、信号延迟或桌面会话切换。
 - 失败模式：版本门槛通过后仍可能在请求阶段受控失败、只接受部分 shortcut 或失联；不得把版本属性视为真实热键注册。离线版本测试、CI、target 编译和当前机器缺失接口不能证明真实授权、触发、冲突、tray-only、任务栏/Dock 或性能。
-- 缓解措施和必需验证：保留方法调用失败的稳定错误码、固定 shortcut ID、后台 worker、GUI 非阻塞轮询和 tray/IPC 回退；在 KDE Wayland 与非 KDE Wayland 真实会话验证 v1/v2 backend、授权/拒绝、两项绑定、部分接受、重绑、Portal 重启、休眠恢复、退出清理、焦点、任务栏/Dock/分页器和帧时间。
+- 缓解措施和必需验证：保留方法调用失败的稳定错误码、三个固定 shortcut ID、后台 worker、GUI 非阻塞轮询和 tray/IPC 回退；在 KDE Wayland 与非 KDE Wayland 真实会话验证 v1/v2 backend、授权/拒绝、三项绑定、部分接受拒绝、重绑、Portal 重启、休眠恢复、退出清理、焦点、任务栏/Dock/分页器和帧时间。
 - 回滚或隔离动作：若官方/实机证据确认 v1 完整兼容，独立任务中降低版本门槛并补方法契约；否则维持 v2 或对不完整 backend 隐藏 Portal 入口，不引入同步 D-Bus 或后台键盘监听。
 - 负责人和状态：Neo；离线版本门槛与静态门禁已验证，真实 backend 方法/授权/桌面行为证据开放。
 
@@ -816,6 +816,15 @@
 - 回滚或隔离动作：移除 `OverlayWindow` 并恢复 `OverlayState` 的直接资源字段；不改动选区、标注、任务、导出、OCR、tray 或设置。
 - 负责人和状态：Neo；离线 panels/app/workspace、Clippy、Windows target、版本、格式、差异、依赖图和上下文门禁已验证，
   真实窗口管理器、tray-only、焦点、IME、HiDPI 与性能证据开放。
+
+## R-086：F3 图像剪贴板读回与 Shift+F3 批量显隐尚缺原生桌面证据（高）
+
+- 证据和影响范围：140 新增 `PasteClipboard`、`ToggleAllPinsVisibility`、`JobOwner::Clipboard(ImageId)` 与 settings schema v10。Linux 读回 worker 只读取 `image/png`，优先 `wl-paste`、回退 `xclip`，以自有临时文件承接受限输出，并限制 3 秒、64 MiB 原始输入、5,000 万像素和 200 MiB 解码缓冲。已聚焦窗口、原生 X11/Windows/macOS 后端和 Wayland Portal 都收敛到 F1/F3/Shift+F3 动作；Portal 必须完整接受三项。离线 codec、动作、worker identity/取消、PNG 边界、workspace 回归与静态门禁覆盖代码契约。
+- 触发条件：Wayland/X11 剪贴板服务所有权切换、`wl-paste` 或 `xclip` 的 MIME 参数兼容性、超大/损坏/调色板 PNG、连续 F3 取消与新请求交错、Portal 或全局热键冲突、贴图窗口快速批量显示/隐藏，以及 Windows/macOS 尚未实现的原生图像读回。
+- 失败模式：F3 可能受控失败、超时或被取消；任何失败都不得卡住 GUI、创建空贴图、泄露剪贴板内容或报告成功。Shift+F3 在真实窗口管理器中仍可能出现焦点抖动、任务栏/Dock/分页器项或可感知延迟；离线 `set_visible` 与 `window_policy` 测试不能证明这些结果。
+- 缓解措施和必需验证：保持 worker 不接触窗口、主线程只消费已验证图像、新 F3 取消旧任务、结果通过 JobId/owner/asset 门禁、显示全部只经 `window_policy`、隐藏只调用既有窗口。分别在 Linux X11、KDE Wayland、Windows 与 macOS 验证 PNG/非图像/超大图、连续 F3、取消、F3 与 Shift+F3 区分、所有贴图显示/隐藏、任务栏/Dock/分页器、焦点、100%/200% 缩放和帧时间；Windows/macOS 在实现原生读回前必须明确显示能力受限。
+- 回滚或隔离动作：移除 clipboard read worker 与两个新动作路由，保留 F1 区域截图、tray/IPC 全屏截图、既有系统剪贴板写入、贴图、历史和窗口策略；不删除现有设置文件。
+- 负责人和状态：Neo；离线实现与定向回归通过，真实系统剪贴板、Portal、窗口管理器和性能证据开放。
 
 ## 风险一：上下文漂移
 

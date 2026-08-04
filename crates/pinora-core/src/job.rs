@@ -13,6 +13,8 @@ pub enum JobOwner {
     Pin(PinId),
     /// 历史条目读取。身份是持久化条目的图像 ID，不是运行时解码后的新图像 ID。
     History(ImageId),
+    /// 一次从系统剪贴板导入的短生命周期图像。
+    Clipboard(ImageId),
 }
 
 /// 任务的业务类别，用于后续按类别配置并发与超时策略。

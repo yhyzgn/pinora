@@ -35,6 +35,7 @@ pub enum TrayAction {
     CaptureRegionAfter(Duration),
     CancelDelayedCapture,
     CancelFileExports,
+    PasteClipboard,
     CaptureFullDisplay,
     CaptureAllDisplays,
     CaptureDisplay(DisplayId),
@@ -58,13 +59,14 @@ pub struct AppTray {
     global_hotkey_capability_item: MenuItem,
     capture_item: MenuItem,
     capture_id: tray_icon::menu::MenuId,
+    paste_clipboard_item: MenuItem,
+    paste_clipboard_id: tray_icon::menu::MenuId,
     delay_capture_ids: [(MenuId, Duration); 3],
     cancel_delayed_capture_id: tray_icon::menu::MenuId,
     delay_capture_items: [MenuItem; 3],
     cancel_delayed_capture_item: MenuItem,
     cancel_file_exports_id: tray_icon::menu::MenuId,
     cancel_file_exports_item: MenuItem,
-    capture_full_display_item: MenuItem,
     capture_full_display_id: tray_icon::menu::MenuId,
     capture_all_displays_id: Option<MenuId>,
     capture_display_ids: Vec<(MenuId, DisplayId)>,
@@ -91,7 +93,7 @@ impl AppTray {
         windows: &[CaptureWindowInfo],
         capabilities: TrayCapabilitySummary,
         region_hotkey: HotkeyBinding,
-        full_display_hotkey: HotkeyBinding,
+        clipboard_hotkey: HotkeyBinding,
     ) -> Result<Self, String> {
         // tray-icon 内部可能 panic（未 gtk::init），必须 catch
         match catch_unwind(AssertUnwindSafe(|| {
@@ -100,7 +102,7 @@ impl AppTray {
                 windows,
                 capabilities,
                 region_hotkey,
-                full_display_hotkey,
+                clipboard_hotkey,
             )
         })) {
             Ok(r) => r,
@@ -125,6 +127,9 @@ impl AppTray {
         while let Ok(ev) = MenuEvent::receiver().try_recv() {
             if ev.id == self.capture_id {
                 return Some(TrayAction::Capture);
+            }
+            if ev.id == self.paste_clipboard_id {
+                return Some(TrayAction::PasteClipboard);
             }
             if let Some(action) = delayed_capture_action(&ev.id, &self.delay_capture_ids) {
                 return Some(action);
@@ -239,12 +244,12 @@ impl AppTray {
     pub fn set_hotkey_bindings(
         &self,
         region_hotkey: HotkeyBinding,
-        full_display_hotkey: HotkeyBinding,
+        clipboard_hotkey: HotkeyBinding,
     ) {
         self.capture_item
             .set_text(capture_menu_label(region_hotkey));
-        self.capture_full_display_item
-            .set_text(full_display_menu_label(full_display_hotkey));
+        self.paste_clipboard_item
+            .set_text(paste_clipboard_menu_label(clipboard_hotkey));
     }
 
     /// 同步更新现有菜单中的禁用状态项和图标 tooltip。Linux tray 后端可能不显示
@@ -270,7 +275,7 @@ fn try_new_inner(
     windows: &[CaptureWindowInfo],
     capabilities: TrayCapabilitySummary,
     region_hotkey: HotkeyBinding,
-    full_display_hotkey: HotkeyBinding,
+    clipboard_hotkey: HotkeyBinding,
 ) -> Result<AppTray, String> {
     // Linux tray-icon → appindicator → GTK 菜单；GTK 不应进入其他 target。
     #[cfg(target_os = "linux")]
@@ -290,13 +295,13 @@ fn try_new_inner(
         .map(|label| MenuItem::new(label, false, None));
     let global_hotkey_capability_item = capability_items[1].clone();
     let capture = MenuItem::new(capture_menu_label(region_hotkey), true, None);
+    let paste_clipboard = MenuItem::new(paste_clipboard_menu_label(clipboard_hotkey), true, None);
     let delay_capture_one = MenuItem::new("延时截图 1 秒", true, None);
     let delay_capture_three = MenuItem::new("延时截图 3 秒", true, None);
     let delay_capture_five = MenuItem::new("延时截图 5 秒", true, None);
     let cancel_delayed_capture = MenuItem::new("取消延时截图", false, None);
     let cancel_file_exports = MenuItem::new("取消文件保存", false, None);
-    let capture_full_display =
-        MenuItem::new(full_display_menu_label(full_display_hotkey), true, None);
+    let capture_full_display = MenuItem::new("全屏截图", true, None);
     let capture_all_displays =
         (displays.len() > 1).then(|| MenuItem::new("所有显示器截图", true, None));
     let mut capture_display_ids = Vec::new();
@@ -326,6 +331,8 @@ fn try_new_inner(
         .map_err(|e| format!("menu sep capabilities: {e}"))?;
     menu.append(&capture)
         .map_err(|e| format!("menu append capture: {e}"))?;
+    menu.append(&paste_clipboard)
+        .map_err(|e| format!("menu append clipboard pin: {e}"))?;
     menu.append(&delay_capture_one)
         .map_err(|e| format!("menu append delayed capture 1: {e}"))?;
     menu.append(&delay_capture_three)
@@ -394,6 +401,7 @@ fn try_new_inner(
         .map_err(|e| format!("menu append quit: {e}"))?;
 
     let capture_id = capture.id().clone();
+    let paste_clipboard_id = paste_clipboard.id().clone();
     let delay_capture_ids = [
         (delay_capture_one.id().clone(), Duration::from_secs(1)),
         (delay_capture_three.id().clone(), Duration::from_secs(3)),
@@ -426,13 +434,14 @@ fn try_new_inner(
         global_hotkey_capability_item,
         capture_item: capture,
         capture_id,
+        paste_clipboard_item: paste_clipboard,
+        paste_clipboard_id,
         delay_capture_ids,
         cancel_delayed_capture_id,
         delay_capture_items: [delay_capture_one, delay_capture_three, delay_capture_five],
         cancel_delayed_capture_item: cancel_delayed_capture,
         cancel_file_exports_id,
         cancel_file_exports_item: cancel_file_exports,
-        capture_full_display_item: capture_full_display,
         capture_full_display_id,
         capture_all_displays_id,
         capture_display_ids,
@@ -461,8 +470,8 @@ fn capture_menu_label(region_hotkey: HotkeyBinding) -> String {
     format!("截图 ({region_hotkey})")
 }
 
-fn full_display_menu_label(full_display_hotkey: HotkeyBinding) -> String {
-    format!("全屏截图 ({full_display_hotkey})")
+fn paste_clipboard_menu_label(clipboard_hotkey: HotkeyBinding) -> String {
+    format!("剪贴板贴图 ({clipboard_hotkey})")
 }
 
 fn display_capture_label(display: &DisplayInfo) -> String {
@@ -671,14 +680,14 @@ mod tests {
             HotkeyModifiers::CONTROL | HotkeyModifiers::ALT,
             HotkeyCode::KeyR,
         );
-        let full_display = HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F12);
+        let clipboard = HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F12);
         let labels = [
             capture_menu_label(region),
-            full_display_menu_label(full_display),
+            paste_clipboard_menu_label(clipboard),
         ];
 
         assert_eq!(labels[0], "截图 (Ctrl+Alt+R)");
-        assert_eq!(labels[1], "全屏截图 (F12)");
+        assert_eq!(labels[1], "剪贴板贴图 (F12)");
         for label in labels {
             assert!(!label.contains('\n'));
             assert!(!label.contains('\r'));

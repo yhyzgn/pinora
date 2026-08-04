@@ -30,7 +30,7 @@ impl CapabilityProbe for RuntimeCapabilityProbe {
             self.capture_backend.as_str()
         ));
         notes.push(
-            "global hotkey: F2/Ctrl+N via global-hotkey when available; else `pinora capture` IPC"
+            "global hotkey: F1 capture, F3 clipboard pin, Shift+F3 pin visibility; else tray/`pinora capture` IPC"
                 .into(),
         );
         match crate::detect_system_clipboard_backend() {

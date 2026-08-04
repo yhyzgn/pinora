@@ -355,6 +355,10 @@ where
                     .ok_or_else(|| fail(ErrorCode::NotFound, "no last capture to copy"))?;
                 Ok(Command::copy_image(image_id))
             }
+            ActionId::PasteClipboard | ActionId::ToggleAllPinsVisibility => Err(fail(
+                ErrorCode::CommandRejected,
+                "action requires the desktop shell",
+            )),
             ActionId::Quit => Ok(Command::shutdown()),
         }
     }

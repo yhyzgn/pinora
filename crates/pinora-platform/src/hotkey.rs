@@ -1,4 +1,4 @@
-//! 全局热键：注册 F2 / Ctrl+N 等，跨窗口触发截图。
+//! 全局热键：注册 Snipaste 风格的 F1/F3/Shift+F3，跨窗口触发动作。
 //!
 //! `GlobalHotKeyManager` 必须在桌面 GUI 事件循环所属线程创建并存活：Windows
 //! 要求 Win32 消息循环同线程，macOS 要求主线程 run loop。`DesktopApp` 在现有
@@ -13,8 +13,8 @@ use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
 use pinora_core::{
-    ActionId, DEFAULT_FULL_DISPLAY_HOTKEY, DEFAULT_REGION_HOTKEY, HotkeyBinding, HotkeyCode,
-    HotkeyModifiers, KeyBinding, PinoraError, REGION_ALTERNATE_HOTKEY, REGION_SECONDARY_HOTKEY,
+    ActionId, DEFAULT_CLIPBOARD_HOTKEY, DEFAULT_REGION_HOTKEY, DEFAULT_TOGGLE_PINS_HOTKEY,
+    HotkeyBinding, HotkeyCode, HotkeyModifiers, KeyBinding, PinoraError,
 };
 use winit::keyboard::{KeyCode, ModifiersState};
 
@@ -137,7 +137,7 @@ pub struct GlobalHotkeyHub {
     manager: Option<GlobalHotKeyManager>,
     registered: Option<RegisteredHotkeys>,
     region_hotkey: HotkeyBinding,
-    full_display_hotkey: HotkeyBinding,
+    clipboard_hotkey: HotkeyBinding,
     status: GlobalHotkeyStatus,
     #[cfg(target_os = "linux")]
     portal: Option<WaylandPortalHotkeys>,
@@ -145,13 +145,12 @@ pub struct GlobalHotkeyHub {
 }
 
 impl GlobalHotkeyHub {
-    /// 尝试启动 OS 级全局热键。区域和全屏主键来自已校验的设置；两个兼容区域
-    /// 备用键仍固定，以保持既有自动化与 Linux 桌面入口可用。
-    pub fn start(region_hotkey: HotkeyBinding, full_display_hotkey: HotkeyBinding) -> Self {
-        if let Err(error) = validate_primary_bindings(region_hotkey, full_display_hotkey) {
+    /// 尝试启动 OS 级全局热键。F1 与 F3 可由设置重绑，Shift+F3 固定切换全部贴图。
+    pub fn start(region_hotkey: HotkeyBinding, clipboard_hotkey: HotkeyBinding) -> Self {
+        if let Err(error) = validate_primary_bindings(region_hotkey, clipboard_hotkey) {
             return Self::unavailable(error);
         }
-        match register_global_hotkeys(region_hotkey, full_display_hotkey) {
+        match register_global_hotkeys(region_hotkey, clipboard_hotkey) {
             Ok((manager, registered, mut notes)) => {
                 notes.push(
                     "fallback: `pinora capture` keeps working through single-instance IPC".into(),
@@ -160,7 +159,7 @@ impl GlobalHotkeyHub {
                     manager: Some(manager),
                     registered: Some(registered),
                     region_hotkey,
-                    full_display_hotkey,
+                    clipboard_hotkey,
                     status: GlobalHotkeyStatus {
                         available: true,
                         notes,
@@ -173,7 +172,7 @@ impl GlobalHotkeyHub {
             Err(error) => {
                 #[cfg(target_os = "linux")]
                 {
-                    Self::with_wayland_portal(error, region_hotkey, full_display_hotkey)
+                    Self::with_wayland_portal(error, region_hotkey, clipboard_hotkey)
                 }
                 #[cfg(not(target_os = "linux"))]
                 {
@@ -206,7 +205,7 @@ impl GlobalHotkeyHub {
             }
         }
 
-        // 去抖：同一帧多次 F2 只保留一次 Capture
+        // 去抖：同一帧重复的 OS 事件只交付一次。
         out.dedup();
         out
     }
@@ -220,18 +219,18 @@ impl GlobalHotkeyHub {
     pub fn rebind(
         &mut self,
         region_hotkey: HotkeyBinding,
-        full_display_hotkey: HotkeyBinding,
+        clipboard_hotkey: HotkeyBinding,
     ) -> Result<bool, String> {
-        validate_primary_bindings(region_hotkey, full_display_hotkey)?;
+        validate_primary_bindings(region_hotkey, clipboard_hotkey)?;
         let changes = [
             (ActionId::CaptureRegionAndPin, region_hotkey),
-            (ActionId::CaptureFullDisplay, full_display_hotkey),
+            (ActionId::PasteClipboard, clipboard_hotkey),
         ];
         let desired: Vec<_> = changes
             .into_iter()
             .filter(|(action, binding)| match action {
                 ActionId::CaptureRegionAndPin => *binding != self.region_hotkey,
-                ActionId::CaptureFullDisplay => *binding != self.full_display_hotkey,
+                ActionId::PasteClipboard => *binding != self.clipboard_hotkey,
                 _ => false,
             })
             .collect();
@@ -241,38 +240,29 @@ impl GlobalHotkeyHub {
         let Some(manager) = self.manager.as_ref() else {
             #[cfg(target_os = "linux")]
             if let Some(portal) = self.portal.as_ref()
-                && portal.rebind(region_hotkey, full_display_hotkey)
+                && portal.rebind(region_hotkey, clipboard_hotkey)
             {
                 self.region_hotkey = region_hotkey;
-                self.full_display_hotkey = full_display_hotkey;
+                self.clipboard_hotkey = clipboard_hotkey;
                 return Ok(true);
             }
             self.region_hotkey = region_hotkey;
-            self.full_display_hotkey = full_display_hotkey;
+            self.clipboard_hotkey = clipboard_hotkey;
             return Ok(false);
         };
         let Some(registered) = self.registered.as_mut() else {
             self.region_hotkey = region_hotkey;
-            self.full_display_hotkey = full_display_hotkey;
+            self.clipboard_hotkey = clipboard_hotkey;
             return Ok(false);
         };
         rebind_registered_hotkeys(manager, registered, &desired)?;
         self.region_hotkey = region_hotkey;
-        self.full_display_hotkey = full_display_hotkey;
-        let alternate_registered = registered
-            .entries
-            .iter()
-            .any(|entry| entry.binding == REGION_ALTERNATE_HOTKEY);
-        let full_display_registered = registered
-            .primary_binding(ActionId::CaptureFullDisplay)
+        self.clipboard_hotkey = clipboard_hotkey;
+        let clipboard_registered = registered
+            .primary_binding(ActionId::PasteClipboard)
             .is_some();
-        self.status.notes = registration_notes(
-            region_hotkey,
-            full_display_hotkey,
-            alternate_registered,
-            full_display_registered,
-            true,
-        );
+        self.status.notes =
+            registration_notes(region_hotkey, clipboard_hotkey, clipboard_registered, true);
         Ok(true)
     }
 
@@ -281,7 +271,7 @@ impl GlobalHotkeyHub {
             manager: None,
             registered: None,
             region_hotkey: DEFAULT_REGION_HOTKEY,
-            full_display_hotkey: DEFAULT_FULL_DISPLAY_HOTKEY,
+            clipboard_hotkey: DEFAULT_CLIPBOARD_HOTKEY,
             status: GlobalHotkeyStatus {
                 available: false,
                 notes: vec![
@@ -300,14 +290,14 @@ impl GlobalHotkeyHub {
     fn with_wayland_portal(
         backend_error: String,
         region_hotkey: HotkeyBinding,
-        full_display_hotkey: HotkeyBinding,
+        clipboard_hotkey: HotkeyBinding,
     ) -> Self {
-        let portal = WaylandPortalHotkeys::start(region_hotkey, full_display_hotkey);
+        let portal = WaylandPortalHotkeys::start(region_hotkey, clipboard_hotkey);
         let mut hub = Self {
             manager: None,
             registered: None,
             region_hotkey,
-            full_display_hotkey,
+            clipboard_hotkey,
             status: GlobalHotkeyStatus {
                 available: false,
                 notes: vec![
@@ -360,7 +350,7 @@ impl GlobalHotkeyHub {
 
 fn register_global_hotkeys(
     region_hotkey: HotkeyBinding,
-    full_display_hotkey: HotkeyBinding,
+    clipboard_hotkey: HotkeyBinding,
 ) -> Result<(GlobalHotKeyManager, RegisteredHotkeys, Vec<String>), String> {
     let manager = GlobalHotKeyManager::new().map_err(|e| format!("create manager: {e}"))?;
 
@@ -368,49 +358,35 @@ fn register_global_hotkeys(
     manager
         .register(primary_region.hotkey)
         .map_err(|error| format!("register region {region_hotkey}: {error}"))?;
-    let secondary_region =
-        registered_hotkey(REGION_SECONDARY_HOTKEY, ActionId::CaptureRegionAndPin);
+    let clipboard = registered_hotkey(clipboard_hotkey, ActionId::PasteClipboard);
     manager
-        .register(secondary_region.hotkey)
-        .map_err(|error| format!("register region {REGION_SECONDARY_HOTKEY}: {error}"))?;
-
-    let mut entries = vec![primary_region, secondary_region];
-    let alternate_region =
-        registered_hotkey(REGION_ALTERNATE_HOTKEY, ActionId::CaptureRegionAndPin);
-    let alternate_registered = manager.register(alternate_region.hotkey).is_ok();
-    if alternate_registered {
-        entries.push(alternate_region);
-    }
-    let full_display = registered_hotkey(full_display_hotkey, ActionId::CaptureFullDisplay);
-    let full_display_registered = manager.register(full_display.hotkey).is_ok();
-    if full_display_registered {
-        entries.push(full_display);
-    }
+        .register(clipboard.hotkey)
+        .map_err(|error| format!("register clipboard {clipboard_hotkey}: {error}"))?;
+    let toggle = registered_hotkey(
+        DEFAULT_TOGGLE_PINS_HOTKEY,
+        ActionId::ToggleAllPinsVisibility,
+    );
+    manager.register(toggle.hotkey).map_err(|error| {
+        format!("register pin visibility {DEFAULT_TOGGLE_PINS_HOTKEY}: {error}")
+    })?;
+    let entries = vec![primary_region, clipboard, toggle];
     Ok((
         manager,
         RegisteredHotkeys { entries },
-        registration_notes(
-            region_hotkey,
-            full_display_hotkey,
-            alternate_registered,
-            full_display_registered,
-            false,
-        ),
+        registration_notes(region_hotkey, clipboard_hotkey, true, false),
     ))
 }
 
 fn validate_primary_bindings(
     region_hotkey: HotkeyBinding,
-    full_display_hotkey: HotkeyBinding,
+    clipboard_hotkey: HotkeyBinding,
 ) -> Result<(), String> {
-    if !region_hotkey.is_safe() || !full_display_hotkey.is_safe() {
+    if !region_hotkey.is_safe() || !clipboard_hotkey.is_safe() {
         return Err("hotkey_unsafe".into());
     }
-    if region_hotkey == full_display_hotkey
-        || region_hotkey == REGION_SECONDARY_HOTKEY
-        || region_hotkey == REGION_ALTERNATE_HOTKEY
-        || full_display_hotkey == REGION_SECONDARY_HOTKEY
-        || full_display_hotkey == REGION_ALTERNATE_HOTKEY
+    if region_hotkey == clipboard_hotkey
+        || region_hotkey == DEFAULT_TOGGLE_PINS_HOTKEY
+        || clipboard_hotkey == DEFAULT_TOGGLE_PINS_HOTKEY
     {
         return Err("hotkey_conflict".into());
     }
@@ -466,14 +442,11 @@ fn rebind_registered_hotkeys<R: HotkeyRegistrar>(
     Ok(())
 }
 
-fn is_primary_action_binding(binding: HotkeyBinding, action: ActionId) -> bool {
-    match action {
-        ActionId::CaptureRegionAndPin => {
-            binding != REGION_SECONDARY_HOTKEY && binding != REGION_ALTERNATE_HOTKEY
-        }
-        ActionId::CaptureFullDisplay => true,
-        _ => false,
-    }
+fn is_primary_action_binding(_binding: HotkeyBinding, action: ActionId) -> bool {
+    matches!(
+        action,
+        ActionId::CaptureRegionAndPin | ActionId::PasteClipboard
+    )
 }
 
 fn registered_hotkey(binding: HotkeyBinding, action: ActionId) -> RegisteredHotkey {
@@ -607,33 +580,26 @@ pub fn binding_from_winit(code: KeyCode, state: ModifiersState) -> Option<Hotkey
 
 fn registration_notes(
     region_hotkey: HotkeyBinding,
-    full_display_hotkey: HotkeyBinding,
-    alternate_registered: bool,
-    full_display_registered: bool,
+    clipboard_hotkey: HotkeyBinding,
+    clipboard_registered: bool,
     rebound: bool,
 ) -> Vec<String> {
     let phase = if rebound { "rebound" } else { "registered" };
     vec![
         format!("global-hotkey: region {region_hotkey} {phase}"),
-        if full_display_registered {
-            format!("global-hotkey: full-display {full_display_hotkey} {phase}")
+        if clipboard_registered {
+            format!("global-hotkey: clipboard pin {clipboard_hotkey} {phase}")
         } else {
-            format!("global-hotkey: full-display {full_display_hotkey} unavailable")
+            format!("global-hotkey: clipboard pin {clipboard_hotkey} unavailable")
         },
-        if alternate_registered {
-            format!(
-                "global-hotkey: region compatibility bindings {REGION_SECONDARY_HOTKEY} and {REGION_ALTERNATE_HOTKEY} active"
-            )
-        } else {
-            format!("global-hotkey: region compatibility {REGION_ALTERNATE_HOTKEY} unavailable")
-        },
+        format!("global-hotkey: pin visibility {DEFAULT_TOGGLE_PINS_HOTKEY} {phase}"),
         active_platform_note().into(),
     ]
 }
 
 #[cfg(target_os = "linux")]
 const fn active_platform_note() -> &'static str {
-    "global-hotkey backend: Linux X11; pure Wayland requires a system binding or future Portal adapter"
+    "global-hotkey backend: Linux X11; pure Wayland attempts the XDG GlobalShortcuts Portal, then falls back to tray/IPC"
 }
 
 #[cfg(target_os = "windows")]
@@ -694,14 +660,14 @@ Actions=Capture;Quit;
 # KWin 截图接口（与 Spectacle 同权）
 X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2
 # 提示 KDE：可在系统设置中绑定下列动作
-X-KDE-Shortcuts=F2
+X-KDE-Shortcuts=F1
 
 [Desktop Action Capture]
 Name=Capture region
 Name[zh_CN]=区域截图
 Exec={exec} capture
 # 系统设置 → 快捷键 → 自定义 可绑定此动作；部分 Plasma 会读取本行
-X-KDE-Shortcuts=F2;Ctrl+N
+X-KDE-Shortcuts=F1
 
 [Desktop Action Quit]
 Name=Quit
@@ -784,12 +750,16 @@ mod tests {
         RegisteredHotkeys {
             entries: vec![
                 registered_hotkey(
-                    HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F2),
+                    HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F1),
                     ActionId::CaptureRegionAndPin,
                 ),
                 registered_hotkey(
                     HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F3),
-                    ActionId::CaptureFullDisplay,
+                    ActionId::PasteClipboard,
+                ),
+                registered_hotkey(
+                    DEFAULT_TOGGLE_PINS_HOTKEY,
+                    ActionId::ToggleAllPinsVisibility,
                 ),
             ],
         }
@@ -817,11 +787,11 @@ mod tests {
         std::fs::create_dir_all(&apps).unwrap();
         let path = apps.join("pinora.desktop");
         let exec = bin.display().to_string();
-        let content = format!("Exec={exec} capture\nX-KDE-Shortcuts=F2\n");
+        let content = format!("Exec={exec} capture\nX-KDE-Shortcuts=F1\n");
         std::fs::write(&path, &content).unwrap();
         let s = std::fs::read_to_string(&path).unwrap();
         assert!(s.contains("capture"));
-        assert!(s.contains("F2"));
+        assert!(s.contains("F1"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -830,34 +800,37 @@ mod tests {
         let bindings = RegisteredHotkeys {
             entries: vec![
                 registered_hotkey(
-                    HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F2),
+                    HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F1),
                     ActionId::CaptureRegionAndPin,
                 ),
-                registered_hotkey(REGION_SECONDARY_HOTKEY, ActionId::CaptureRegionAndPin),
                 registered_hotkey(
                     HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F3),
-                    ActionId::CaptureFullDisplay,
+                    ActionId::PasteClipboard,
+                ),
+                registered_hotkey(
+                    DEFAULT_TOGGLE_PINS_HOTKEY,
+                    ActionId::ToggleAllPinsVisibility,
                 ),
             ],
         };
         let region_id = bindings.entries[0].hotkey.id();
-        let secondary_id = bindings.entries[1].hotkey.id();
-        let full_display_id = bindings.entries[2].hotkey.id();
+        let clipboard_id = bindings.entries[1].hotkey.id();
+        let toggle_id = bindings.entries[2].hotkey.id();
 
         assert_eq!(
             bindings.action_for_pressed_event(region_id, HotKeyState::Pressed),
             Some(ActionId::CaptureRegionAndPin)
         );
         assert_eq!(
-            bindings.action_for_pressed_event(secondary_id, HotKeyState::Pressed),
-            Some(ActionId::CaptureRegionAndPin)
+            bindings.action_for_pressed_event(clipboard_id, HotKeyState::Pressed),
+            Some(ActionId::PasteClipboard)
         );
         assert_eq!(
-            bindings.action_for_pressed_event(full_display_id, HotKeyState::Pressed),
-            Some(ActionId::CaptureFullDisplay)
+            bindings.action_for_pressed_event(toggle_id, HotKeyState::Pressed),
+            Some(ActionId::ToggleAllPinsVisibility)
         );
         assert_eq!(
-            bindings.action_for_pressed_event(secondary_id, HotKeyState::Released),
+            bindings.action_for_pressed_event(toggle_id, HotKeyState::Released),
             None
         );
         assert_eq!(
@@ -894,7 +867,7 @@ mod tests {
         );
         assert_eq!(
             validate_primary_bindings(
-                REGION_SECONDARY_HOTKEY,
+                DEFAULT_TOGGLE_PINS_HOTKEY,
                 HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F3),
             ),
             Err("hotkey_conflict".into())
@@ -914,14 +887,14 @@ mod tests {
         let initial = bindings.entries.clone();
         let registrar = FakeRegistrar::with_active(&initial, None);
         let next_region = HotkeyBinding::new(HotkeyModifiers::CONTROL, HotkeyCode::KeyR);
-        let next_full = HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4);
+        let next_clipboard = HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4);
 
         rebind_registered_hotkeys(
             &registrar,
             &mut bindings,
             &[
                 (ActionId::CaptureRegionAndPin, next_region),
-                (ActionId::CaptureFullDisplay, next_full),
+                (ActionId::PasteClipboard, next_clipboard),
             ],
         )
         .expect("rebind");
@@ -929,17 +902,17 @@ mod tests {
         let region = bindings
             .primary_binding(ActionId::CaptureRegionAndPin)
             .expect("new region registration");
-        let full = bindings
-            .primary_binding(ActionId::CaptureFullDisplay)
-            .expect("new full registration");
+        let clipboard = bindings
+            .primary_binding(ActionId::PasteClipboard)
+            .expect("new clipboard registration");
         assert_eq!(region.binding, next_region);
-        assert_eq!(full.binding, next_full);
+        assert_eq!(clipboard.binding, next_clipboard);
         assert_eq!(
             bindings.action_for_pressed_event(region.hotkey.id(), HotKeyState::Pressed),
             Some(ActionId::CaptureRegionAndPin)
         );
         assert!(registrar.active_ids().contains(&region.hotkey.id()));
-        assert!(registrar.active_ids().contains(&full.hotkey.id()));
+        assert!(registrar.active_ids().contains(&clipboard.hotkey.id()));
         assert!(!registrar.active_ids().contains(&initial[0].hotkey.id()));
         assert!(!registrar.active_ids().contains(&initial[1].hotkey.id()));
     }
@@ -949,11 +922,11 @@ mod tests {
         let mut bindings = primary_bindings();
         let initial = bindings.entries.clone();
         let next_region = HotkeyBinding::new(HotkeyModifiers::CONTROL, HotkeyCode::KeyR);
-        let next_full = HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4);
+        let next_clipboard = HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4);
         let registrar = FakeRegistrar::with_active(
             &initial,
             Some(
-                registered_hotkey(next_full, ActionId::CaptureFullDisplay)
+                registered_hotkey(next_clipboard, ActionId::PasteClipboard)
                     .hotkey
                     .id(),
             ),
@@ -965,7 +938,7 @@ mod tests {
                 &mut bindings,
                 &[
                     (ActionId::CaptureRegionAndPin, next_region),
-                    (ActionId::CaptureFullDisplay, next_full),
+                    (ActionId::PasteClipboard, next_clipboard),
                 ],
             )
             .is_err()

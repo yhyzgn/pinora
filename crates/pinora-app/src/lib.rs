@@ -29,8 +29,9 @@ pub use pinora_desktop::settings_panel::{
     SettingField, SettingsPanel, SettingsPanelAction, SettingsPanelKey, SettingsPanelStatus,
 };
 pub use pinora_export::{
-    CaptureExportSource, ExportJobCompletion, ExportJobInput, ExportJobService, ExportRunner,
-    LocalExportRunner, LocalImageSink, compose_capture_export_image, copy_text_to_system_clipboard,
+    CaptureExportSource, ClipboardImageReadCompletion, ClipboardImageReadJobService,
+    ExportJobCompletion, ExportJobInput, ExportJobService, ExportRunner, LocalExportRunner,
+    LocalImageSink, compose_capture_export_image, copy_text_to_system_clipboard,
     detect_system_clipboard_backend,
 };
 pub use pinora_jobs::{

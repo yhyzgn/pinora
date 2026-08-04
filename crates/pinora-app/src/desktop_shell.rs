@@ -26,11 +26,12 @@ use crate::settings_panel::{SettingsPanelAction, SettingsPanelKey};
 use crate::tray_capabilities::TrayCapabilitySummary;
 use crate::tray_feedback::{TrayExportOperation, TrayFeedback};
 use crate::{
-    AppTray, CaptureExportSource, ExportJobCompletion, ExportJobInput, ExportJobService,
-    HistoryLoadCompletion, HistoryLoadInput, HistoryLoadJobService, HistoryLoadPayload, TrayAction,
-    TrayPinListEntry, clear_history_entries, compose_capture_export_image, delete_history_entry,
-    history_candidate_for_export, history_retention_cutoff_ms, load_history_index,
-    reconcile_history_policy, record_history_candidate,
+    AppTray, CaptureExportSource, ClipboardImageReadCompletion, ClipboardImageReadJobService,
+    ExportJobCompletion, ExportJobInput, ExportJobService, HistoryLoadCompletion, HistoryLoadInput,
+    HistoryLoadJobService, HistoryLoadPayload, TrayAction, TrayPinListEntry, clear_history_entries,
+    compose_capture_export_image, delete_history_entry, history_candidate_for_export,
+    history_retention_cutoff_ms, load_history_index, reconcile_history_policy,
+    record_history_candidate,
 };
 use pinora_capture::{
     CaptureFailureScope, CaptureMode, CapturePreview, CaptureSessionMode, CaptureTarget,
@@ -43,11 +44,11 @@ use pinora_capture::{
 use pinora_core::{
     ActionId, AnnotateSession, AnnotateTool, Annotation, AssetRef, CaptureImage, CaptureProvider,
     CaptureRequest, CaptureWindowInfo, Command, CorrelationId, DEFAULT_OCR_CONFIDENCE_THRESHOLD,
-    DisplayId, DomainEventKind, ErrorCode, HistoryEntry, HistoryIndex, ImageSink, JobId, JobKind,
-    JobOwner, JobSpec, JobTerminalState, OcrLanguage, OcrResult, OcrTextSelection, OcrWordRef,
-    PinId, PinTransform, PinoraError, PixelPoint, PixelRect, PixelSize, SelectionHandle,
-    SelectionSession, SessionId, ThemeMode, color_to_hex, resolve_all_displays_rect,
-    sample_rgba_at,
+    DEFAULT_TOGGLE_PINS_HOTKEY, DisplayId, DomainEventKind, ErrorCode, HistoryEntry, HistoryIndex,
+    HotkeyBinding, ImageId, ImageSink, JobId, JobKind, JobOwner, JobSpec, JobTerminalState,
+    OcrLanguage, OcrResult, OcrTextSelection, OcrWordRef, PinId, PinTransform, PinoraError,
+    PixelPoint, PixelRect, PixelSize, SelectionHandle, SelectionSession, SessionId, ThemeMode,
+    color_to_hex, resolve_all_displays_rect, sample_rgba_at,
 };
 use pinora_desktop::window_policy::{self, AuxiliaryWindowKind};
 use pinora_desktop::{
@@ -97,6 +98,7 @@ const MIN_FRAME_INTERVAL: Duration = Duration::from_micros(16_666);
 const OCR_JOB_TIMEOUT_MS: u64 = 30_000;
 const EXPORT_JOB_TIMEOUT_MS: u64 = 30_000;
 const HISTORY_LOAD_TIMEOUT_MS: u64 = 30_000;
+const CLIPBOARD_READ_TIMEOUT_MS: u64 = 3_500;
 
 fn monotonic_ms() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
@@ -105,6 +107,21 @@ fn monotonic_ms() -> u64 {
         .elapsed()
         .as_millis()
         .min(u128::from(u64::MAX)) as u64
+}
+
+fn action_for_focused_window_hotkey(
+    settings: pinora_core::AppSettings,
+    binding: HotkeyBinding,
+) -> Option<ActionId> {
+    if binding == DEFAULT_TOGGLE_PINS_HOTKEY {
+        Some(ActionId::ToggleAllPinsVisibility)
+    } else if binding == settings.clipboard_hotkey {
+        Some(ActionId::PasteClipboard)
+    } else if binding == settings.region_hotkey {
+        Some(ActionId::CaptureRegionAndPin)
+    } else {
+        None
+    }
 }
 
 /// 只有原子设置存储明确成功后，历史和诊断窗口才能切换到草稿主题。
@@ -140,14 +157,14 @@ where
         .map_err(|e| PinoraError::new(ErrorCode::Internal, format!("desktop event loop: {e}")))?;
 
     let settings = runtime.settings();
-    let hotkeys = GlobalHotkeyHub::start(settings.region_hotkey, settings.full_display_hotkey);
+    let hotkeys = GlobalHotkeyHub::start(settings.region_hotkey, settings.clipboard_hotkey);
     for note in &hotkeys.status().notes {
         println!("pinora: hotkey: {note}");
     }
     if hotkeys.status().available {
         println!(
-            "pinora: global hotkeys: {} / Ctrl+N / Ctrl+Shift+S → region, {} → full display when registered",
-            settings.region_hotkey, settings.full_display_hotkey
+            "pinora: global hotkeys: {} → capture, {} → clipboard pin, Shift+F3 → toggle pins",
+            settings.region_hotkey, settings.clipboard_hotkey
         );
     } else {
         println!("pinora: global hotkeys unavailable — use window focus keys or `pinora capture`");
@@ -177,11 +194,11 @@ where
         &tray_windows,
         tray_capabilities,
         settings.region_hotkey,
-        settings.full_display_hotkey,
+        settings.clipboard_hotkey,
     ))?;
     println!("pinora: system tray ready (click / menu → capture)");
 
-    // 后台预截屏：空闲时持续备帧，F2 时 overlay 瞬时弹出
+    // 后台预截屏：空闲时持续备帧，F1 时 overlay 瞬时弹出
     let provider = runtime.capture_provider().clone();
     let frame_cache = FrameCache::start(provider);
     println!("pinora: frame-cache started (pre-capture for instant overlay)");
@@ -255,6 +272,7 @@ where
         frame_cache: Some(frame_cache),
         ocr_jobs: OcrJobService::new(),
         export_jobs: ExportJobService::new(),
+        clipboard_read_jobs: ClipboardImageReadJobService::new(),
         export_names: ExportNameAllocator::default(),
         history_load_jobs: HistoryLoadJobService::new(),
         pending_exports: HashMap::new(),
@@ -290,6 +308,16 @@ where
         export_shutdown.joined,
         export_shutdown.panicked,
         export_shutdown.unfinished
+    );
+    let clipboard_shutdown = app
+        .clipboard_read_jobs
+        .cancel_all_and_wait(Duration::from_secs(2));
+    println!(
+        "pinora: clipboard read shutdown cancelled={} joined={} panicked={} unfinished={}",
+        clipboard_shutdown.cancelled,
+        clipboard_shutdown.joined,
+        clipboard_shutdown.panicked,
+        clipboard_shutdown.unfinished
     );
     let history_load_shutdown = app
         .history_load_jobs
@@ -500,6 +528,7 @@ struct DesktopApp<L, P, C, S> {
     frame_cache: Option<FrameCache>,
     ocr_jobs: OcrJobService,
     export_jobs: ExportJobService,
+    clipboard_read_jobs: ClipboardImageReadJobService,
     export_names: ExportNameAllocator,
     history_load_jobs: HistoryLoadJobService,
     pending_exports: HashMap<JobId, PendingExport>,
@@ -572,6 +601,10 @@ where
                         println!("pinora: tray → cancelling {cancelled} file export(s)");
                     }
                 }
+                TrayAction::PasteClipboard => {
+                    println!("pinora: tray → clipboard pin");
+                    self.request_clipboard_pin();
+                }
                 TrayAction::CaptureFullDisplay => {
                     println!("pinora: tray → full-display capture");
                     self.request_full_display_capture(event_loop);
@@ -637,6 +670,7 @@ where
         self.poll_external_actions(event_loop);
         self.poll_ocr_jobs();
         self.poll_export_jobs();
+        self.poll_clipboard_read_jobs(event_loop);
         self.poll_history_load_jobs(event_loop);
 
         for msg in self.pending_messages.drain(..) {
@@ -750,6 +784,12 @@ where
         if visible && let Some(pin) = self.pins.values().next() {
             pin.window.focus_window();
         }
+    }
+
+    fn toggle_all_pins_visibility(&mut self) {
+        let show = self.pins.values().any(|pin| !pin.visible);
+        self.set_all_pins_visible(show);
+        println!("pinora: all pins {}", if show { "shown" } else { "hidden" });
     }
 
     fn set_pins_visible(&mut self, window_ids: &[WindowId], visible: bool) {
@@ -990,9 +1030,12 @@ where
                     println!("pinora: global hotkey → capture");
                     self.request_new_capture(event_loop);
                 }
-                ActionId::CaptureFullDisplay => {
-                    println!("pinora: global hotkey → full-display capture");
-                    self.request_full_display_capture(event_loop);
+                ActionId::PasteClipboard => {
+                    println!("pinora: global hotkey → clipboard pin");
+                    self.request_clipboard_pin();
+                }
+                ActionId::ToggleAllPinsVisibility => {
+                    self.toggle_all_pins_visibility();
                 }
                 ActionId::Quit => {
                     self.quit = true;
@@ -1565,7 +1608,7 @@ where
             .map(AppRuntime::settings)
             .unwrap_or_default();
         let hotkeys_changed = draft.region_hotkey != previous.region_hotkey
-            || draft.full_display_hotkey != previous.full_display_hotkey;
+            || draft.clipboard_hotkey != previous.clipboard_hotkey;
         let start_on_login_changed = draft.start_on_login != previous.start_on_login;
         let ocr_confidence_threshold_changed =
             draft.ocr_confidence_threshold != previous.ocr_confidence_threshold;
@@ -1598,7 +1641,7 @@ where
         let hotkeys_rebound = if hotkeys_changed {
             match self
                 .hotkeys
-                .rebind(draft.region_hotkey, draft.full_display_hotkey)
+                .rebind(draft.region_hotkey, draft.clipboard_hotkey)
             {
                 Ok(rebound) => rebound,
                 Err(_) => {
@@ -1669,7 +1712,7 @@ where
                     settings.request_redraw();
                 }
                 if let Some(tray) = &self.tray {
-                    tray.set_hotkey_bindings(draft.region_hotkey, draft.full_display_hotkey);
+                    tray.set_hotkey_bindings(draft.region_hotkey, draft.clipboard_hotkey);
                 }
                 self.refresh_diagnostics();
                 println!("pinora: settings saved (theme={:?})", draft.theme);
@@ -1678,7 +1721,7 @@ where
                 if hotkeys_rebound
                     && self
                         .hotkeys
-                        .rebind(previous.region_hotkey, previous.full_display_hotkey)
+                        .rebind(previous.region_hotkey, previous.clipboard_hotkey)
                         .is_err()
                 {
                     eprintln!("pinora: settings save rollback could not restore hotkeys");
@@ -2365,7 +2408,7 @@ where
         self.restore_delayed_pins();
         self.resume_frame_cache();
         self.set_tray_feedback(TrayFeedback::CaptureCancelled);
-        println!("pinora: capture cancelled (F2/Ctrl+N 再截，Ctrl+Q 退出)");
+        println!("pinora: capture cancelled (F1 再截，Ctrl+Q 退出)");
         if let Some(pin) = self.pins.values().next() {
             pin.window.focus_window();
         }
@@ -3277,6 +3320,7 @@ where
                 .filter(|(id, _)| *id == session_id)
                 .map(|(_, asset)| asset),
             JobOwner::History(_) => None,
+            JobOwner::Clipboard(_) => None,
         });
 
         for completion in completions {
@@ -3330,6 +3374,7 @@ where
                     .map(|(_, asset)| asset)
                     .or_else(|| pending_asset_for_owner(&pending_assets, job_id, owner)),
                 JobOwner::History(_) => None,
+                JobOwner::Clipboard(_) => None,
             });
         for completion in completions {
             match completion {
@@ -3452,6 +3497,97 @@ where
             }
         }
         self.refresh_file_export_cancellation();
+    }
+
+    fn request_clipboard_pin(&mut self) {
+        // F3 的语义是最新一次用户意图。取消尚未完成的读回，避免过期结果在后续
+        // 截图或贴图操作后突然建窗。
+        self.clipboard_read_jobs.cancel_all();
+        let image_id = ImageId::new();
+        let asset = AssetRef::initial(image_id);
+        let spec = JobSpec::new(
+            JobId::new(),
+            CorrelationId::new(),
+            asset,
+            JobOwner::Clipboard(image_id),
+            JobKind::Clipboard,
+            monotonic_ms().saturating_add(CLIPBOARD_READ_TIMEOUT_MS),
+        );
+        match self.clipboard_read_jobs.start(spec) {
+            Ok(ticket) => {
+                self.set_tray_feedback(TrayFeedback::ClipboardPinReading);
+                println!("pinora: clipboard image read {} started", ticket.id);
+            }
+            Err(error) => {
+                self.set_tray_feedback(TrayFeedback::ClipboardPinFailed(error.code));
+                eprintln!("pinora: clipboard image read start failed ({})", error.code);
+            }
+        }
+    }
+
+    fn poll_clipboard_read_jobs(&mut self, event_loop: &ActiveEventLoop) {
+        for completion in self.clipboard_read_jobs.poll(monotonic_ms()) {
+            match completion {
+                ClipboardImageReadCompletion::Completed { job, image } => {
+                    let position = self.clipboard_pin_position(image.size());
+                    match self.open_pin_from_image(event_loop, image, position, false) {
+                        Ok(()) => {
+                            self.set_tray_feedback(TrayFeedback::ClipboardPinCreated);
+                            println!("pinora: clipboard image {} pinned", job.asset.image_id);
+                        }
+                        Err(error) => {
+                            self.set_tray_feedback(TrayFeedback::ClipboardPinFailed(error.code));
+                            eprintln!("pinora: clipboard pin window failed ({})", error.code);
+                        }
+                    }
+                }
+                ClipboardImageReadCompletion::Failed {
+                    job_id,
+                    owner,
+                    error,
+                } => {
+                    self.set_tray_feedback(TrayFeedback::ClipboardPinFailed(error.code));
+                    eprintln!(
+                        "pinora: clipboard image read {job_id} failed owner={owner:?} code={}",
+                        error.code
+                    );
+                }
+                ClipboardImageReadCompletion::Discarded {
+                    job_id,
+                    owner,
+                    terminal,
+                } => {
+                    println!(
+                        "pinora: clipboard image read {job_id} discarded owner={owner:?} ({terminal:?})"
+                    );
+                }
+            }
+        }
+    }
+
+    fn clipboard_pin_position(&self, image_size: PixelSize) -> PixelPoint {
+        let Some(bounds) = self.runtime.as_ref().and_then(|runtime| {
+            runtime
+                .capture_provider()
+                .displays()
+                .ok()
+                .and_then(|displays| {
+                    displays
+                        .into_iter()
+                        .max_by_key(|display| display.bounds.size.area())
+                        .map(|display| display.bounds)
+                })
+        }) else {
+            return PixelPoint::new(24, 24);
+        };
+        let x = i64::from(bounds.origin.x)
+            + (i64::from(bounds.size.width).saturating_sub(i64::from(image_size.width)) / 2);
+        let y = i64::from(bounds.origin.y)
+            + (i64::from(bounds.size.height).saturating_sub(i64::from(image_size.height)) / 2);
+        PixelPoint::new(
+            x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+            y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        )
     }
 
     fn overlay_ocr(&mut self) {
@@ -3837,10 +3973,10 @@ where
         if let Some(pin_id) = edited_pin {
             self.restore_pin_visibility(pin_id);
         }
-        // Esc 只取消选区，绝不自动再截；再截仅 F2 / Ctrl+N
+        // Esc 只取消选区，绝不自动再截；再截仅 F1。
         self.mode = CaptureSessionMode::Idle;
         self.resume_frame_cache();
-        println!("pinora: selection cancelled (F2/Ctrl+N 再截，Ctrl+Q 退出)");
+        println!("pinora: selection cancelled (F1 再截，Ctrl+Q 退出)");
         if let Some(pin) = self.pins.values().next() {
             pin.window.focus_window();
         }
@@ -4836,7 +4972,7 @@ where
         if self.pins.is_empty() && self.overlay.is_none() {
             // Esc 关闭贴图 ≠ 再截图
             self.mode = CaptureSessionMode::Idle;
-            println!("pinora: all pins closed (F2/Ctrl+N 再截，Ctrl+Q 退出)");
+            println!("pinora: all pins closed (F1 再截，Ctrl+Q 退出)");
         }
     }
 
@@ -5062,34 +5198,30 @@ where
             && matches!(event.physical_key, PhysicalKey::Code(KeyCode::KeyQ))
     }
 
-    fn is_new_capture_key(&self, event: &winit::event::KeyEvent) -> bool {
-        // Wayland 上 logical F 键有时不是 NamedKey::F2，同时认物理键。
-        let f2 = matches!(event.logical_key, Key::Named(NamedKey::F2))
-            || matches!(event.physical_key, PhysicalKey::Code(KeyCode::F2));
-        let ctrl_n = self.modifiers.control_key()
-            && matches!(event.physical_key, PhysicalKey::Code(KeyCode::KeyN));
-        f2 || ctrl_n
-    }
-
-    fn is_full_display_capture_key(&self, event: &winit::event::KeyEvent) -> bool {
-        matches!(event.logical_key, Key::Named(NamedKey::F3))
-            || matches!(event.physical_key, PhysicalKey::Code(KeyCode::F3))
-    }
-
     fn handle_capture_shortcut(
         &mut self,
         event_loop: &ActiveEventLoop,
         event: &winit::event::KeyEvent,
     ) -> bool {
-        if self.is_full_display_capture_key(event) {
-            self.request_full_display_capture(event_loop);
-            true
-        } else if self.is_new_capture_key(event) {
-            self.request_new_capture(event_loop);
-            true
-        } else {
-            false
+        // Wayland 上逻辑功能键有时不稳定，因此统一使用已录制的物理键绑定。
+        let PhysicalKey::Code(code) = event.physical_key else {
+            return false;
+        };
+        let Some(settings) = self.runtime.as_ref().map(AppRuntime::settings) else {
+            return false;
+        };
+        let Some(action) = binding_from_winit(code, self.modifiers)
+            .and_then(|binding| action_for_focused_window_hotkey(settings, binding))
+        else {
+            return false;
+        };
+        match action {
+            ActionId::CaptureRegionAndPin => self.request_new_capture(event_loop),
+            ActionId::PasteClipboard => self.request_clipboard_pin(),
+            ActionId::ToggleAllPinsVisibility => self.toggle_all_pins_visibility(),
+            _ => return false,
         }
+        true
     }
 }
 
@@ -5847,6 +5979,48 @@ mod overlay_scale_tests {
         assert_eq!(
             persisted_auxiliary_panel_theme(&Err("write_failed".into()), ThemeMode::Light),
             None
+        );
+    }
+
+    #[test]
+    fn focused_window_hotkeys_distinguish_clipboard_pin_from_visibility_toggle() {
+        let settings = pinora_core::AppSettings::default();
+
+        assert_eq!(
+            action_for_focused_window_hotkey(settings, settings.region_hotkey),
+            Some(ActionId::CaptureRegionAndPin)
+        );
+        assert_eq!(
+            action_for_focused_window_hotkey(settings, settings.clipboard_hotkey),
+            Some(ActionId::PasteClipboard)
+        );
+        assert_eq!(
+            action_for_focused_window_hotkey(settings, DEFAULT_TOGGLE_PINS_HOTKEY),
+            Some(ActionId::ToggleAllPinsVisibility)
+        );
+    }
+
+    #[test]
+    fn focused_window_hotkeys_follow_saved_primary_bindings() {
+        let settings = pinora_core::AppSettings {
+            region_hotkey: HotkeyBinding::new(
+                pinora_core::HotkeyModifiers::CONTROL,
+                pinora_core::HotkeyCode::KeyR,
+            ),
+            clipboard_hotkey: HotkeyBinding::new(
+                pinora_core::HotkeyModifiers::ALT,
+                pinora_core::HotkeyCode::F4,
+            ),
+            ..pinora_core::AppSettings::default()
+        };
+
+        assert_eq!(
+            action_for_focused_window_hotkey(settings, settings.region_hotkey),
+            Some(ActionId::CaptureRegionAndPin)
+        );
+        assert_eq!(
+            action_for_focused_window_hotkey(settings, settings.clipboard_hotkey),
+            Some(ActionId::PasteClipboard)
         );
     }
 }

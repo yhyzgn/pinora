@@ -4,9 +4,9 @@
 //! [`SettingsPanelAction`]，并在确认保存后调用 `SettingsStore`。
 
 use pinora_core::{
-    AppSettings, ExportImageFormat, HISTORY_MAX_BYTES_MAX, HISTORY_MAX_BYTES_MIN,
-    HISTORY_RETENTION_DAYS_MAX, HISTORY_RETENTION_DAYS_MIN, HotkeyBinding, OcrLanguage, PixelPoint,
-    PixelRect, REGION_ALTERNATE_HOTKEY, REGION_SECONDARY_HOTKEY, ThemeMode,
+    AppSettings, DEFAULT_TOGGLE_PINS_HOTKEY, ExportImageFormat, HISTORY_MAX_BYTES_MAX,
+    HISTORY_MAX_BYTES_MIN, HISTORY_RETENTION_DAYS_MAX, HISTORY_RETENTION_DAYS_MIN, HotkeyBinding,
+    OcrLanguage, PixelPoint, PixelRect, ThemeMode,
 };
 
 use crate::panel_theme::PanelTheme;
@@ -37,7 +37,7 @@ pub enum SettingField {
     ExportFormat,
     JpegQuality,
     RegionHotkey,
-    FullDisplayHotkey,
+    ClipboardHotkey,
     StartOnLogin,
 }
 
@@ -55,7 +55,7 @@ impl SettingField {
         Self::ExportFormat,
         Self::JpegQuality,
         Self::RegionHotkey,
-        Self::FullDisplayHotkey,
+        Self::ClipboardHotkey,
         Self::StartOnLogin,
     ];
 
@@ -73,7 +73,7 @@ impl SettingField {
             Self::ExportFormat => 9,
             Self::JpegQuality => 10,
             Self::RegionHotkey => 11,
-            Self::FullDisplayHotkey => 12,
+            Self::ClipboardHotkey => 12,
             Self::StartOnLogin => 13,
         }
     }
@@ -91,8 +91,8 @@ impl SettingField {
             Self::OcrConfidenceThreshold => "OCR CONFIDENCE",
             Self::ExportFormat => "EXPORT FORMAT",
             Self::JpegQuality => "JPEG QUALITY",
-            Self::RegionHotkey => "REGION HOTKEY",
-            Self::FullDisplayHotkey => "FULL DISPLAY HOTKEY",
+            Self::RegionHotkey => "CAPTURE HOTKEY",
+            Self::ClipboardHotkey => "CLIPBOARD PIN HOTKEY",
             Self::StartOnLogin => "START ON LOGIN",
         }
     }
@@ -107,7 +107,7 @@ impl SettingField {
     }
 
     pub const fn is_hotkey(self) -> bool {
-        matches!(self, Self::RegionHotkey | Self::FullDisplayHotkey)
+        matches!(self, Self::RegionHotkey | Self::ClipboardHotkey)
     }
 
     pub const fn is_binary_toggle(self) -> bool {
@@ -334,7 +334,7 @@ impl SettingsPanel {
             SettingField::JpegQuality => {
                 self.draft.jpeg_quality = step_u8(self.draft.jpeg_quality, direction, 1, 100, 5);
             }
-            SettingField::RegionHotkey | SettingField::FullDisplayHotkey => {}
+            SettingField::RegionHotkey | SettingField::ClipboardHotkey => {}
         }
         self.status = SettingsPanelStatus::Editing;
     }
@@ -357,14 +357,10 @@ impl SettingsPanel {
         }
         let conflict = match field {
             SettingField::RegionHotkey => {
-                binding == self.draft.full_display_hotkey
-                    || binding == REGION_SECONDARY_HOTKEY
-                    || binding == REGION_ALTERNATE_HOTKEY
+                binding == self.draft.clipboard_hotkey || binding == DEFAULT_TOGGLE_PINS_HOTKEY
             }
-            SettingField::FullDisplayHotkey => {
-                binding == self.draft.region_hotkey
-                    || binding == REGION_SECONDARY_HOTKEY
-                    || binding == REGION_ALTERNATE_HOTKEY
+            SettingField::ClipboardHotkey => {
+                binding == self.draft.region_hotkey || binding == DEFAULT_TOGGLE_PINS_HOTKEY
             }
             _ => true,
         };
@@ -374,7 +370,7 @@ impl SettingsPanel {
         }
         match field {
             SettingField::RegionHotkey => self.draft.region_hotkey = binding,
-            SettingField::FullDisplayHotkey => self.draft.full_display_hotkey = binding,
+            SettingField::ClipboardHotkey => self.draft.clipboard_hotkey = binding,
             _ => return Err("hotkey_not_recording"),
         }
         self.recording = None;
@@ -483,7 +479,7 @@ impl SettingsPanel {
             },
             SettingField::JpegQuality => format!("{}%", self.draft.jpeg_quality),
             SettingField::RegionHotkey => self.draft.region_hotkey.to_string(),
-            SettingField::FullDisplayHotkey => self.draft.full_display_hotkey.to_string(),
+            SettingField::ClipboardHotkey => self.draft.clipboard_hotkey.to_string(),
         }
     }
 }
@@ -1166,7 +1162,7 @@ mod tests {
         assert!(SettingField::OcrConfidenceThreshold.row_rect().bottom() <= save_rect().origin.y);
         assert!(SettingField::ExportFormat.row_rect().bottom() <= save_rect().origin.y);
         assert!(SettingField::JpegQuality.row_rect().bottom() <= save_rect().origin.y);
-        assert!(SettingField::FullDisplayHotkey.row_rect().bottom() <= save_rect().origin.y);
+        assert!(SettingField::ClipboardHotkey.row_rect().bottom() <= save_rect().origin.y);
         assert!(SettingField::StartOnLogin.row_rect().bottom() <= save_rect().origin.y);
     }
 
@@ -1181,7 +1177,7 @@ mod tests {
         panel.start_hotkey_recording();
         assert_eq!(panel.recording_field(), Some(SettingField::RegionHotkey));
         assert_eq!(
-            panel.record_hotkey(REGION_SECONDARY_HOTKEY),
+            panel.record_hotkey(DEFAULT_TOGGLE_PINS_HOTKEY),
             Err("hotkey_conflict")
         );
         assert_eq!(panel.recording_field(), Some(SettingField::RegionHotkey));
@@ -1195,12 +1191,12 @@ mod tests {
     #[test]
     fn escape_cancels_hotkey_recording_without_mutating_draft() {
         let mut panel = SettingsPanel::new(AppSettings::default());
-        let original = panel.draft().full_display_hotkey;
-        panel.select(SettingField::FullDisplayHotkey);
+        let original = panel.draft().clipboard_hotkey;
+        panel.select(SettingField::ClipboardHotkey);
         panel.start_hotkey_recording();
         panel.handle_key(SettingsPanelKey::Escape);
 
         assert_eq!(panel.recording_field(), None);
-        assert_eq!(panel.draft().full_display_hotkey, original);
+        assert_eq!(panel.draft().clipboard_hotkey, original);
     }
 }

@@ -1,11 +1,16 @@
 //! Pinora 导出边界：图像编码、文件发布、系统剪贴板与受监督导出任务。
 
 mod capture_export;
+mod clipboard_read;
 mod export_contract;
 mod export_job;
 mod image_sink;
 
 pub use capture_export::{CaptureExportSource, compose_capture_export_image};
+pub use clipboard_read::{
+    ClipboardImageReadCompletion, ClipboardImageReadJobService, ClipboardImageReader,
+    LocalClipboardImageReader,
+};
 pub use export_contract::{
     ExportAction, ExportOperation, FrozenExportTarget, OverlayExportAction,
     capture_export_source_for_overlay_action,

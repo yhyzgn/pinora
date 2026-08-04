@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use pinora_core::{
-    AppSettings, DEFAULT_FULL_DISPLAY_HOTKEY, DEFAULT_HISTORY_MAX_BYTES,
+    AppSettings, DEFAULT_CLIPBOARD_HOTKEY, DEFAULT_HISTORY_MAX_BYTES,
     DEFAULT_HISTORY_RETENTION_DAYS, DEFAULT_JPEG_QUALITY, DEFAULT_OCR_CONFIDENCE_THRESHOLD,
     DEFAULT_PIN_ALWAYS_ON_TOP, DEFAULT_REGION_HOTKEY, ExportImageFormat, HotkeyBinding, HotkeyCode,
     HotkeyModifiers, OcrLanguage, SETTINGS_SCHEMA_VERSION, SettingsRepairs, ThemeMode,
@@ -120,8 +120,8 @@ fn encode(settings: AppSettings) -> Result<[u8; RECORD_LEN], String> {
     bytes[18] = repaired.ocr_language.to_wire();
     bytes[19] = repaired.region_hotkey.modifiers.to_wire();
     bytes[20] = repaired.region_hotkey.code.to_wire();
-    bytes[21] = repaired.full_display_hotkey.modifiers.to_wire();
-    bytes[22] = repaired.full_display_hotkey.code.to_wire();
+    bytes[21] = repaired.clipboard_hotkey.modifiers.to_wire();
+    bytes[22] = repaired.clipboard_hotkey.code.to_wire();
     bytes[23] = u8::from(repaired.default_pin_always_on_top);
     bytes[24] = repaired.ocr_confidence_threshold;
     bytes[25] = repaired.export_format.to_wire();
@@ -142,7 +142,11 @@ fn decode(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         V6_RECORD_LEN => decode_v6(bytes),
         V7_RECORD_LEN => decode_v7(bytes),
         V8_RECORD_LEN => decode_v8(bytes),
-        RECORD_LEN => decode_v9(bytes),
+        RECORD_LEN => match u16::from_le_bytes([bytes[8], bytes[9]]) {
+            9 => decode_v9(bytes),
+            SETTINGS_SCHEMA_VERSION => decode_v10(bytes),
+            _ => Err("settings schema version is unsupported".into()),
+        },
         _ => Err("settings record length is invalid".into()),
     }
 }
@@ -168,7 +172,7 @@ fn decode_v1(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         export_format: ExportImageFormat::Png,
         jpeg_quality: DEFAULT_JPEG_QUALITY,
         region_hotkey: DEFAULT_REGION_HOTKEY,
-        full_display_hotkey: DEFAULT_FULL_DISPLAY_HOTKEY,
+        clipboard_hotkey: DEFAULT_CLIPBOARD_HOTKEY,
     }
     .with_repaired_values();
     repairs.migrated_from_v1 = true;
@@ -198,7 +202,7 @@ fn decode_v2(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         export_format: ExportImageFormat::Png,
         jpeg_quality: DEFAULT_JPEG_QUALITY,
         region_hotkey: DEFAULT_REGION_HOTKEY,
-        full_display_hotkey: DEFAULT_FULL_DISPLAY_HOTKEY,
+        clipboard_hotkey: DEFAULT_CLIPBOARD_HOTKEY,
     }
     .with_repaired_values();
     repairs.migrated_from_v2 = true;
@@ -215,8 +219,8 @@ fn decode_v3(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
     let pin_limit = u16::from_le_bytes([bytes[15], bytes[16]]);
     let (region_hotkey, region_invalid) =
         decode_hotkey(bytes[19], bytes[20], DEFAULT_REGION_HOTKEY);
-    let (full_display_hotkey, full_invalid) =
-        decode_hotkey(bytes[21], bytes[22], DEFAULT_FULL_DISPLAY_HOTKEY);
+    let (clipboard_hotkey, full_invalid) =
+        decode_hotkey(bytes[21], bytes[22], DEFAULT_CLIPBOARD_HOTKEY);
     let (settings, mut repairs) = AppSettings {
         schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
@@ -232,13 +236,13 @@ fn decode_v3(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         export_format: ExportImageFormat::Png,
         jpeg_quality: DEFAULT_JPEG_QUALITY,
         region_hotkey,
-        full_display_hotkey,
+        clipboard_hotkey,
     }
     .with_repaired_values();
     repairs.region_hotkey |= region_invalid;
-    repairs.full_display_hotkey |= full_invalid;
+    repairs.clipboard_hotkey |= full_invalid;
     repairs.migrated_from_v3 = true;
-    Ok((settings, repairs))
+    Ok(merge_legacy_hotkey_repairs(settings, repairs))
 }
 
 fn decode_v4(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
@@ -252,8 +256,8 @@ fn decode_v4(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
     let pin_limit = u16::from_le_bytes([bytes[15], bytes[16]]);
     let (region_hotkey, region_invalid) =
         decode_hotkey(bytes[19], bytes[20], DEFAULT_REGION_HOTKEY);
-    let (full_display_hotkey, full_invalid) =
-        decode_hotkey(bytes[21], bytes[22], DEFAULT_FULL_DISPLAY_HOTKEY);
+    let (clipboard_hotkey, full_invalid) =
+        decode_hotkey(bytes[21], bytes[22], DEFAULT_CLIPBOARD_HOTKEY);
     let (settings, mut repairs) = AppSettings {
         schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
@@ -269,13 +273,13 @@ fn decode_v4(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         export_format: ExportImageFormat::Png,
         jpeg_quality: DEFAULT_JPEG_QUALITY,
         region_hotkey,
-        full_display_hotkey,
+        clipboard_hotkey,
     }
     .with_repaired_values();
     repairs.region_hotkey |= region_invalid;
-    repairs.full_display_hotkey |= full_invalid;
+    repairs.clipboard_hotkey |= full_invalid;
     repairs.migrated_from_v4 = true;
-    Ok((settings, repairs))
+    Ok(merge_legacy_hotkey_repairs(settings, repairs))
 }
 
 fn decode_v5(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
@@ -289,8 +293,8 @@ fn decode_v5(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
     let pin_limit = u16::from_le_bytes([bytes[15], bytes[16]]);
     let (region_hotkey, region_invalid) =
         decode_hotkey(bytes[19], bytes[20], DEFAULT_REGION_HOTKEY);
-    let (full_display_hotkey, full_invalid) =
-        decode_hotkey(bytes[21], bytes[22], DEFAULT_FULL_DISPLAY_HOTKEY);
+    let (clipboard_hotkey, full_invalid) =
+        decode_hotkey(bytes[21], bytes[22], DEFAULT_CLIPBOARD_HOTKEY);
     let (settings, mut repairs) = AppSettings {
         schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
@@ -306,13 +310,13 @@ fn decode_v5(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         export_format: ExportImageFormat::Png,
         jpeg_quality: DEFAULT_JPEG_QUALITY,
         region_hotkey,
-        full_display_hotkey,
+        clipboard_hotkey,
     }
     .with_repaired_values();
     repairs.region_hotkey |= region_invalid;
-    repairs.full_display_hotkey |= full_invalid;
+    repairs.clipboard_hotkey |= full_invalid;
     repairs.migrated_from_v5 = true;
-    Ok((settings, repairs))
+    Ok(merge_legacy_hotkey_repairs(settings, repairs))
 }
 
 fn decode_v6(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
@@ -328,8 +332,8 @@ fn decode_v6(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
     let pin_limit = u16::from_le_bytes([bytes[15], bytes[16]]);
     let (region_hotkey, region_invalid) =
         decode_hotkey(bytes[19], bytes[20], DEFAULT_REGION_HOTKEY);
-    let (full_display_hotkey, full_invalid) =
-        decode_hotkey(bytes[21], bytes[22], DEFAULT_FULL_DISPLAY_HOTKEY);
+    let (clipboard_hotkey, full_invalid) =
+        decode_hotkey(bytes[21], bytes[22], DEFAULT_CLIPBOARD_HOTKEY);
     let (settings, mut repairs) = AppSettings {
         schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
@@ -345,13 +349,13 @@ fn decode_v6(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         export_format,
         jpeg_quality: bytes[26],
         region_hotkey,
-        full_display_hotkey,
+        clipboard_hotkey,
     }
     .with_repaired_values();
     repairs.region_hotkey |= region_invalid;
-    repairs.full_display_hotkey |= full_invalid;
+    repairs.clipboard_hotkey |= full_invalid;
     repairs.migrated_from_v6 = true;
-    Ok((settings, repairs))
+    Ok(merge_legacy_hotkey_repairs(settings, repairs))
 }
 
 fn decode_v7(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
@@ -368,8 +372,8 @@ fn decode_v7(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
     let history_retention_days = u16::from_le_bytes([bytes[27], bytes[28]]);
     let (region_hotkey, region_invalid) =
         decode_hotkey(bytes[19], bytes[20], DEFAULT_REGION_HOTKEY);
-    let (full_display_hotkey, full_invalid) =
-        decode_hotkey(bytes[21], bytes[22], DEFAULT_FULL_DISPLAY_HOTKEY);
+    let (clipboard_hotkey, full_invalid) =
+        decode_hotkey(bytes[21], bytes[22], DEFAULT_CLIPBOARD_HOTKEY);
     let (settings, mut repairs) = AppSettings {
         schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
@@ -385,13 +389,13 @@ fn decode_v7(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         export_format,
         jpeg_quality: bytes[26],
         region_hotkey,
-        full_display_hotkey,
+        clipboard_hotkey,
     }
     .with_repaired_values();
     repairs.region_hotkey |= region_invalid;
-    repairs.full_display_hotkey |= full_invalid;
+    repairs.clipboard_hotkey |= full_invalid;
     repairs.migrated_from_v7 = true;
-    Ok((settings, repairs))
+    Ok(merge_legacy_hotkey_repairs(settings, repairs))
 }
 
 fn decode_v8(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
@@ -411,8 +415,8 @@ fn decode_v8(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
     ]);
     let (region_hotkey, region_invalid) =
         decode_hotkey(bytes[19], bytes[20], DEFAULT_REGION_HOTKEY);
-    let (full_display_hotkey, full_invalid) =
-        decode_hotkey(bytes[21], bytes[22], DEFAULT_FULL_DISPLAY_HOTKEY);
+    let (clipboard_hotkey, full_invalid) =
+        decode_hotkey(bytes[21], bytes[22], DEFAULT_CLIPBOARD_HOTKEY);
     let (settings, mut repairs) = AppSettings {
         schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
@@ -428,17 +432,33 @@ fn decode_v8(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         export_format,
         jpeg_quality: bytes[26],
         region_hotkey,
-        full_display_hotkey,
+        clipboard_hotkey,
     }
     .with_repaired_values();
     repairs.region_hotkey |= region_invalid;
-    repairs.full_display_hotkey |= full_invalid;
+    repairs.clipboard_hotkey |= full_invalid;
     repairs.migrated_from_v8 = true;
-    Ok((settings, repairs))
+    Ok(merge_legacy_hotkey_repairs(settings, repairs))
 }
 
 fn decode_v9(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
-    validate_magic_and_schema(bytes, SETTINGS_SCHEMA_VERSION)?;
+    let (settings, mut repairs) = decode_current_record(bytes, 9)?;
+    let (settings, hotkey_repairs) = reset_legacy_hotkeys(settings);
+    repairs.region_hotkey |= hotkey_repairs.region_hotkey;
+    repairs.clipboard_hotkey |= hotkey_repairs.clipboard_hotkey;
+    repairs.migrated_from_v9 = true;
+    Ok((settings, repairs))
+}
+
+fn decode_v10(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
+    decode_current_record(bytes, SETTINGS_SCHEMA_VERSION)
+}
+
+fn decode_current_record(
+    bytes: &[u8],
+    expected_schema: u16,
+) -> Result<(AppSettings, SettingsRepairs), String> {
+    validate_magic_and_schema(bytes, expected_schema)?;
     let theme =
         ThemeMode::from_wire(bytes[10]).ok_or_else(|| "settings theme is invalid".to_string())?;
     let ocr_language = OcrLanguage::from_wire(bytes[18])
@@ -455,8 +475,8 @@ fn decode_v9(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
     ]);
     let (region_hotkey, region_invalid) =
         decode_hotkey(bytes[19], bytes[20], DEFAULT_REGION_HOTKEY);
-    let (full_display_hotkey, full_invalid) =
-        decode_hotkey(bytes[21], bytes[22], DEFAULT_FULL_DISPLAY_HOTKEY);
+    let (clipboard_hotkey, full_invalid) =
+        decode_hotkey(bytes[21], bytes[22], DEFAULT_CLIPBOARD_HOTKEY);
     let (settings, mut repairs) = AppSettings {
         schema_version: SETTINGS_SCHEMA_VERSION,
         theme,
@@ -472,12 +492,35 @@ fn decode_v9(bytes: &[u8]) -> Result<(AppSettings, SettingsRepairs), String> {
         export_format,
         jpeg_quality: bytes[26],
         region_hotkey,
-        full_display_hotkey,
+        clipboard_hotkey,
     }
     .with_repaired_values();
     repairs.region_hotkey |= region_invalid;
-    repairs.full_display_hotkey |= full_invalid;
+    repairs.clipboard_hotkey |= full_invalid;
     Ok((settings, repairs))
+}
+
+fn reset_legacy_hotkeys(mut settings: AppSettings) -> (AppSettings, SettingsRepairs) {
+    settings.region_hotkey = DEFAULT_REGION_HOTKEY;
+    settings.clipboard_hotkey = DEFAULT_CLIPBOARD_HOTKEY;
+    (
+        settings,
+        SettingsRepairs {
+            region_hotkey: true,
+            clipboard_hotkey: true,
+            ..SettingsRepairs::default()
+        },
+    )
+}
+
+fn merge_legacy_hotkey_repairs(
+    settings: AppSettings,
+    mut repairs: SettingsRepairs,
+) -> (AppSettings, SettingsRepairs) {
+    let (settings, hotkey_repairs) = reset_legacy_hotkeys(settings);
+    repairs.region_hotkey |= hotkey_repairs.region_hotkey;
+    repairs.clipboard_hotkey |= hotkey_repairs.clipboard_hotkey;
+    (settings, repairs)
 }
 
 fn decode_bool(value: u8) -> Result<bool, String> {
@@ -606,7 +649,7 @@ mod tests {
     #[test]
     fn unknown_schema_is_rejected() {
         let mut bytes = encode(AppSettings::default()).expect("encode");
-        bytes[8] = 10;
+        bytes[8] = 11;
         assert_eq!(
             decode(&bytes),
             Err("settings schema version is unsupported".into())
@@ -639,7 +682,7 @@ mod tests {
     }
 
     #[test]
-    fn v9_round_trip_preserves_export_ocr_settings_hotkeys_retention_capacity_and_autostart() {
+    fn v10_round_trip_preserves_export_ocr_settings_hotkeys_retention_capacity_and_autostart() {
         let settings = AppSettings {
             history_retention_days: 365,
             history_max_bytes: 3 * 1024 * 1024 * 1024,
@@ -649,15 +692,38 @@ mod tests {
             export_format: ExportImageFormat::WebP,
             jpeg_quality: 75,
             region_hotkey: HotkeyBinding::new(HotkeyModifiers::CONTROL, HotkeyCode::KeyR),
-            full_display_hotkey: HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4),
+            clipboard_hotkey: HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4),
             start_on_login: true,
             ..AppSettings::default()
         };
 
-        let (decoded, repairs) = decode(&encode(settings).expect("encode v9")).expect("decode v9");
+        let (decoded, repairs) =
+            decode(&encode(settings).expect("encode v10")).expect("decode v10");
 
         assert_eq!(decoded, settings);
         assert!(repairs.is_empty());
+    }
+
+    #[test]
+    fn v9_full_display_hotkeys_reset_to_the_current_contract() {
+        let legacy = AppSettings {
+            region_hotkey: HotkeyBinding::new(HotkeyModifiers::CONTROL, HotkeyCode::KeyR),
+            clipboard_hotkey: HotkeyBinding::new(HotkeyModifiers::NONE, HotkeyCode::F2),
+            start_on_login: true,
+            ..AppSettings::default()
+        };
+        let mut bytes = encode(legacy).expect("encode v10-shaped legacy record");
+        bytes[8..10].copy_from_slice(&9u16.to_le_bytes());
+
+        let (decoded, repairs) = decode(&bytes).expect("migrate v9");
+
+        assert_eq!(decoded.schema_version, SETTINGS_SCHEMA_VERSION);
+        assert!(decoded.start_on_login);
+        assert_eq!(decoded.region_hotkey, DEFAULT_REGION_HOTKEY);
+        assert_eq!(decoded.clipboard_hotkey, DEFAULT_CLIPBOARD_HOTKEY);
+        assert!(repairs.migrated_from_v9);
+        assert!(repairs.region_hotkey);
+        assert!(repairs.clipboard_hotkey);
     }
 
     #[test]
@@ -670,7 +736,11 @@ mod tests {
         let (decoded, repairs) = decode(&bytes).expect("migrate v8");
 
         assert!(!decoded.start_on_login);
+        assert_eq!(decoded.region_hotkey, DEFAULT_REGION_HOTKEY);
+        assert_eq!(decoded.clipboard_hotkey, DEFAULT_CLIPBOARD_HOTKEY);
         assert!(repairs.migrated_from_v8);
+        assert!(repairs.region_hotkey);
+        assert!(repairs.clipboard_hotkey);
         assert!(!repairs.is_empty());
     }
 
@@ -695,6 +765,8 @@ mod tests {
         assert_eq!(decoded.history_max_bytes, DEFAULT_HISTORY_MAX_BYTES);
         assert!(repairs.migrated_from_v7);
         assert!(!repairs.history_max_bytes);
+        assert!(repairs.region_hotkey);
+        assert!(repairs.clipboard_hotkey);
     }
 
     #[test]
@@ -737,6 +809,8 @@ mod tests {
         assert_eq!(decoded.history_max_bytes, DEFAULT_HISTORY_MAX_BYTES);
         assert!(repairs.migrated_from_v6);
         assert!(!repairs.history_retention_days);
+        assert!(repairs.region_hotkey);
+        assert!(repairs.clipboard_hotkey);
     }
 
     #[test]
@@ -780,7 +854,7 @@ mod tests {
         assert_eq!(settings.theme, ThemeMode::Light);
         assert_eq!(settings.ocr_language, OcrLanguage::English);
         assert_eq!(settings.region_hotkey, DEFAULT_REGION_HOTKEY);
-        assert_eq!(settings.full_display_hotkey, DEFAULT_FULL_DISPLAY_HOTKEY);
+        assert_eq!(settings.clipboard_hotkey, DEFAULT_CLIPBOARD_HOTKEY);
         assert_eq!(
             settings.ocr_confidence_threshold,
             DEFAULT_OCR_CONFIDENCE_THRESHOLD
@@ -797,7 +871,7 @@ mod tests {
     #[test]
     fn v3_settings_migrate_with_default_always_on_top() {
         let region = HotkeyBinding::new(HotkeyModifiers::CONTROL, HotkeyCode::KeyR);
-        let full_display = HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4);
+        let legacy_full_display = HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4);
         let bytes = legacy_v3_bytes(
             ThemeMode::Dark,
             OcrLanguage::SimplifiedChinese,
@@ -805,7 +879,7 @@ mod tests {
             9,
             85,
             region,
-            full_display,
+            legacy_full_display,
         );
 
         let (settings, repairs) = decode(&bytes).expect("migrate v3");
@@ -815,8 +889,8 @@ mod tests {
         assert_eq!(settings.history_limit, 91);
         assert_eq!(settings.pin_limit, 9);
         assert_eq!(settings.default_pin_opacity_percent, 85);
-        assert_eq!(settings.region_hotkey, region);
-        assert_eq!(settings.full_display_hotkey, full_display);
+        assert_eq!(settings.region_hotkey, DEFAULT_REGION_HOTKEY);
+        assert_eq!(settings.clipboard_hotkey, DEFAULT_CLIPBOARD_HOTKEY);
         assert_eq!(
             settings.default_pin_always_on_top,
             DEFAULT_PIN_ALWAYS_ON_TOP
@@ -828,12 +902,14 @@ mod tests {
         assert_eq!(settings.export_format, ExportImageFormat::Png);
         assert_eq!(settings.jpeg_quality, DEFAULT_JPEG_QUALITY);
         assert!(repairs.migrated_from_v3);
+        assert!(repairs.region_hotkey);
+        assert!(repairs.clipboard_hotkey);
     }
 
     #[test]
     fn v4_settings_migrate_with_default_ocr_confidence_threshold() {
         let region = HotkeyBinding::new(HotkeyModifiers::CONTROL, HotkeyCode::KeyR);
-        let full_display = HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4);
+        let legacy_full_display = HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4);
         let mut bytes = [0u8; V4_RECORD_LEN];
         bytes[..8].copy_from_slice(&MAGIC);
         bytes[8..10].copy_from_slice(&4u16.to_le_bytes());
@@ -844,8 +920,8 @@ mod tests {
         bytes[18] = OcrLanguage::SimplifiedChinese.to_wire();
         bytes[19] = region.modifiers.to_wire();
         bytes[20] = region.code.to_wire();
-        bytes[21] = full_display.modifiers.to_wire();
-        bytes[22] = full_display.code.to_wire();
+        bytes[21] = legacy_full_display.modifiers.to_wire();
+        bytes[22] = legacy_full_display.code.to_wire();
         bytes[23] = 0;
 
         let (settings, repairs) = decode(&bytes).expect("migrate v4");
@@ -858,16 +934,18 @@ mod tests {
         );
         assert_eq!(settings.export_format, ExportImageFormat::Png);
         assert_eq!(settings.jpeg_quality, DEFAULT_JPEG_QUALITY);
-        assert_eq!(settings.region_hotkey, region);
-        assert_eq!(settings.full_display_hotkey, full_display);
+        assert_eq!(settings.region_hotkey, DEFAULT_REGION_HOTKEY);
+        assert_eq!(settings.clipboard_hotkey, DEFAULT_CLIPBOARD_HOTKEY);
         assert!(repairs.migrated_from_v4);
+        assert!(repairs.region_hotkey);
+        assert!(repairs.clipboard_hotkey);
     }
 
     #[test]
     fn invalid_v7_hotkey_field_repairs_without_losing_other_field() {
         let settings = AppSettings {
             region_hotkey: HotkeyBinding::new(HotkeyModifiers::CONTROL, HotkeyCode::KeyR),
-            full_display_hotkey: HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4),
+            clipboard_hotkey: HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4),
             ..AppSettings::default()
         };
         let mut bytes = encode(settings).expect("encode");
@@ -876,9 +954,9 @@ mod tests {
         let (decoded, repairs) = decode(&bytes).expect("repair v6 hotkey");
 
         assert_eq!(decoded.region_hotkey, DEFAULT_REGION_HOTKEY);
-        assert_eq!(decoded.full_display_hotkey, settings.full_display_hotkey);
+        assert_eq!(decoded.clipboard_hotkey, settings.clipboard_hotkey);
         assert!(repairs.region_hotkey);
-        assert!(!repairs.full_display_hotkey);
+        assert!(!repairs.clipboard_hotkey);
     }
 
     #[test]
@@ -922,7 +1000,7 @@ mod tests {
     #[test]
     fn v5_settings_migrate_with_default_export_format_and_quality() {
         let region = HotkeyBinding::new(HotkeyModifiers::CONTROL, HotkeyCode::KeyR);
-        let full_display = HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4);
+        let legacy_full_display = HotkeyBinding::new(HotkeyModifiers::ALT, HotkeyCode::F4);
         let mut bytes = [0u8; V5_RECORD_LEN];
         bytes[..8].copy_from_slice(&MAGIC);
         bytes[8..10].copy_from_slice(&5u16.to_le_bytes());
@@ -933,8 +1011,8 @@ mod tests {
         bytes[18] = OcrLanguage::SimplifiedChinese.to_wire();
         bytes[19] = region.modifiers.to_wire();
         bytes[20] = region.code.to_wire();
-        bytes[21] = full_display.modifiers.to_wire();
-        bytes[22] = full_display.code.to_wire();
+        bytes[21] = legacy_full_display.modifiers.to_wire();
+        bytes[22] = legacy_full_display.code.to_wire();
         bytes[23] = 0;
         bytes[24] = 65;
 
@@ -945,6 +1023,10 @@ mod tests {
         assert_eq!(settings.export_format, ExportImageFormat::Png);
         assert_eq!(settings.jpeg_quality, DEFAULT_JPEG_QUALITY);
         assert!(repairs.migrated_from_v5);
+        assert_eq!(settings.region_hotkey, DEFAULT_REGION_HOTKEY);
+        assert_eq!(settings.clipboard_hotkey, DEFAULT_CLIPBOARD_HOTKEY);
+        assert!(repairs.region_hotkey);
+        assert!(repairs.clipboard_hotkey);
     }
 
     #[test]
@@ -1032,7 +1114,7 @@ mod tests {
         pin_limit: u16,
         opacity: u8,
         region_hotkey: HotkeyBinding,
-        full_display_hotkey: HotkeyBinding,
+        clipboard_hotkey: HotkeyBinding,
     ) -> [u8; V3_RECORD_LEN] {
         let mut bytes = [0u8; V3_RECORD_LEN];
         bytes[..8].copy_from_slice(&MAGIC);
@@ -1044,8 +1126,8 @@ mod tests {
         bytes[18] = language.to_wire();
         bytes[19] = region_hotkey.modifiers.to_wire();
         bytes[20] = region_hotkey.code.to_wire();
-        bytes[21] = full_display_hotkey.modifiers.to_wire();
-        bytes[22] = full_display_hotkey.code.to_wire();
+        bytes[21] = clipboard_hotkey.modifiers.to_wire();
+        bytes[22] = clipboard_hotkey.code.to_wire();
         bytes
     }
 

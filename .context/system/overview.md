@@ -7,18 +7,18 @@
 - Linux xcap 需 `pipewire-devel`、`mesa-libgbm-devel`（**仅 xcap/portal 兜底路径**）。
 - **当前截图后端（Linux/KDE 实验路径）**：`kde-spectacle`（KWin，~0.5s）→ `xcap`/portal（慢）→ 受限能力状态；`FakeCaptureProvider` 仅由显式测试/开发注入使用，不能是生产截图成功的降级结果。
 - **不要默认 portal**：portal/PipeWire 是通用 Wayland 兜底，不是 Snipaste 级体验。
-- **全局热键**：`global-hotkey`（可持久化录制的区域/单显示器全屏主键，默认 F2/F3；兼容 Ctrl+N/Ctrl+Shift+S 区域备用键），注册受桌面环境限制；Linux 纯 Wayland 在 `WAYLAND_DISPLAY`/`XDG_SESSION_TYPE` 门槛通过后异步尝试 XDG `GlobalShortcuts` Portal，Portal session、授权响应和信号等待不阻塞 GUI，失败继续使用 tray/IPC；保留单实例 IPC `pinora capture`，启动时写入 `~/.local/share/applications/pinora.desktop`。
-- **系统剪贴板**：Linux 优先 `wl-copy`，回退 `xclip`；同步 `LocalImageSink` 先保留内存副本，系统写入失败返回 `ClipboardFailed` 而不发布成功，适配器直接持有子进程并在截止时间后回收；桌面异步复制仍由 `ExportJobService` 监督，真实读回和跨平台原生后端未验证。
+- **全局热键**：默认 F1 区域截图、F3 从系统图像剪贴板创建贴图、Shift+F3 显示或隐藏全部贴图；前两项可持久化录制，Shift+F3 为固定防冲突键。全屏截图只保留 tray/IPC 入口。`global-hotkey` 注册受桌面环境限制；Linux 纯 Wayland 在 `WAYLAND_DISPLAY`/`XDG_SESSION_TYPE` 门槛通过后异步尝试 XDG `GlobalShortcuts` Portal，只有三项绑定均被接受才报告可用，Portal session、授权响应和信号等待不阻塞 GUI，失败继续使用 tray/IPC；保留单实例 IPC `pinora capture`，启动时写入 `~/.local/share/applications/pinora.desktop`。
+- **系统剪贴板**：Linux 写入优先 `wl-copy`，回退 `xclip`；同步 `LocalImageSink` 先保留内存副本，系统写入失败返回 `ClipboardFailed` 而不发布成功，适配器直接持有子进程并在截止时间后回收。F3 读回由 `pinora-export::ClipboardImageReadJobService` 在 worker 内优先调用 `wl-paste --type image/png`、回退 `xclip`，限制 3 秒、64 MiB 原始 PNG、5,000 万像素和 200 MiB 解码缓冲；成功后才回到 GUI 线程创建既有贴图窗口。真实读回和非 Linux 原生后端未验证。
 
 ## 当前可运行的实验能力（未达到生产声明）
 
 | 能力 | 说明 |
 | --- | --- |
 | 截屏尝试 | KDE 优先 spectacle/KWin；否则 xcap；两者不可用时返回 `CapabilityUnavailable`，不生成 fake 图像 |
-| 区域与全屏 Overlay | F2/Ctrl+N 拖选；选区实时显示源图物理像素宽高与全局左上坐标；已确认且未标注的选区可拖四边/四角精确调整；F3/托盘默认全屏自动确认当前完整图像；多显示器 tray 可指定目标全屏；双击复制、中键/Enter 贴图；选区内标注/OCR |
+| 区域与全屏 Overlay | F1 拖选；选区实时显示源图物理像素宽高与全局左上坐标；已确认且未标注的选区可拖四边/四角精确调整；全屏截图仅由 tray/IPC 自动确认当前完整图像；多显示器 tray 可指定目标全屏；双击复制、中键/Enter 贴图；选区内标注/OCR |
 | 贴图窗口 | 无边框置顶、拖动、滚轮及四边/四角等比缩放、双击或客户区 `100%` 恢复原图、Esc 关闭；普通 Overlay 新贴图优先在当前捕获范围的右/左/下/上避开来源选区，无空间时稳定回退；tray 可撤销最近关闭一次（恢复为新 PinId）并通过无内容泄露的动态贴图列表唤起既有贴图；客户区右键菜单、锁定/压暗/置顶、原位编辑；菜单 `PASS` 可在平台成功接受命中关闭后将当前贴图设为鼠标穿透，tray 的同一条目先恢复命中后再显示、聚焦和重绘；穿透状态只存在于当前窗口生命周期；多贴图 |
 | 导出 | Overlay 的复制/保存可在会话内选择原图或标注合成图（默认合成）；贴图复制/保存只输出当前 `PinWin.image` 像素，不烧录窗口缩放、透明度、OCR 词框或客户区 UI。文件支持 PNG（默认）、JPEG（可配置质量）和无损 WebP；内存与系统剪贴板固定 PNG（wl-copy/xclip） |
-| 全局热键 | `GlobalHotkeyHub` 在 GUI 事件循环线程持有 `global-hotkey` manager；设置窗口可录制区域和全屏主键，保存时先预注册新组合、再撤销旧组合，默认 F2/F3；Ctrl+N/Ctrl+Shift+S 保持区域备用键。tray 菜单在创建及设置成功时显示已保存主键，但实际注册仍以能力摘要/诊断为准。Windows/macOS 为原生后端、Linux 仅 X11；纯 Wayland 仍使用 tray 或 `pinora capture` IPC 降级 |
+| 全局热键 | `GlobalHotkeyHub` 在 GUI 事件循环线程持有 `global-hotkey` manager；设置窗口可录制区域和剪贴板贴图主键，保存时先预注册新组合、再撤销旧组合，默认 F1/F3，固定 Shift+F3 切换全部贴图。tray 菜单显示已保存的 F1/F3 绑定；全屏入口无默认全局键。实际注册仍以能力摘要/诊断为准。Windows/macOS 使用原生后端、Linux X11 使用 `global-hotkey`；纯 Wayland 尝试三项 XDG Portal 绑定，任一失败就降级到 tray 或 `pinora capture` IPC |
 | 单实例 | Unix 使用 `flock` + Unix socket；非 Unix 使用文件锁 + 本地回环 TCP 端口文件，均支持 Activate/CAPTURE/QUIT；真实 Windows/macOS 进程行为仍待探针 |
 | 帧缓存 | 空闲预截；热键命中以所有权移交预处理帧，避免复制全屏图像与双 XRGB 缓冲；暂停以代际拒绝晚到帧 |
 | 基础标注 | Overlay 选区内：选择、矩形/圆角矩形/直线/箭头/画笔/椭圆/序号/马赛克/区域模糊/文本/截图内取色；文本 `Shift+Enter` 换行、`Enter` 提交、`Esc` 取消，非空草稿在重选/切换工具前提交；`V` 选择，选中对象可拖动或以方向键移动（Shift 为 10 像素），`Q` 圆角矩形，`L` 直线，`N` 序号，`B` 区域模糊，`F` 切换后续封闭图形的半透明填充，C 颜色，I 取色，+/- 线宽，Delete/Backspace 删除选中项；`Ctrl+Z` 撤销，`Ctrl+Shift+Z`/`Ctrl+Y` 重做，工具栏“清空”可一次撤销/重做整个标注文档 |
@@ -27,6 +27,13 @@
 | 后台驻留与窗口隔离 | 启动后只保留托盘、可用全局热键、IPC 与帧缓存，不自动截图；无法创建托盘时以 `CapabilityUnavailable` 退出；所有辅助窗口必须由 `window_policy` 工厂创建并请求跳过任务栏/Dock，真实桌面验证仍待完成 |
 | 贴图控制 | L 锁定，`[` `]` 透明度（压暗近似）；`O` 本地 OCR；`T` 词框 |
 | OCR | 系统 `tesseract` CLI；可持久化选择 Auto、English、SimplifiedChinese 与 0..=100 的低置信词框阈值（默认 60）；同资产版本和语言的 accepted 结果进程内复用；全文复制剪贴板；词框叠加且低置信仅改变未选中词的告警描边；缺引擎或指定本机模型时受控降级 |
+
+## 2026-08-04 热键与剪贴板贴图契约
+
+- 任务 140 将设置 schema 升级到 v10：v1-v9 的历史全屏键位不再重新解释为剪贴板动作，读取后统一重置为默认 F1/F3；v10 当前记录保留用户保存的区域与剪贴板组合。旧 `Ctrl+N` / `Ctrl+Shift+S` 不再作为隐藏备用绑定或保留组合。
+- `ActionId` 新增 `PasteClipboard` 与 `ToggleAllPinsVisibility`。X11/原生热键、Wayland Portal、tray 和已聚焦辅助窗口均路由至同一动作契约；窗口内路由读取已保存的物理键绑定，因此重绑不会只影响全局后端。
+- F3 创建 `JobOwner::Clipboard(ImageId)` 受监督任务；读取与 PNG 解码在 worker 中完成，成功才经既有 `open_pin_from_image` 与 `window_policy` 创建/展示贴图。Shift+F3 只遍历既有 `PinWin` 的可见状态，不产生新窗口、资产或历史记录。
+- 当前证据仅为离线 codec、动作映射、PNG 边界、worker 取消/身份和 workspace 静态门禁；真实 X11、Wayland Portal、剪贴板权限、热键冲突、任务栏/Dock/分页器和性能仍未验证。
 
 ## 2026-08-01 接管审计事实
 

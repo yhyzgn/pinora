@@ -24,6 +24,9 @@ pub enum TrayFeedback {
     DelayedCaptureScheduled,
     DelayedCaptureCancelled,
     DelayedCaptureFailed(ErrorCode),
+    ClipboardPinReading,
+    ClipboardPinCreated,
+    ClipboardPinFailed(ErrorCode),
     OcrRunning,
     OcrCompleted,
     OcrFailed(ErrorCode),
@@ -51,6 +54,9 @@ impl TrayFeedback {
             Self::DelayedCaptureScheduled => "Pinora - 延时截图已开始",
             Self::DelayedCaptureCancelled => "Pinora - 延时截图已取消",
             Self::DelayedCaptureFailed(error) => delayed_capture_failed_label(error),
+            Self::ClipboardPinReading => "Pinora - 正在读取剪贴板图像",
+            Self::ClipboardPinCreated => "Pinora - 已从剪贴板创建贴图",
+            Self::ClipboardPinFailed(error) => clipboard_pin_failed_label(error),
             Self::OcrRunning => "Pinora - 正在识别文字",
             Self::OcrCompleted => "Pinora - 文字识别已完成",
             Self::OcrFailed(error) => ocr_failed_label(error),
@@ -79,6 +85,9 @@ impl TrayFeedback {
             Self::DelayedCaptureScheduled => "DELAYED CAPTURE ACTIVE",
             Self::DelayedCaptureCancelled => "DELAYED CAPTURE CANCELLED",
             Self::DelayedCaptureFailed(_) => "DELAYED CAPTURE FAILED",
+            Self::ClipboardPinReading => "CLIPBOARD PIN READING",
+            Self::ClipboardPinCreated => "CLIPBOARD PIN CREATED",
+            Self::ClipboardPinFailed(_) => "CLIPBOARD PIN FAILED",
             Self::OcrRunning => "OCR RUNNING",
             Self::OcrCompleted => "OCR COMPLETED",
             Self::OcrFailed(_) => "OCR FAILED",
@@ -100,6 +109,7 @@ impl TrayFeedback {
         match self {
             Self::CaptureFailed(error)
             | Self::DelayedCaptureFailed(error)
+            | Self::ClipboardPinFailed(error)
             | Self::OcrFailed(error)
             | Self::ExportFailed(_, error) => Some(error),
             Self::PinMousePassthroughUnavailable => Some(ErrorCode::CapabilityUnavailable),
@@ -109,6 +119,8 @@ impl TrayFeedback {
             | Self::CaptureCancelled
             | Self::DelayedCaptureScheduled
             | Self::DelayedCaptureCancelled
+            | Self::ClipboardPinReading
+            | Self::ClipboardPinCreated
             | Self::OcrRunning
             | Self::OcrCompleted
             | Self::ExportRunning(_)
@@ -140,6 +152,16 @@ const fn delayed_capture_failed_label(error: ErrorCode) -> &'static str {
         ErrorCode::RetryablePlatform => "Pinora - 延时截图未完成：平台暂不可用",
         ErrorCode::TimedOut => "Pinora - 延时截图未完成：已超时",
         _ => "Pinora - 延时截图未完成，请重试",
+    }
+}
+
+const fn clipboard_pin_failed_label(error: ErrorCode) -> &'static str {
+    match error {
+        ErrorCode::CapabilityUnavailable | ErrorCode::ClipboardFailed => {
+            "Pinora - 剪贴板贴图未完成：没有可用图像"
+        }
+        ErrorCode::TimedOut => "Pinora - 剪贴板贴图未完成：已超时",
+        _ => "Pinora - 剪贴板贴图未完成，请重试",
     }
 }
 
